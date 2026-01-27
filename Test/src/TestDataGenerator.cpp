@@ -48,7 +48,7 @@ template <typename T>
 void TestDataGenerator<T>::RunLargeBatches(std::string &vecset, std::string &metaset, std::string &metaidx,
                                            std::string &addset, std::string &addmetaset, std::string &addmetaidx,
                                            std::string &queryset, int base, int batchinsert, int batchdelete,
-                                           int batches, std::string &truth)
+                                           int batches, std::string &truth, bool generateTruth)
 {
     vecset = "perftest_vector.bin";
     metaset = "perftest_meta.bin";
@@ -63,7 +63,10 @@ void TestDataGenerator<T>::RunLargeBatches(std::string &vecset, std::string &met
     GenerateVectorSet(vecset, metaset, metaidx, m_vectorPath, 0, m_n);
     GenerateVectorSet(queryset, empty, empty, m_queryPath, 0, m_q);
     GenerateVectorSet(addset, addmetaset, addmetaidx, m_vectorPath, m_n, m_a);
-    GenerateBatchTruth(truth, vecset, addset, queryset, base, batchinsert, batchdelete, batches, true);
+    if (generateTruth)
+    {
+        GenerateBatchTruth(truth, vecset, addset, queryset, base, batchinsert, batchdelete, batches, true);
+    }
 }
 
 template<typename T>

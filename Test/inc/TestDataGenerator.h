@@ -39,9 +39,9 @@ namespace TestUtils {
                         std::shared_ptr<SPTAG::VectorSet> &truths);
 
         void RunLargeBatches(std::string &vecset, std::string &metaset, std::string &metaidx, 
-                             std::string &addset, std::string &addmetaset, std::string &addmetaidx,
-                             std::string &queryset, int bash, int batchinsert, int batchdelete, int batches,
-                             std::string &truth);
+                     std::string &addset, std::string &addmetaset, std::string &addmetaidx,
+                     std::string &queryset, int bash, int batchinsert, int batchdelete, int batches,
+                     std::string &truth, bool generateTruth = true);
 
     private:
         int m_n, m_a, m_q, m_m, m_k;
