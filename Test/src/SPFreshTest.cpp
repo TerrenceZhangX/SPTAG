@@ -161,7 +161,7 @@ std::shared_ptr<VectorIndex> BuildIndex(const std::string &outDirectory, std::sh
     std::string configuration = R"(
         [Base]
             DistCalcMethod=L2
-            IndexAlgoType=KDT
+            IndexAlgoType=BKT
             ValueType=)" + Helper::Convert::ConvertToString(GetEnumValueType<T>()) + 
                                 R"(
             Dim=)" + std::to_string(M) +
@@ -255,7 +255,7 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
     std::string configuration = R"(
         [Base]
             DistCalcMethod=L2
-            IndexAlgoType=KDT
+            IndexAlgoType=BKT
             VectorPath=)" + pvecset + R"(
             ValueType=)" + Helper::Convert::ConvertToString(GetEnumValueType<T>()) +
                                 R"(
@@ -688,7 +688,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
 
             index = VectorIndex::CreateInstance(IndexAlgoType::SPANN, VectorValueType::UInt8);
             BOOST_REQUIRE(index != nullptr);
-            index->SetParameter("IndexAlgoType", "KDT", "Base");
+            index->SetParameter("IndexAlgoType", "BKT", "Base");
             index->SetParameter("IndexDirectory", indexPath.c_str(), "Base");
             index->SetParameter("DistCalcMethod", Helper::Convert::ConvertToString(distMethod).c_str(), "Base");
             index->SetParameter("QuantizerFilePath", quantizerFilePath.c_str(), "Base");
