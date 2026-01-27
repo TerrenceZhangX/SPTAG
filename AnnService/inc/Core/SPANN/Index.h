@@ -72,6 +72,7 @@ namespace SPTAG
             Index()
             {
                 m_workSpaceFactory = std::make_unique<SPTAG::COMMON::ThreadLocalWorkSpaceFactory<ExtraWorkSpace>>();
+                //m_workSpaceFactory = std::make_unique<SPTAG::COMMON::SharedPoolWorkSpaceFactory<ExtraWorkSpace>>();
                 m_fComputeDistance = std::function<float(const T*, const T*, DimensionType)>(COMMON::DistanceCalcSelector<T>(m_options.m_distCalcMethod));
                 m_iBaseSquare = (m_options.m_distCalcMethod == DistCalcMethod::Cosine) ? COMMON::Utils::GetBase<T>() * COMMON::Utils::GetBase<T>() : 1;
             }

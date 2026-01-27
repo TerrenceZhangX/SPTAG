@@ -19,6 +19,8 @@ namespace SPTAG
         class IWorkSpaceFactory
         {
         public:
+            using Ptr = std::unique_ptr<WorkSpaceType>;
+
             virtual std::unique_ptr<WorkSpaceType> GetWorkSpace() = 0;
             virtual void ReturnWorkSpace(std::unique_ptr<WorkSpaceType> ws) = 0;
         };
@@ -38,7 +40,32 @@ namespace SPTAG
             {
                 m_workspace = std::move(ws);
             }
+        };
 
+	template <typename WorkSpaceType>
+        class SharedPoolWorkSpaceFactory : public IWorkSpaceFactory<WorkSpaceType> {
+        public:
+            virtual std::unique_ptr<WorkSpaceType> GetWorkSpace() override
+	    {
+                std::unique_ptr<WorkSpaceType>  ws;
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (!m_pool.empty()) {
+                    ws = std::move(m_pool.back());
+                    m_pool.pop_back();
+                }
+		return ws;
+	    }
+
+            void ReturnWorkSpace(std::unique_ptr<WorkSpaceType> ws) override {
+                if (ws) {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    m_pool.emplace_back(std::move(ws));
+                }
+            }
+
+        private:
+            std::mutex m_mutex;
+            std::vector<std::unique_ptr<WorkSpaceType>> m_pool;
         };
 
         class OptHashPosVector
