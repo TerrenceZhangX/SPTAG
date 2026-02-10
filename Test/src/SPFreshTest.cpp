@@ -346,73 +346,18 @@ std::vector<QueryResult> SearchOnly(std::shared_ptr<VectorIndex> &vecIndex, std:
 }
 
 template <typename T>
-float EvaluateRecall(const std::vector<QueryResult> &res, std::shared_ptr<VectorIndex> &vecIndex,
-                     std::shared_ptr<VectorSet> &queryset, std::shared_ptr<VectorSet> &truth,
-                     std::shared_ptr<VectorSet> &baseVec, std::shared_ptr<VectorSet> &addVec, SizeType baseCount, int recallK, int k, int batch, int totalbatches = -1)
-{
-    if (!truth)
-    {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Truth data is null. Cannot compute recall.\n");
-        return 0.0f;
-    }
-
-    recallK = min(recallK, static_cast<int>(truth->Dimension()));
-    float totalRecall = 0.0f;
-    float eps = 1e-4f;
-    int distbase = (totalbatches + 1) * queryset->Count();
-    for (SizeType i = 0; i < queryset->Count(); ++i)
-    {
-        const SizeType *truthNN = reinterpret_cast<const SizeType *>(truth->GetVector(i + batch * queryset->Count()));
-        float *truthD = nullptr;
-        if (truth->Count() == 2 * distbase)
-        {
-            truthD = reinterpret_cast<float *>(truth->GetVector(distbase + i + batch * queryset->Count()));
-        }
-        for (int j = 0; j < recallK; ++j)
-        {
-            SizeType truthVid = truthNN[j];
-            float truthDist = MaxDist;
-            if (baseVec != nullptr && addVec != nullptr)
-                truthDist = (truthVid < baseCount)
-                    ? vecIndex->ComputeDistance(queryset->GetVector(i), baseVec->GetVector(truthVid))
-                    : vecIndex->ComputeDistance(queryset->GetVector(i), addVec->GetVector(truthVid - baseCount));
-            else if (truthD)
-            {
-                truthDist = truthD[j];
-            }
-            
-            for (int l = 0; l < k; ++l)
-            {
-                const auto result = res[i].GetResult(l);
-                if (truthVid == result->VID ||
-                    std::fabs(truthDist - result->Dist) <= eps * (std::fabs(truthDist) + eps))
-                {
-                    totalRecall += 1.0f;
-                    break;
-                }
-            }
-        }
-    }
-
-    float avgRecall = totalRecall / (queryset->Count() * recallK);
-    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Recall %d@%d = %.4f\n", recallK, k, avgRecall);
-    return avgRecall;
-}
-
-template <typename T>
 float Search(std::shared_ptr<VectorIndex> &vecIndex, std::shared_ptr<VectorSet> &queryset,
              std::shared_ptr<VectorSet> &baseVec, std::shared_ptr<VectorSet> &addVec, int k,
-             std::shared_ptr<VectorSet> &truth, SizeType baseCount, int batch = 0)
+             std::shared_ptr<VectorSet> &truth, SizeType baseCount, int batch, int totalbatches)
 {
     auto results = SearchOnly<T>(vecIndex, queryset, k);
-    return EvaluateRecall<T>(results, vecIndex, queryset, truth, baseVec, addVec, baseCount, k, k, batch);
+    return TestUtils::TestDataGenerator<T>::EvaluateRecall(results, truth, k, k, batch, totalbatches);
 }
 
 template <typename ValueType>
 void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step,
                    std::shared_ptr<VectorSet> addset, std::shared_ptr<MetadataSet> &metaset, int start = 0)
 {
-    SPANN::Options &p_opts = *(p_index->GetOptions());
     p_index->ForceCompaction();
     p_index->GetDBStat();
 
@@ -565,7 +510,7 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
 
     BOOST_TEST_MESSAGE("Checking for truth file: " << truthPath);
     std::shared_ptr<VectorSet> pvecset, paddvecset;
-    float avgRecall = EvaluateRecall<T>(results, index, queryset, truth, pvecset, paddvecset, baseVectorCount, topK, searchK, batches, totalbatches);
+    float avgRecall = TestUtils::TestDataGenerator<T>::EvaluateRecall(results, truth, topK, searchK, batches, totalbatches);
     BOOST_TEST_MESSAGE("  Recall" << topK << "@" << searchK << " = " << (avgRecall * 100.0f) << "%");
     BOOST_TEST_MESSAGE("  (Evaluated on " << numQueries << " queries against base vectors)");
     benchmarkData << std::fixed << std::setprecision(4);
@@ -692,11 +637,8 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
 
         if (enableQuantization)
         {
-            auto vectorOptions = std::shared_ptr<Helper::ReaderOptions>(
-                new Helper::ReaderOptions(GetEnumValueType<T>(), M, VectorFileType::DEFAULT));
-            auto baseReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
-            BOOST_REQUIRE(ErrorCode::Success == baseReader->LoadFile(pvecset));
-            auto baseVectorsRaw = baseReader->GetVectorSet();
+            auto baseVectorsRaw = TestUtils::TestDataGenerator<T>::LoadVectorSet(pvecset, M);
+            BOOST_REQUIRE(baseVectorsRaw != nullptr);
 
             auto baseVectorsFloat = ConvertToFloatVectorSet(baseVectorsRaw);
             BOOST_REQUIRE(baseVectorsFloat != nullptr);
@@ -737,17 +679,9 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
         BOOST_REQUIRE(index != nullptr);
     }
 
-    auto vectorOptions = std::shared_ptr<Helper::ReaderOptions>(
-        new Helper::ReaderOptions(GetEnumValueType<T>(), M, VectorFileType::DEFAULT));
+    auto queryset = TestUtils::TestDataGenerator<T>::LoadVectorSet(pqueryset, M);
+    BOOST_REQUIRE(queryset != nullptr);
 
-    auto queryReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
-    if (!fileexists(pqueryset.c_str()) || ErrorCode::Success != queryReader->LoadFile(pqueryset))
-    {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Cannot find or load %s. Using random generation!\n",
-                     pqueryset.c_str());
-        return;
-    }
-    auto queryset = queryReader->GetVectorSet();
     if (enableQuantization)
     {
         if (!quantizer)
@@ -758,24 +692,10 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
         queryset = ConvertToFloatVectorSet(queryset);
     }
 
-    auto addReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
-    if (!fileexists(paddset.c_str()) || ErrorCode::Success != addReader->LoadFile(paddset))
-    {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Cannot find or load %s. Using random generation!\n", paddset.c_str());
-        return;
-    }
-
     std::shared_ptr<VectorSet> truth;
     if (generateTruth)
     {
-        auto opts = std::make_shared<Helper::ReaderOptions>(GetEnumValueType<float>(), K, VectorFileType::DEFAULT);
-        auto reader = Helper::VectorSetReader::CreateInstance(opts);
-        if (ErrorCode::Success != reader->LoadFile(ptruth))
-        {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to read file %s\n", ptruth.c_str());
-            return;
-        }
-        truth = reader->GetVectorSet();
+        truth = TestUtils::TestDataGenerator<float>::LoadVectorSet(ptruth, K);
     }
 
     // Benchmark 0: Query performance before insertions
@@ -850,7 +770,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
 
                 int insertStart = iter * insertBatchSize;
                 {
-                    std::shared_ptr<VectorSet> addset = addReader->GetVectorSet(insertStart, insertStart + insertBatchSize);
+                    std::shared_ptr<VectorSet> addset = TestUtils::TestDataGenerator<T>::LoadVectorSet(paddset, M, insertStart, insertBatchSize);
                     ByteArray quantizedAddBytes;
                     if (enableQuantization) {
                         auto addFloat = ConvertToFloatVectorSet(addset);
@@ -862,8 +782,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                                                                  quantizer->GetNumSubvectors(),
                                                                  addFloat->Count());
                     }
-                    std::shared_ptr<MetadataSet> addmetaset(new MemMetadataSet(paddmeta, paddmetaidx, cloneIndex->m_iDataBlockSize,
-                                           cloneIndex->m_iDataCapacity, 10, insertStart, insertBatchSize), std::default_delete<MemMetadataSet>());
+                    std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<T>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, insertBatchSize);
                     start = std::chrono::high_resolution_clock::now();
                     InsertVectors<T>(static_cast<SPANN::Index<T> *>(cloneIndex.get()), numThreads, insertBatchSize,
                                      addset, addmetaset, 0);
@@ -1118,11 +1037,11 @@ BOOST_AUTO_TEST_CASE(TestLoadAndSave)
     using namespace SPFreshTest;
 
     // Prepare test data using TestDataGenerator
-    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset, addtruth;
+    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset;
     std::shared_ptr<MetadataSet> metaset, addmetaset;
 
     TestUtils::TestDataGenerator<int8_t> generator(N, queries, M, K, "L2");
-    generator.Run(vecset, metaset, queryset, truth, addvecset, addmetaset, addtruth);
+    generator.RunBatches(vecset, metaset, addvecset, addmetaset, queryset, N, N, 0, 1, truth);
 
     auto originalIndex = BuildIndex<int8_t>("original_index", vecset, metaset);
     BOOST_REQUIRE(originalIndex != nullptr);
@@ -1149,15 +1068,15 @@ BOOST_AUTO_TEST_CASE(TestReopenIndexRecall)
 {
     using namespace SPFreshTest;
 
-    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset, addtruth;
+    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset;
     std::shared_ptr<MetadataSet> metaset, addmetaset;
 
     TestUtils::TestDataGenerator<int8_t> generator(N, queries, M, K, "L2");
-    generator.Run(vecset, metaset, queryset, truth, addvecset, addmetaset, addtruth);
+    generator.RunBatches(vecset, metaset, addvecset, addmetaset, queryset, N, N, 0, 1, truth);
 
     auto originalIndex = BuildIndex<int8_t>("original_index", vecset, metaset);
     BOOST_REQUIRE(originalIndex != nullptr);
-    float recall1 = Search<int8_t>(originalIndex, queryset, vecset, addvecset, K, truth, N);
+    float recall1 = Search<int8_t>(originalIndex, queryset, vecset, addvecset, K, truth, N, 0, 1);
     BOOST_REQUIRE(originalIndex->SaveIndex("original_index") == ErrorCode::Success);    
     originalIndex = nullptr;
 
@@ -1170,7 +1089,7 @@ BOOST_AUTO_TEST_CASE(TestReopenIndexRecall)
     std::shared_ptr<VectorIndex> loadedTwice;
     BOOST_REQUIRE(VectorIndex::LoadIndex("reopened_index", loadedTwice) == ErrorCode::Success);
     BOOST_REQUIRE(loadedTwice != nullptr);
-    float recall2 = Search<int8_t>(loadedTwice, queryset, vecset, addvecset, K, truth, N);
+    float recall2 = Search<int8_t>(loadedTwice, queryset, vecset, addvecset, K, truth, N, 0, 1);
     loadedTwice = nullptr;
 
     BOOST_REQUIRE_MESSAGE(std::fabs(recall1 - recall2) < 0.02, "Recall mismatch between original and reopened index");
@@ -1184,11 +1103,11 @@ BOOST_AUTO_TEST_CASE(TestInsertAndSearch)
     using namespace SPFreshTest;
 
     // Prepare test data using TestDataGenerator
-    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset, addtruth;
+    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset;
     std::shared_ptr<MetadataSet> metaset, addmetaset;
 
     TestUtils::TestDataGenerator<int8_t> generator(N, queries, M, K, "L2");
-    generator.Run(vecset, metaset, queryset, truth, addvecset, addmetaset, addtruth);
+    generator.RunBatches(vecset, metaset, addvecset, addmetaset, queryset, N, N, 0, 1, truth);
 
     // Build base index
     auto index = BuildIndex<int8_t>("insert_test_index", vecset, metaset);
@@ -1212,11 +1131,11 @@ BOOST_AUTO_TEST_CASE(TestClone)
     using namespace SPFreshTest;
 
     // Prepare test data using TestDataGenerator
-    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset, addtruth;
+    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset;
     std::shared_ptr<MetadataSet> metaset, addmetaset;
 
     TestUtils::TestDataGenerator<int8_t> generator(N, queries, M, K, "L2");
-    generator.Run(vecset, metaset, queryset, truth, addvecset, addmetaset, addtruth);
+    generator.RunBatches(vecset, metaset, addvecset, addmetaset, queryset, N, N, 0, 1, truth);
 
     auto originalIndex = BuildIndex<int8_t>("original_index", vecset, metaset);
     BOOST_REQUIRE(originalIndex != nullptr);
@@ -1243,16 +1162,16 @@ BOOST_AUTO_TEST_CASE(TestCloneRecall)
     using namespace SPFreshTest;
 
     // Prepare test data using TestDataGenerator
-    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset, addtruth;
+    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset;
     std::shared_ptr<MetadataSet> metaset, addmetaset;
 
     TestUtils::TestDataGenerator<int8_t> generator(N, queries, M, K, "L2");
-    generator.Run(vecset, metaset, queryset, truth, addvecset, addmetaset, addtruth);
+    generator.RunBatches(vecset, metaset, addvecset, addmetaset, queryset, N, N, 0, 1, truth);
 
     auto originalIndex = BuildIndex<int8_t>("original_index", vecset, metaset);
     BOOST_REQUIRE(originalIndex != nullptr);
     BOOST_REQUIRE(originalIndex->SaveIndex("original_index") == ErrorCode::Success);
-    float originalRecall = Search<int8_t>(originalIndex, queryset, vecset, addvecset, K, truth, N);
+    float originalRecall = Search<int8_t>(originalIndex, queryset, vecset, addvecset, K, truth, N, 0, 1);
     
     auto clonedIndex = originalIndex->Clone("cloned_index");
     BOOST_REQUIRE(clonedIndex != nullptr);
@@ -1262,7 +1181,7 @@ BOOST_AUTO_TEST_CASE(TestCloneRecall)
     std::shared_ptr<VectorIndex> loadedClonedIndex;
     BOOST_REQUIRE(VectorIndex::LoadIndex("cloned_index", loadedClonedIndex) == ErrorCode::Success);
     BOOST_REQUIRE(loadedClonedIndex != nullptr);
-    float clonedRecall = Search<int8_t>(loadedClonedIndex, queryset, vecset, addvecset, K, truth, N);
+    float clonedRecall = Search<int8_t>(loadedClonedIndex, queryset, vecset, addvecset, K, truth, N, 0, 1);
     loadedClonedIndex = nullptr;
 
     BOOST_REQUIRE_MESSAGE(std::fabs(originalRecall - clonedRecall) < 0.02,
@@ -1278,11 +1197,11 @@ BOOST_AUTO_TEST_CASE(IndexPersistenceAndInsertSanity)
     using namespace SPFreshTest;
 
     // Prepare test data
-    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset, addtruth;
+    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset;
     std::shared_ptr<MetadataSet> metaset, addmetaset;
 
     TestUtils::TestDataGenerator<int8_t> generator(N, queries, M, K, "L2");
-    generator.Run(vecset, metaset, queryset, truth, addvecset, addmetaset, addtruth);
+    generator.RunBatches(vecset, metaset, addvecset, addmetaset, queryset, N, N, 0, 1, truth);
 
     // Build and save base index
     auto baseIndex = BuildIndex<int8_t>("insert_test_index", vecset, metaset);
@@ -1337,11 +1256,11 @@ BOOST_AUTO_TEST_CASE(IndexPersistenceAndInsertMultipleThreads)
     using namespace SPFreshTest;
 
     // Prepare test data
-    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset, addtruth;
+    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset;
     std::shared_ptr<MetadataSet> metaset, addmetaset;
 
     TestUtils::TestDataGenerator<int8_t> generator(N, queries, M, K, "L2");
-    generator.Run(vecset, metaset, queryset, truth, addvecset, addmetaset, addtruth);
+    generator.RunBatches(vecset, metaset, addvecset, addmetaset, queryset, N, N, 0, 1, truth);
 
     // Build and save base index
     auto baseIndex = BuildIndex<int8_t>("insert_test_index_multi", vecset, metaset);
@@ -1394,11 +1313,11 @@ BOOST_AUTO_TEST_CASE(IndexSaveDuringQuery)
 {
     using namespace SPFreshTest;
 
-    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset, addtruth;
+    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset;
     std::shared_ptr<MetadataSet> metaset, addmetaset;
 
     TestUtils::TestDataGenerator<int8_t> generator(N, queries, M, K, "L2");
-    generator.Run(vecset, metaset, queryset, truth, addvecset, addmetaset, addtruth);
+    generator.RunBatches(vecset, metaset, addvecset, addmetaset, queryset, N, N, 0, 1, truth);
 
     auto index = BuildIndex<int8_t>("save_during_query_index", vecset, metaset);
     BOOST_REQUIRE(index != nullptr);
@@ -1440,11 +1359,11 @@ BOOST_AUTO_TEST_CASE(IndexMultiThreadedQuerySanity)
     using namespace SPFreshTest;
 
     // Generate test data
-    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset, addtruth;
+    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset;
     std::shared_ptr<MetadataSet> metaset, addmetaset;
 
     TestUtils::TestDataGenerator<int8_t> generator(N, queries, M, K, "L2");
-    generator.Run(vecset, metaset, queryset, truth, addvecset, addmetaset, addtruth);
+    generator.RunBatches(vecset, metaset, addvecset, addmetaset, queryset, N, N, 0, 1, truth);
 
     // Build and save index
     auto index = BuildIndex<int8_t>("multi_query_index", vecset, metaset);
@@ -1504,11 +1423,11 @@ BOOST_AUTO_TEST_CASE(IndexShadowCloneLifecycleKeepLast)
     constexpr int iterations = 5;
     constexpr int insertBatchSize = 100;
 
-    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset, addtruth;
+    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset;
     std::shared_ptr<MetadataSet> metaset, addmetaset;
 
     TestUtils::TestDataGenerator<int8_t> generator(N, queries, M, K, "L2");
-    generator.Run(vecset, metaset, queryset, truth, addvecset, addmetaset, addtruth);
+    generator.RunBatches(vecset, metaset, addvecset, addmetaset, queryset, N, N, 0, 1, truth);
 
     const std::string baseIndexName = "base_index";
     BOOST_REQUIRE(BuildIndex<int8_t>(baseIndexName, vecset, metaset)->SaveIndex(baseIndexName) == ErrorCode::Success);
@@ -1698,7 +1617,7 @@ BOOST_AUTO_TEST_CASE(RefineIndex)
     BOOST_REQUIRE(originalIndex != nullptr);
     BOOST_REQUIRE(originalIndex->SaveIndex("original_index") == ErrorCode::Success);
 
-    float recall = Search<int8_t>(originalIndex, queryset, vecset, addvecset, K, truth, N);
+    float recall = Search<int8_t>(originalIndex, queryset, vecset, addvecset, K, truth, N, 0, iterations);
     std::cout << "original: recall@" << K << "= " << recall << std::endl;
 
     for (int iter = 0; iter < iterations; iter++)
@@ -1709,7 +1628,7 @@ BOOST_AUTO_TEST_CASE(RefineIndex)
         for (int i = 0; i < deleteBatchSize; i++)
             originalIndex->DeleteIndex(iter * deleteBatchSize + i);
 
-        recall = Search<int8_t>(originalIndex, queryset, vecset, addvecset, K, truth, N, iter + 1);
+        recall = Search<int8_t>(originalIndex, queryset, vecset, addvecset, K, truth, N, iter + 1, iterations);
         std::cout << "iter " << iter << ": recall@" << K << "=" << recall << std::endl;
     }
     std::cout << "Before Refine:" << " recall@" << K << "=" << recall << std::endl;
@@ -1721,7 +1640,7 @@ BOOST_AUTO_TEST_CASE(RefineIndex)
     BOOST_REQUIRE(originalIndex != nullptr);
     BOOST_REQUIRE(originalIndex->Check() == ErrorCode::Success);
 
-    recall = Search<int8_t>(originalIndex, queryset, vecset, addvecset, K, truth, N, iterations);
+    recall = Search<int8_t>(originalIndex, queryset, vecset, addvecset, K, truth, N, iterations, iterations);
     std::cout << "After Refine:" << " recall@" << K << "=" << recall << std::endl;
     static_cast<SPANN::Index<int8_t> *>(originalIndex.get())->GetDBStat();
     BOOST_REQUIRE(originalIndex->SaveIndex("original_index") == ErrorCode::Success);
@@ -1742,6 +1661,7 @@ BOOST_AUTO_TEST_CASE(CacheTest)
     std::shared_ptr<VectorSet> vecset, addvecset, queryset, truth;
     std::shared_ptr<MetadataSet> metaset, addmetaset;
 
+    std::srand(10);
     TestUtils::TestDataGenerator<int8_t> generator(N, queries, M, K, "L2");
     generator.RunBatches(vecset, metaset, addvecset, addmetaset, queryset, N, insertBatchSize, deleteBatchSize,
                          iterations, truth);
@@ -1787,7 +1707,7 @@ BOOST_AUTO_TEST_CASE(CacheTest)
         prevIndex = nullptr;
         BOOST_REQUIRE(cloneIndex->Check() == ErrorCode::Success);
         
-        recall = Search<int8_t>(cloneIndex, queryset, vecset, addvecset, K, truth, N, iter);
+        recall = Search<int8_t>(cloneIndex, queryset, vecset, addvecset, K, truth, N, iter, iterations);
         std::cout << "[INFO] After Save, Clone and Load:" << " recall@" << K << "=" << recall << std::endl;
         static_cast<SPANN::Index<int8_t> *>(cloneIndex.get())->GetDBStat();
 
@@ -1801,7 +1721,7 @@ BOOST_AUTO_TEST_CASE(CacheTest)
         for (int i = 0; i < deleteBatchSize; i++)
             cloneIndex->DeleteIndex(iter * deleteBatchSize + i);
 
-        recall = Search<int8_t>(cloneIndex, queryset, vecset, addvecset, K, truth, N, iter + 1);
+        recall = Search<int8_t>(cloneIndex, queryset, vecset, addvecset, K, truth, N, iter + 1, iterations);
         std::cout << "[INFO] After iter " << iter << ": recall@" << K << "=" << recall << std::endl;
         static_cast<SPANN::Index<int8_t> *>(cloneIndex.get())->GetDBStat();
 
@@ -1818,7 +1738,7 @@ BOOST_AUTO_TEST_CASE(CacheTest)
                 << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - t).count()
                 << " ms" << std::endl;
     
-    recall = Search<int8_t>(finalIndex, queryset, vecset, addvecset, K, truth, N, iterations);
+    recall = Search<int8_t>(finalIndex, queryset, vecset, addvecset, K, truth, N, iterations, iterations);
     std::cout << "[INFO] After Save and Load:" << " recall@" << K << "=" << recall << std::endl;
     static_cast<SPANN::Index<int8_t> *>(finalIndex.get())->GetDBStat();
     finalIndex = nullptr;
@@ -1848,7 +1768,7 @@ BOOST_AUTO_TEST_CASE(CacheTest)
         BOOST_REQUIRE(prevIndex->SaveIndex(prevPath) == ErrorCode::Success);
         auto cloneIndex = prevIndex->Clone(clone_path);
 
-        recall = Search<int8_t>(cloneIndex, queryset, vecset, addvecset, K, truth, N, iter);
+        recall = Search<int8_t>(cloneIndex, queryset, vecset, addvecset, K, truth, N, iter, iterations);
         std::cout << "[INFO] After Save, Clone and Load:" << " recall@" << K << "=" << recall << std::endl;
         static_cast<SPANN::Index<int8_t> *>(cloneIndex.get())->GetDBStat();
 
@@ -1862,7 +1782,7 @@ BOOST_AUTO_TEST_CASE(CacheTest)
         for (int i = 0; i < deleteBatchSize; i++)
             cloneIndex->DeleteIndex(iter * deleteBatchSize + i);
 
-        recall = Search<int8_t>(cloneIndex, queryset, vecset, addvecset, K, truth, N, iter + 1);
+        recall = Search<int8_t>(cloneIndex, queryset, vecset, addvecset, K, truth, N, iter + 1, iterations);
         std::cout << "[INFO] After iter " << iter << ": recall@" << K << "=" << recall << std::endl;
         static_cast<SPANN::Index<int8_t> *>(cloneIndex.get())->GetDBStat();
 
@@ -1878,7 +1798,7 @@ BOOST_AUTO_TEST_CASE(CacheTest)
                 << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - tt).count()
                 << " ms" << std::endl;
     
-    recall = Search<int8_t>(finalIndex, queryset, vecset, addvecset, K, truth, N, iterations);
+    recall = Search<int8_t>(finalIndex, queryset, vecset, addvecset, K, truth, N, iterations, iterations);
     std::cout << "[INFO] After Save and Load:" << " recall@" << K << "=" << recall << std::endl;
     static_cast<SPANN::Index<int8_t> *>(finalIndex.get())->GetDBStat();
     finalIndex = nullptr;

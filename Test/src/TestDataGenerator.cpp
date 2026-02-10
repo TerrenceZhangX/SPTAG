@@ -17,31 +17,20 @@ TestDataGenerator<T>::TestDataGenerator(int n, int q, int m, int k, std::string 
 }
 
 template <typename T>
-void TestDataGenerator<T>::Run(std::shared_ptr<VectorSet> &vecset, std::shared_ptr<MetadataSet> &metaset,
-                               std::shared_ptr<VectorSet> &queryset, std::shared_ptr<VectorSet> &truth,
-                               std::shared_ptr<VectorSet> &addvecset, std::shared_ptr<MetadataSet> &addmetaset,
-                               std::shared_ptr<VectorSet> &addtruth)
-{
-    LoadOrGenerateBase(vecset, metaset);
-    LoadOrGenerateQuery(queryset);
-    LoadOrGenerateAdd(addvecset, addmetaset);
-    LoadOrGenerateTruth("perftest_truth." + m_distMethod, vecset, queryset, truth, true);
-    LoadOrGenerateTruth("perftest_addtruth." + m_distMethod, CombineVectorSets(vecset, addvecset), queryset, addtruth,
-                        true);
-}
-
-template <typename T>
 void TestDataGenerator<T>::RunBatches(std::shared_ptr<SPTAG::VectorSet>& vecset,
     std::shared_ptr<SPTAG::MetadataSet>& metaset,
     std::shared_ptr<SPTAG::VectorSet>& addvecset, std::shared_ptr<SPTAG::MetadataSet>& addmetaset,
     std::shared_ptr<SPTAG::VectorSet>& queryset, int base, int batchinsert, int batchdelete, int batches,
     std::shared_ptr<SPTAG::VectorSet>& truths)
 {
-    LoadOrGenerateBase(vecset, metaset);
-    LoadOrGenerateQuery(queryset);
-    LoadOrGenerateAdd(addvecset, addmetaset);
-    LoadOrGenerateBatchTruth("perftest_batchtruth." + m_distMethod, CombineVectorSets(vecset, addvecset), queryset,
-                             truths, base, batchinsert, batchdelete, batches, true);
+    std::string pvecset, pmetaset, pmetaidx, paddset, paddmetaset, paddmetaidx, pqueryset, ptruth;
+    RunLargeBatches(pvecset, pmetaset, pmetaidx, paddset, paddmetaset, paddmetaidx, pqueryset, base, batchinsert, batchdelete, batches, ptruth, true); 
+    vecset = LoadVectorSet(pvecset, m_m, 0, m_n);
+    metaset = LoadMetadataSet(pmetaset, pmetaidx, 0, m_n);
+    addvecset = LoadVectorSet(paddset, m_m, 0, m_a);
+    addmetaset = LoadMetadataSet(paddmetaset, paddmetaidx, 0, m_a);
+    queryset = LoadVectorSet(pqueryset, m_m, 0, m_q); 
+    truths = LoadVectorSet(ptruth, m_k);
 }
 
 template <typename T>
@@ -50,14 +39,15 @@ void TestDataGenerator<T>::RunLargeBatches(std::string &vecset, std::string &met
                                            std::string &queryset, int base, int batchinsert, int batchdelete,
                                            int batches, std::string &truth, bool generateTruth)
 {
-    vecset = "perftest_vector.bin";
-    metaset = "perftest_meta.bin";
-    metaidx = "perftest_metaidx.bin";
-    addset = "perftest_addvector.bin";
-    addmetaset = "perftest_addmeta.bin";
-    addmetaidx = "perftest_addmetaidx.bin";
-    queryset = "perftest_query.bin";
-    truth = "perftest_batchtruth." + m_distMethod;
+    vecset = "perftest_vector.bin." + SPTAG::Helper::Convert::ConvertToString(GetEnumValueType<T>()) + "_" + std::to_string(m_n) + "_" + std::to_string(m_m);
+    metaset = "perftest_meta.bin." + std::to_string(0) + "_" + std::to_string(m_n);
+    metaidx = "perftest_metaidx.bin." + std::to_string(0) + "_" + std::to_string(m_n);
+    addset = "perftest_addvector.bin." + SPTAG::Helper::Convert::ConvertToString(GetEnumValueType<T>()) + "_" + std::to_string(m_a) + "_" + std::to_string(m_m);
+    addmetaset = "perftest_addmeta.bin." + std::to_string(m_n) + "_" + std::to_string(m_a);
+    addmetaidx = "perftest_addmetaidx.bin." + std::to_string(m_n) + "_" + std::to_string(m_a);
+    queryset = "perftest_query.bin." + SPTAG::Helper::Convert::ConvertToString(GetEnumValueType<T>()) + "_" + std::to_string(m_q) + "_" + std::to_string(m_m);
+    truth = "perftest_batchtruth." + m_distMethod + "." + SPTAG::Helper::Convert::ConvertToString(GetEnumValueType<T>()) + "_" + std::to_string(base) + "_" + std::to_string(m_m) + 
+            "_" + std::to_string(m_q) + "_" + std::to_string(m_k) + "_" + std::to_string(batchinsert) + "_" + std::to_string(batchdelete) + "_" + std::to_string(batches);
     std::string empty;
 
     GenerateVectorSet(vecset, metaset, metaidx, m_vectorPath, 0, m_n);
@@ -67,6 +57,26 @@ void TestDataGenerator<T>::RunLargeBatches(std::string &vecset, std::string &met
     {
         GenerateBatchTruth(truth, vecset, addset, queryset, base, batchinsert, batchdelete, batches, true);
     }
+}
+
+template<typename T>
+std::shared_ptr<SPTAG::VectorSet> TestDataGenerator<T>::LoadVectorSet(const std::string pvecset, DimensionType dim, SPTAG::SizeType start, SPTAG::SizeType count)
+{
+    auto vectorOptions = std::shared_ptr<Helper::ReaderOptions>(new Helper::ReaderOptions(GetEnumValueType<T>(), dim, VectorFileType::DEFAULT));
+    auto vectorReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
+    if (!fileexists(pvecset.c_str()) || ErrorCode::Success != vectorReader->LoadFile(pvecset))
+    {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Cannot find or load %s!\n", pvecset.c_str());
+        return nullptr;
+    }
+    return vectorReader->GetVectorSet(start, start + count);
+}
+
+template<typename T>
+std::shared_ptr<SPTAG::MetadataSet> TestDataGenerator<T>::LoadMetadataSet(const std::string pmetaset, const std::string pmetaidx, SPTAG::SizeType start, SPTAG::SizeType count)
+{
+    std::shared_ptr<SPTAG::MetadataSet> metaset(new MemMetadataSet(pmetaset, pmetaidx, 1024 * 1024, MaxSize, 10, start, count));
+    return metaset;
 }
 
 template<typename T>
@@ -103,32 +113,9 @@ void TestDataGenerator<T>::GenerateBatchTruth(const std::string &filename, std::
     if (fileexists(filename.c_str()))
         return;
 
-    auto vectorOptions = std::shared_ptr<Helper::ReaderOptions>(new Helper::ReaderOptions(GetEnumValueType<T>(), m_m, VectorFileType::DEFAULT));
-    auto vectorReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
-    if (!fileexists(pvecset.c_str()) || ErrorCode::Success != vectorReader->LoadFile(pvecset))
-    {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Cannot find or load %s. Using random generation!\n", pvecset.c_str());
-        return;
-    }
-    auto vecset = vectorReader->GetVectorSet();
-
-    auto queryReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
-    if (!fileexists(pqueryset.c_str()) || ErrorCode::Success != queryReader->LoadFile(pqueryset))
-    {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Cannot find or load %s. Using random generation!\n",
-                     pqueryset.c_str());
-        return;
-    }
-    auto queryset = queryReader->GetVectorSet();
-
-    auto addReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
-    if (!fileexists(paddset.c_str()) || ErrorCode::Success != addReader->LoadFile(paddset))
-    {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Cannot find or load %s. Using random generation!\n",
-                     paddset.c_str());
-        return;
-    }
-    auto addset = addReader->GetVectorSet();
+    auto vecset = LoadVectorSet(pvecset, m_m);
+    auto queryset = LoadVectorSet(pqueryset, m_m);
+    auto addset = LoadVectorSet(paddset, m_m);
 
 
     DistCalcMethod distMethod;
@@ -141,8 +128,8 @@ void TestDataGenerator<T>::GenerateBatchTruth(const std::string &filename, std::
                                       COMMON::Utils::GetBase<T>(), 5);
     }
 
-    ByteArray tru = ByteArray::Alloc(2 * sizeof(float) * (batches + 1) * queryset->Count() * m_k);
-    int distbase = (batches + 1) * queryset->Count() * m_k;
+    ByteArray tru = ByteArray::Alloc((sizeof(float) + sizeof(SizeType)) * (batches + 1) * queryset->Count() * m_k);
+    int distbase = sizeof(SizeType) * (batches + 1) * queryset->Count() * m_k;
     int start = 0;
     int end = base;
     int maxthreads = std::thread::hardware_concurrency();
@@ -162,7 +149,7 @@ void TestDataGenerator<T>::GenerateBatchTruth(const std::string &filename, std::
                     if (i < queryset->Count())
                     {
                         SizeType *neighbors = ((SizeType *)tru.Data()) + iter * (queryset->Count() * m_k) + i * m_k;
-                        float *dists = ((float *)tru.Data()) + distbase + iter * (queryset->Count() * m_k) + i * m_k;
+                        float *dists = ((float *)(tru.Data() + distbase)) + iter * (queryset->Count() * m_k) + i * m_k;
                         COMMON::QueryResultSet<T> res((const T *)queryset->GetVector(i), m_k);
                         for (SizeType j = start; j < end; ++j)
                         {
@@ -198,232 +185,56 @@ void TestDataGenerator<T>::GenerateBatchTruth(const std::string &filename, std::
         start += batchdelete;
         end += batchinsert;
     }
-    auto truths = std::make_shared<BasicVectorSet>(tru, GetEnumValueType<float>(), m_k, 2 * (batches + 1) * queryset->Count());
+    auto truths = std::make_shared<BasicVectorSet>(tru, GetEnumValueType<float>(), m_k, ((sizeof(float) + sizeof(SizeType)) / sizeof(float)) * (batches + 1) * queryset->Count());
     truths->Save(filename);
 }
 
 template <typename T>
-void TestDataGenerator<T>::LoadOrGenerateBase(std::shared_ptr<VectorSet> &vecset, std::shared_ptr<MetadataSet> &metaset)
+float TestDataGenerator<T>::EvaluateRecall(const std::vector<SPTAG::QueryResult> &res, std::shared_ptr<SPTAG::VectorSet> &truth, int recallK, int k, int batch, int totalbatches)
 {
-    if (fileexists("perftest_vector.bin") && fileexists("perftest_meta.bin") && fileexists("perftest_metaidx.bin"))
+    if (!truth)
     {
-        auto reader = LoadReader("perftest_vector.bin");
-        vecset = reader->GetVectorSet();
-        metaset.reset(
-            new MemMetadataSet("perftest_meta.bin", "perftest_metaidx.bin", vecset->Count() * 2, MaxSize, 10));
-    }
-    else
-    {
-        if (m_isRandom)
-        {
-            vecset = GenerateRandomVectorSet(m_n, m_m);
-        }
-        else
-        {
-            vecset = GenerateLoadVectorSet(m_n, m_m, m_vectorPath, 0);
-        }
-        vecset->Save("perftest_vector.bin");
-
-        metaset = GenerateMetadataSet(m_n, 0);
-        metaset->SaveMetadata("perftest_meta.bin", "perftest_metaidx.bin");
-    }
-}
-
-template <typename T> void TestDataGenerator<T>::LoadOrGenerateQuery(std::shared_ptr<VectorSet> &queryset)
-{
-    if (fileexists("perftest_query.bin"))
-    {
-        auto reader = LoadReader("perftest_query.bin");
-        queryset = reader->GetVectorSet();
-    }
-    else
-    {
-        if (m_isRandom)
-        {
-            queryset = GenerateRandomVectorSet(m_q, m_m);
-        }
-        else
-        {
-            queryset = GenerateLoadVectorSet(m_q, m_m, m_queryPath, 0);
-        }
-        queryset->Save("perftest_query.bin");
-    }
-}
-
-template <typename T>
-void TestDataGenerator<T>::LoadOrGenerateAdd(std::shared_ptr<VectorSet> &addvecset,
-                                             std::shared_ptr<MetadataSet> &addmetaset)
-{
-    if (fileexists("perftest_addvector.bin") && fileexists("perftest_addmeta.bin") &&
-        fileexists("perftest_addmetaidx.bin"))
-    {
-        auto reader = LoadReader("perftest_addvector.bin");
-        addvecset = reader->GetVectorSet();
-        addmetaset.reset(
-            new MemMetadataSet("perftest_addmeta.bin", "perftest_addmetaidx.bin", addvecset->Count() * 2, MaxSize, 10));
-    }
-    else
-    {
-        if (m_isRandom)
-        {
-            addvecset = GenerateRandomVectorSet(m_a, m_m);
-        }
-        else
-        {
-            addvecset = GenerateLoadVectorSet(m_a, m_m, m_vectorPath, m_n);
-        }
-        addvecset->Save("perftest_addvector.bin");
-
-        addmetaset = GenerateMetadataSet(m_a, m_n);
-        addmetaset->SaveMetadata("perftest_addmeta.bin", "perftest_addmetaidx.bin");
-    }
-}
-
-template <typename T>
-void TestDataGenerator<T>::LoadOrGenerateTruth(const std::string &filename, std::shared_ptr<VectorSet> vecset,
-                                               std::shared_ptr<VectorSet> queryset, std::shared_ptr<VectorSet> &truth,
-                                               bool normalize)
-{
-    if (fileexists(filename.c_str()))
-    {
-        auto opts = std::make_shared<Helper::ReaderOptions>(GetEnumValueType<float>(), m_m, VectorFileType::DEFAULT);
-        auto reader = Helper::VectorSetReader::CreateInstance(opts);
-        if (ErrorCode::Success != reader->LoadFile(filename))
-        {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to read file %s\n", filename.c_str());
-            exit(1);
-        }
-        truth = reader->GetVectorSet();
-        return;
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Truth data is null. Cannot compute recall.\n");
+        return 0.0f;
     }
 
-    DistCalcMethod distMethod;
-    Helper::Convert::ConvertStringTo(m_distMethod.c_str(), distMethod);
-    if (normalize && distMethod == DistCalcMethod::Cosine)
+    recallK = min(recallK, static_cast<int>(truth->Dimension()));
+    float totalRecall = 0.0f;
+    float eps = 1e-4f;
+    SizeType distbase = truth->Count() - (totalbatches + 1) * res.size();
+    for (SizeType i = 0; i < res.size(); ++i)
     {
-        COMMON::Utils::BatchNormalize((T *)vecset->GetData(), vecset->Count(), vecset->Dimension(),
-                                      COMMON::Utils::GetBase<T>(), 5);
-    }
-
-    ByteArray tru = ByteArray::Alloc(sizeof(float) * queryset->Count() * m_k);
-    
-    std::vector<std::thread> mythreads;
-    int maxthreads = std::thread::hardware_concurrency();
-    mythreads.reserve(maxthreads);
-    std::atomic_size_t sent(0);
-    for (int tid = 0; tid < maxthreads; tid++)
-    {
-        mythreads.emplace_back([&, tid]() {
-            size_t i = 0;
-            while (true)
+        const SizeType *truthNN = reinterpret_cast<const SizeType *>(truth->GetData()) + batch * res.size() + i;
+        float *truthD = nullptr;
+        if (truth->Count() > distbase)
+        {
+            truthD = reinterpret_cast<float *>(truth->GetVector(distbase + batch * res.size() + i));
+        }
+        for (int j = 0; j < recallK; ++j)
+        {
+            SizeType truthVid = truthNN[j];
+            float truthDist = MaxDist;
+            if (truthD)
             {
-                i = sent.fetch_add(1);
-                if (i < queryset->Count())
+                truthDist = truthD[j];
+            }
+            
+            for (int l = 0; l < k; ++l)
+            {
+                const auto result = res[i].GetResult(l);
+                if (truthVid == result->VID ||
+                    std::fabs(truthDist - result->Dist) <= eps * (std::fabs(truthDist) + eps))
                 {
-                    SizeType *neighbors = ((SizeType *)tru.Data()) + i * m_k;
-                    COMMON::QueryResultSet<T> res((const T *)queryset->GetVector(i), m_k);
-                    for (SizeType j = 0; j < vecset->Count(); ++j)
-                    {
-                        float dist = COMMON::DistanceUtils::ComputeDistance(
-                            res.GetTarget(), reinterpret_cast<T *>(vecset->GetVector(j)), m_m, distMethod);
-                        res.AddPoint(j, dist);
-                    }
-                    res.SortResult();
-                    for (int j = 0; j < m_k; ++j)
-                        neighbors[j] = res.GetResult(j)->VID;
-                }
-                else
-                {
-                    return;
+                    totalRecall += 1.0f;
+                    break;
                 }
             }
-        });
-    }
-    for (auto &t : mythreads)
-    {
-        t.join();
-    }
-    mythreads.clear();
-
-    truth = std::make_shared<BasicVectorSet>(tru, GetEnumValueType<float>(), m_k, queryset->Count());
-    truth->Save(filename);
-}
-
-template <typename T>
-void TestDataGenerator<T>::LoadOrGenerateBatchTruth(const std::string &filename,
-                                                    std::shared_ptr<SPTAG::VectorSet> vecset,
-                                                    std::shared_ptr<SPTAG::VectorSet> queryset,
-                                                    std::shared_ptr<SPTAG::VectorSet> &truths, int base,
-                                                    int batchinsert, int batchdelete, int batches, bool normalize)
-{
-    if (fileexists(filename.c_str()))
-    {
-        auto opts = std::make_shared<Helper::ReaderOptions>(GetEnumValueType<float>(), m_m, VectorFileType::DEFAULT);
-        auto reader = Helper::VectorSetReader::CreateInstance(opts);
-        if (ErrorCode::Success != reader->LoadFile(filename))
-        {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to read file %s\n", filename.c_str());
-            exit(1);
         }
-        truths = reader->GetVectorSet();
-        return;
     }
 
-    DistCalcMethod distMethod;
-    Helper::Convert::ConvertStringTo(m_distMethod.c_str(), distMethod);
-    if (normalize && distMethod == DistCalcMethod::Cosine)
-    {
-        COMMON::Utils::BatchNormalize((T *)vecset->GetData(), vecset->Count(), vecset->Dimension(),
-                                      COMMON::Utils::GetBase<T>(), 5);
-    }
-
-    ByteArray tru = ByteArray::Alloc(sizeof(float) * (batches + 1) * queryset->Count() * m_k);
-    int start = 0;
-    int end = base;
-    int maxthreads = std::thread::hardware_concurrency();
-    for (int iter = 0; iter < batches + 1; iter++)
-    {
-        std::vector<std::thread> mythreads;
-        mythreads.reserve(maxthreads);
-        std::atomic_size_t sent(0);
-        for (int tid = 0; tid < maxthreads; tid++)
-        {
-            mythreads.emplace_back([&, tid]() {
-                size_t i = 0;
-                while (true)
-                {
-                    i = sent.fetch_add(1);
-                    if (i < queryset->Count())
-                    {
-                        SizeType *neighbors = ((SizeType *)tru.Data()) + iter * (queryset->Count() * m_k) + i * m_k;
-                        COMMON::QueryResultSet<T> res((const T *)queryset->GetVector(i), m_k);
-                        for (SizeType j = start; j < end; ++j)
-                        {
-                            float dist = COMMON::DistanceUtils::ComputeDistance(
-                                res.GetTarget(), reinterpret_cast<T *>(vecset->GetVector(j)), m_m, distMethod);
-                            res.AddPoint(j, dist);
-                        }
-                        res.SortResult();
-                        for (int j = 0; j < m_k; ++j)
-                            neighbors[j] = res.GetResult(j)->VID;
-                    }
-                    else
-                    {
-                        return;
-                    }
-                }
-            });
-        }
-        for (auto &t : mythreads)
-        {
-            t.join();
-        }
-        mythreads.clear();
-        start += batchdelete;
-        end += batchinsert;
-    }
-    truths = std::make_shared<BasicVectorSet>(tru, GetEnumValueType<float>(), m_k, (batches + 1) * queryset->Count());
-    truths->Save(filename);
+    float avgRecall = totalRecall / (res.size() * recallK);
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Recall %d@%d = %.4f\n", recallK, k, avgRecall);
+    return avgRecall;
 }
 
 template <typename T>
@@ -451,7 +262,7 @@ std::shared_ptr<MetadataSet> TestDataGenerator<T>::GenerateMetadataSet(SizeType 
         offset += id.length();
     }
     ((std::uint64_t *)metaoffset.Data())[count] = offset;
-    return std::make_shared<MemMetadataSet>(meta, metaoffset, count, count * 2, MaxSize, 10);
+    return std::make_shared<MemMetadataSet>(meta, metaoffset, count, 1024 * 1024, MaxSize, 10);
 }
 
 template <typename T>
@@ -486,28 +297,6 @@ std::shared_ptr<SPTAG::VectorSet> TestDataGenerator<T>::GenerateLoadVectorSet(SP
     return allVectors;
 }
 
-template <typename T>
-std::shared_ptr<VectorSet> TestDataGenerator<T>::CombineVectorSets(std::shared_ptr<VectorSet> base,
-                                                                   std::shared_ptr<VectorSet> add)
-{
-    ByteArray vec = ByteArray::Alloc(sizeof(T) * (base->Count() + add->Count()) * m_m);
-    memcpy(vec.Data(), base->GetData(), sizeof(T) * (base->Count()) * m_m);
-    memcpy(vec.Data() + sizeof(T) * (base->Count()) * m_m, add->GetData(), sizeof(T) * (add->Count()) * m_m);
-    return std::make_shared<BasicVectorSet>(vec, GetEnumValueType<T>(), m_m, base->Count() + add->Count());
-}
-
-template <typename T>
-std::shared_ptr<Helper::VectorSetReader> TestDataGenerator<T>::LoadReader(const std::string &filename)
-{
-    auto opts = std::make_shared<Helper::ReaderOptions>(GetEnumValueType<T>(), m_m, VectorFileType::DEFAULT);
-    auto reader = Helper::VectorSetReader::CreateInstance(opts);
-    if (ErrorCode::Success != reader->LoadFile(filename))
-    {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to read file %s\n", filename.c_str());
-        exit(1);
-    }
-    return reader;
-}
 
 // Explicit instantiation
 template class TestDataGenerator<int8_t>;

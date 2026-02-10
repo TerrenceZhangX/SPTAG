@@ -351,7 +351,7 @@ namespace SPTAG {
 
                     std::shared_ptr<VectorIndex> headIndex = p_index->GetMemoryIndex();
                     SizeType sampleSize = numQueries < 100 ? numQueries : 100;
-                    SizeType sampleK = headIndex->GetNumSamples() < 1000 ? headIndex->GetNumSamples() : 1000;
+                    int sampleK = (int)(headIndex->GetNumSamples() < 1000 ? headIndex->GetNumSamples() : 1000);
                     float sampleE = 1e-6f;
 
                     std::vector<SizeType> samples(sampleSize, 0);

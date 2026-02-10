@@ -35,7 +35,8 @@ void Search(std::shared_ptr<VectorIndex> &vecIndex, std::shared_ptr<VectorSet> &
               << (std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / (float)(queryset->Count()))
               << "us" << std::endl;
 
-    float eps = 1e-6f, recall = 0;
+    //float eps = 1e-6f;
+    float recall = 0;
 
     int truthDimension = min(k, truth->Dimension());
     for (SizeType i = 0; i < queryset->Count(); i++)
@@ -44,7 +45,7 @@ void Search(std::shared_ptr<VectorIndex> &vecIndex, std::shared_ptr<VectorSet> &
         std::vector<bool> visited(2 * k, false);
         for (int j = 0; j < truthDimension; j++)
         {
-            float truthdist = vecIndex->ComputeDistance(res[i].GetQuantizedTarget(), vecset->GetVector(nn[j]));
+            //float truthdist = vecIndex->ComputeDistance(res[i].GetQuantizedTarget(), vecset->GetVector(nn[j]));
             for (int l = 0; l < k * 2; l++)
             {
                 if (visited[l])

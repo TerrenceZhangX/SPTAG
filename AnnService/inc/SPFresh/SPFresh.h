@@ -931,7 +931,7 @@ namespace SPTAG {
 
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Start updating...\n");
 
-                int updateSize;
+                SizeType updateSize;
                 std::vector<SizeType> insertSet;
                 std::vector<SizeType> deleteSet;
                 std::vector<SizeType> mapping;

@@ -675,7 +675,7 @@ ErrorCode Index<T>::DebugSearchDiskIndex(QueryResult &p_query, int p_subInternal
 
     int partitions = (p_internalResultNum + p_subInternalResultNum - 1) / p_subInternalResultNum;
     float limitDist = p_query.GetResult(0)->Dist * m_options.m_maxDistRatio;
-    for (SizeType p = 0; p < partitions; p++)
+    for (int p = 0; p < partitions; p++)
     {
         int subInternalResultNum = min(p_subInternalResultNum, p_internalResultNum - p_subInternalResultNum * p);
 

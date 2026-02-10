@@ -52,7 +52,7 @@ class ToolOptions : public Helper::ReaderOptions
     std::string m_vectorPath = "";
     int baseNum = 1;
     int reserveNum = 1;
-    int updateSize = 1;
+    SizeType updateSize = 1;
     int batch = 1;
     bool genTrace = false;
     bool convertTruth = false;

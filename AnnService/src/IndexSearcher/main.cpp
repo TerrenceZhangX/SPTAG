@@ -195,7 +195,7 @@ template <typename T> int Process(std::shared_ptr<SearcherOptions> options, Vect
         totalRecall(maxCheck.size(), 0.0), totalLatency(maxCheck.size(), 0.0);
     for (int startQuery = 0; startQuery < queryVectors->Count(); startQuery += options->m_batch)
     {
-        int numQuerys = min(options->m_batch, queryVectors->Count() - startQuery);
+        int numQuerys = min(options->m_batch, (int)(queryVectors->Count() - startQuery));
         for (SizeType i = 0; i < numQuerys; i++)
             results[i].SetTarget(queryVectors->GetVector(startQuery + i));
         if (ftruth != nullptr)

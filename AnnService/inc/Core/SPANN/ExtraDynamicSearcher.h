@@ -2173,7 +2173,7 @@ namespace SPTAG::SPANN {
                         replicaCount[j] = 0;
                         size_t vecOffset = j * (size_t)m_opt->m_replicaCount;
                         if (headVectorIDS.count(j) == 0) {
-                            for (int resNum = 0; resNum < m_opt->m_replicaCount && selections[vecOffset + resNum].node != INT_MAX; resNum++) {
+                            for (int resNum = 0; resNum < m_opt->m_replicaCount && selections[vecOffset + resNum].node != MaxSize; resNum++) {
                                 ++postingListSize[selections[vecOffset + resNum].node];
                                 selections[vecOffset + resNum].tonode = j;
                                 ++replicaCount[j];

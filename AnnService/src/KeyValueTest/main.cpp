@@ -226,14 +226,14 @@ MultiGetTest:
     for (int iter = 0; iter < iter_num; iter++)
     {
         std::vector<std::thread> threads;
-        std::vector<int> thread_keys[thread_num];
+        std::vector<SizeType> thread_keys[thread_num];
         std::vector<bool> errors(thread_num);
         // 随机生成一些数据
         for (int i = 0; i < kv_num; i++)
         {
             values[i] = rand() % dataset_size;
         }
-        for (int i = 0; i < kv_num; i++)
+        for (SizeType i = 0; i < kv_num; i++)
         {
             int thread_id = rand() % thread_num;
             thread_keys[thread_id].push_back(i);
@@ -249,7 +249,7 @@ MultiGetTest:
                     fileIO.Put(key, dataset[values[key]], MaxTimeout, &(workspace.m_diskRequests));
                 }
                 std::vector<std::string> readValues;
-                std::vector<int> keys;
+                std::vector<SizeType> keys;
                 int num = thread_keys[i].size();
                 for (int k = 0; k < num; k += 256)
                 {
@@ -605,9 +605,9 @@ ConflictTest:
                     else if (is_read && batch_read)
                     {
                         std::vector<std::string> readValues;
-                        std::vector<int> keys;
+                        std::vector<SizeType> keys;
                         int num = 256;
-                        std::set<int> key_set;
+                        std::set<SizeType> key_set;
                         while (key_set.size() < num)
                         {
                             key_set.insert(rand() % kv_num);

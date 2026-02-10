@@ -18,20 +18,18 @@ namespace TestUtils {
         TestDataGenerator(int n, int q, int m, int k, std::string distMethod, int a = 0, bool isRandom = true,
                         std::string vectorPath = "", std::string queryPath = "");
 
-        void Run(std::shared_ptr<SPTAG::VectorSet>& vecset,
-            std::shared_ptr<SPTAG::MetadataSet>& metaset,
-            std::shared_ptr<SPTAG::VectorSet>& queryset,
-            std::shared_ptr<SPTAG::VectorSet>& truth,
-            std::shared_ptr<SPTAG::VectorSet>& addvecset,
-            std::shared_ptr<SPTAG::MetadataSet>& addmetaset,
-            std::shared_ptr<SPTAG::VectorSet>& addtruth);
-
         static std::shared_ptr<SPTAG::VectorSet> GenerateRandomVectorSet(SPTAG::SizeType count, SPTAG::DimensionType dim);
 
         static std::shared_ptr<SPTAG::MetadataSet> GenerateMetadataSet(SPTAG::SizeType count, SPTAG::SizeType offsetStart);
 
         static std::shared_ptr<SPTAG::VectorSet> GenerateLoadVectorSet(SPTAG::SizeType count, SPTAG::DimensionType dim,
                                                                        std::string path, SPTAG::SizeType start = 0);
+
+        static std::shared_ptr<SPTAG::VectorSet> LoadVectorSet(const std::string pvecset, SPTAG::DimensionType dim, SPTAG::SizeType start = 0, SPTAG::SizeType count = -1);
+
+        static std::shared_ptr<SPTAG::MetadataSet> LoadMetadataSet(const std::string pmetaset, const std::string pmetaidx, SPTAG::SizeType start = 0, SPTAG::SizeType count = -1);
+
+        static float EvaluateRecall(const std::vector<SPTAG::QueryResult> &res, std::shared_ptr<SPTAG::VectorSet> &truth, int recallK, int k, int batch, int totalbatches);
 
         void RunBatches(std::shared_ptr<SPTAG::VectorSet> &vecset, std::shared_ptr<SPTAG::MetadataSet> &metaset,
                         std::shared_ptr<SPTAG::VectorSet> &addvecset, std::shared_ptr<SPTAG::MetadataSet> &addmetaset,
@@ -49,29 +47,7 @@ namespace TestUtils {
         bool m_isRandom;
         std::string m_vectorPath, m_queryPath;
 
-        std::shared_ptr<SPTAG::Helper::VectorSetReader> LoadReader(const std::string& filename);
-
-        void LoadOrGenerateBase(std::shared_ptr<SPTAG::VectorSet>& vecset, std::shared_ptr<SPTAG::MetadataSet>& metaset);
-
-        void LoadOrGenerateQuery(std::shared_ptr<SPTAG::VectorSet>& queryset);
-
-        void LoadOrGenerateAdd(std::shared_ptr<SPTAG::VectorSet>& addvecset, std::shared_ptr<SPTAG::MetadataSet>& addmetaset);
-
-        void LoadOrGenerateTruth(const std::string& filename,
-            std::shared_ptr<SPTAG::VectorSet> vecset,
-            std::shared_ptr<SPTAG::VectorSet> queryset,
-            std::shared_ptr<SPTAG::VectorSet>& truth,
-            bool normalize);
-
-        void LoadOrGenerateBatchTruth(const std::string &filename, std::shared_ptr<SPTAG::VectorSet> vecset,
-                                      std::shared_ptr<SPTAG::VectorSet> queryset,
-                                      std::shared_ptr<SPTAG::VectorSet> &truths, int base, int batchinsert,
-                                      int batchdelete, int batches, bool normalize);
-
-        std::shared_ptr<SPTAG::VectorSet> CombineVectorSets(std::shared_ptr<SPTAG::VectorSet> base,
-            std::shared_ptr<SPTAG::VectorSet> additional);
-
-        void GenerateVectorSet(std::string &vecset, std::string &metaset, std::string &metaidx, std::string &vecPath,
+        void GenerateVectorSet(std::string &pvecset, std::string &pmetaset, std::string &pmetaidx, std::string &vecPath,
                                SPTAG::SizeType start, int count);
 
         void GenerateBatchTruth(const std::string &filename, std::string &pvecset, std::string &paddset, std::string &pqueryset,

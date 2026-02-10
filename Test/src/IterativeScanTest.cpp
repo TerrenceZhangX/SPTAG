@@ -133,55 +133,15 @@ template <typename T> void TestIterativeScan(IndexAlgoType algo, std::string dis
     SearchIterativeBatch<T>("testindices", query.data(), q, truthmeta1);
 }
 
-template <typename T>
-float EvaluateRecall(const std::vector<QueryResult> &res, std::shared_ptr<VectorIndex> &vecIndex,
-                     std::shared_ptr<VectorSet> &queryset, std::shared_ptr<VectorSet> &truth,
-                     std::shared_ptr<VectorSet> &baseVec, int k)
-{
-    if (!truth)
-    {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Truth data is null. Cannot compute recall.\n");
-        return 0.0f;
-    }
-
-    const SizeType recallK = min(k, static_cast<int>(truth->Dimension()));
-    float totalRecall = 0.0f;
-    float eps = 1e-4f;
-
-    for (SizeType i = 0; i < queryset->Count(); ++i)
-    {
-        const SizeType *truthNN = reinterpret_cast<const SizeType *>(truth->GetVector(i));
-        for (int j = 0; j < recallK; ++j)
-        {
-            SizeType truthVid = truthNN[j];
-            float truthDist = vecIndex->ComputeDistance(queryset->GetVector(i), baseVec->GetVector(truthVid));
-
-            for (int l = 0; l < k; ++l)
-            {
-                const auto result = res[i].GetResult(l);
-                if (truthVid == result->VID ||
-                    std::fabs(truthDist - result->Dist) <= eps * (std::fabs(truthDist) + eps))
-                {
-                    totalRecall += 1.0f;
-                    break;
-                }
-            }
-        }
-    }
-
-    float avgRecall = totalRecall / (queryset->Count() * recallK);
-    return avgRecall;
-}
-
 template <typename T> void TestIterativeScanRandom(IndexAlgoType algo, std::string distCalcMethod)
 {
     SizeType n = 50000, q = 3, k = 5;
     DimensionType m = 128;
-    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset, addtruth;
+    std::shared_ptr<VectorSet> vecset, queryset, truth, addvecset;
     std::shared_ptr<MetadataSet> metaset, addmetaset;
 
     TestUtils::TestDataGenerator<int8_t> generator(n, q, m, k, distCalcMethod);
-    generator.Run(vecset, metaset, queryset, truth, addvecset, addmetaset, addtruth);
+    generator.RunBatches(vecset, metaset, addvecset, addmetaset, queryset, n, n, 0, 1, truth);
 
     BuildIndex<T>(algo, distCalcMethod, vecset, metaset, "testindices");
     std::shared_ptr<VectorIndex> vecIndex;
@@ -218,8 +178,8 @@ template <typename T> void TestIterativeScanRandom(IndexAlgoType algo, std::stri
 
         std::cout << "TopK scanned:" << scanned << " Iterator scanned:" << iterscanned << std::endl;
     }
-    std::cout << "TopK Recall:" << EvaluateRecall<T>(res, vecIndex, queryset, truth, vecset, k)
-              << " Iterator Recall:" << EvaluateRecall<T>(resiter, vecIndex, queryset, truth, vecset, k) << std::endl;
+    std::cout << "TopK Recall:" << TestUtils::TestDataGenerator<T>::EvaluateRecall(res, truth, k, k, 0, 1)
+              << " Iterator Recall:" << TestUtils::TestDataGenerator<T>::EvaluateRecall(resiter, truth, k, k, 0, 1) << std::endl;
 }
 
 BOOST_AUTO_TEST_SUITE(IterativeScanTest)
