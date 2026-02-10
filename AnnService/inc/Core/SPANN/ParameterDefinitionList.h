@@ -32,8 +32,8 @@ DefineBasicParameter(m_ssdIndex, std::string, std::string("SPTAGFullList.bin"), 
 DefineBasicParameter(m_deleteHeadVectors, bool, false, "DeleteHeadVectors")
 DefineBasicParameter(m_ssdIndexFileNum, int, 1, "SSDIndexFileNum")
 DefineBasicParameter(m_quantizerFilePath, std::string, std::string(), "QuantizerFilePath")
-DefineBasicParameter(m_datasetRowsInBlock, int, 1024 * 1024, "DataBlockSize")
-DefineBasicParameter(m_datasetCapacity, int, SPTAG::MaxSize, "DataCapacity")
+DefineBasicParameter(m_datasetRowsInBlock, SizeType, 1024 * 1024, "DataBlockSize")
+DefineBasicParameter(m_datasetCapacity, SizeType, SPTAG::MaxSize, "DataCapacity")
 #endif
 
 #ifdef DefineSelectHeadParameter
@@ -58,7 +58,7 @@ DefineSelectHeadParameter(m_splitFactor, int, 5, "SplitFactor")
 DefineSelectHeadParameter(m_splitThreshold, int, 25, "SplitThreshold")
 DefineSelectHeadParameter(m_maxRandomTryCount, int, 8, "SplitMaxTry")
 DefineSelectHeadParameter(m_ratio, double, 0.2, "Ratio")
-DefineSelectHeadParameter(m_headVectorCount, int, 0, "Count")
+DefineSelectHeadParameter(m_headVectorCount, SizeType, 0, "Count")
 DefineSelectHeadParameter(m_recursiveCheckSmallCluster, bool, true, "RecursiveCheckSmallCluster")
 DefineSelectHeadParameter(m_printSizeCount, bool, true, "PrintSizeCount")
 DefineSelectHeadParameter(m_selectType, std::string, "BKT", "SelectHeadType")
@@ -199,7 +199,7 @@ DefineSSDParameter(m_recovery, bool, false, "Recovery")
 DefineSSDParameter(m_maxFileSize, int, 300, "MaxFileSizeGB")
 DefineSSDParameter(m_startFileSize, int, 10, "StartFileSizeGB")
 DefineSSDParameter(m_growthFileSize, int, 10, "GrowthFileSizeGB")
-DefineSSDParameter(m_growThreshold, float, 0.05, "GrowthThreshold")
+DefineSSDParameter(m_growThreshold, float, 0.05F, "GrowthThreshold")
 DefineSSDParameter(m_fDeletePercentageForRefine, float, 0.4F, "DeletePercentageForRefine") // Mutable
 DefineSSDParameter(m_oneClusterCutMax, bool, false, "OneClusterCutMax") // Mutable
 DefineSSDParameter(m_asyncMergeInSearch, bool, true, "AsyncMergeInSearch") // Mutable

@@ -51,6 +51,10 @@ public:
     FileMetadataSet(const std::string& p_metaFile, const std::string& p_metaindexFile, 
         std::uint64_t p_blockSize = 1024 * 1024, std::uint64_t p_capacity = MaxSize, std::uint64_t p_metaSize = 10);
     
+    FileMetadataSet(std::shared_ptr<Helper::DiskIO> p_metain, std::shared_ptr<Helper::DiskIO> p_metaindexin,
+                    std::uint64_t p_blockSize = 1024 * 1024, std::uint64_t p_capacity = MaxSize,
+                    std::uint64_t p_metaSize = 10);
+
     ~FileMetadataSet();
 
     ByteArray GetMetadata(SizeType p_vectorID) const;
@@ -93,7 +97,7 @@ public:
         std::uint64_t p_blockSize, std::uint64_t p_capacity, std::uint64_t p_metaSize);
 
     MemMetadataSet(const std::string& p_metafile, const std::string& p_metaindexfile, 
-        std::uint64_t p_blockSize, std::uint64_t p_capacity, std::uint64_t p_metaSize, int start = 0, int count = -1);
+        std::uint64_t p_blockSize, std::uint64_t p_capacity, std::uint64_t p_metaSize, SizeType start = 0, SizeType count = -1);
 
     MemMetadataSet(std::shared_ptr<Helper::DiskIO> p_metain, std::shared_ptr<Helper::DiskIO> p_metaindexin, 
         std::uint64_t p_blockSize, std::uint64_t p_capacity, std::uint64_t p_metaSize);
@@ -118,7 +122,7 @@ public:
 
 private:
     ErrorCode Init(std::shared_ptr<Helper::DiskIO> p_metain, std::shared_ptr<Helper::DiskIO> p_metaindexin,
-                 std::uint64_t p_blockSize, std::uint64_t p_capacity, std::uint64_t p_metaSize, int start = 0, int count = -1);
+                 std::uint64_t p_blockSize, std::uint64_t p_capacity, std::uint64_t p_metaSize, SizeType start = 0, SizeType count = -1);
 
     std::shared_ptr<void> m_lock;
 

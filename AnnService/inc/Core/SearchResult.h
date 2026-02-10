@@ -36,12 +36,12 @@ namespace SPTAG
 
     struct EdgeCompare
     {
-        inline bool operator()(const Edge& a, int b) const
+        inline bool operator()(const Edge& a, SizeType b) const
         {
             return a.node < b;
         };
 
-        inline bool operator()(int a, const Edge& b) const
+        inline bool operator()(SizeType a, const Edge& b) const
         {
             return a < b.node;
         };

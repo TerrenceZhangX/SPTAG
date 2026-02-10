@@ -243,7 +243,7 @@ namespace SPTAG {
                 }
             }
 
-            std::vector<int> m_postingIDs;
+            std::vector<SizeType> m_postingIDs;
 
             COMMON::OptHashPosVector m_deduper;
 
@@ -293,7 +293,7 @@ namespace SPTAG {
             virtual ErrorCode SearchIndex(ExtraWorkSpace* p_exWorkSpace,
                 QueryResult& p_queryResults,
                 std::shared_ptr<VectorIndex> p_index,
-                SearchStats* p_stats, std::set<int>* truth = nullptr, std::map<int, std::set<int>>* found = nullptr) = 0;
+                SearchStats* p_stats, std::set<SizeType>* truth = nullptr, std::map<SizeType, std::set<SizeType>>* found = nullptr) = 0;
 
             virtual ErrorCode SearchIterativeNext(ExtraWorkSpace* p_exWorkSpace, QueryResult& p_headResults,
                 QueryResult& p_queryResults,

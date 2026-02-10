@@ -20,9 +20,9 @@ namespace SPTAG
             {
             private:
                 std::uint64_t m_size = 0;
-                std::uint64_t m_maxSize;
-                std::uint64_t m_blockSize;
-                int m_blockSizeEx;
+                std::uint64_t m_maxSize = 0;
+                std::uint64_t m_blockSize = 0;
+                int m_blockSizeEx = 0;
                 std::vector<T*> m_blocks;
                 Concurrent::SpinLock m_lock;
 

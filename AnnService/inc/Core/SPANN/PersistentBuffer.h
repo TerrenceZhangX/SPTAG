@@ -50,7 +50,7 @@ namespace SPTAG {
 
         private:
             std::shared_ptr<Helper::KeyValueIO> db;
-            std::atomic_int _size;
+            std::atomic<SizeType> _size;
         };
     }
 }

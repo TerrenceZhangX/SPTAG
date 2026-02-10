@@ -22,7 +22,7 @@ namespace SPTAG::SPANN {
     class FileIO : public Helper::KeyValueIO {
         class BlockController {
         private:
-            char m_filePath[1024];
+            char m_filePath[1024] = "";
             std::shared_ptr <Helper::DiskIO> m_fileHandle = nullptr;
 
             Helper::Concurrent::ConcurrentQueue<AddressType> m_blockAddresses;
@@ -37,11 +37,11 @@ namespace SPTAG::SPANN {
 	        std::atomic<int64_t> write_bytes_vec = 0;
 	        std::atomic<int64_t> read_blocks_time_vec = 0;
 
-            float m_growthThreshold = 0.05;
+            float m_growthThreshold = 0.05F;
             AddressType m_growthBlocks = 0;
             AddressType m_maxBlocks = 0;
             int m_batchSize = 64;
-            int m_preIOCompleteCount = 0;
+            int64_t m_preIOCompleteCount = 0;
             int64_t m_preIOBytes = 0;
             bool m_disableCheckpoint = false;
 
@@ -134,7 +134,7 @@ namespace SPTAG::SPANN {
                 return ErrorCode::Success;
             }
 
-	        ErrorCode LoadBlockPool(std::string prefix, AddressType startNumBlocks, bool allowInit, int blockSize, int blockCapacity) {
+	        ErrorCode LoadBlockPool(std::string prefix, AddressType startNumBlocks, bool allowInit, SizeType blockSize, SizeType blockCapacity) {
 	            std::string blockfile = prefix + "_blockpool";
                 if (allowInit && !fileexists(blockfile.c_str())) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "FileIO::BlockController::LoadBlockPool: initializing fresh pool (no existing file found: %s)\n", blockfile.c_str());
@@ -306,7 +306,7 @@ namespace SPTAG::SPANN {
                 auto it = cache.find(key);
                 if (it != cache.end()) {
                     if (put_size > limit) {
-                        evict(key, it->second.value.data(), it->second.value.size(), it);
+                        evict(key, it->second.value.data(), (int)(it->second.value.size()), it);
                         return false;
                     }
                     keys.splice(keys.begin(), keys, it->second.iter);
@@ -316,8 +316,8 @@ namespace SPTAG::SPANN {
                     while ((int)(capacity - size) < delta_size && (keys.size() > 1)) {
                         auto last = keys.back();
                         auto lastit = cache.find(last);
-                        if (!evict(last, lastit->second.value.data(), lastit->second.value.size(), lastit)) {
-                            evict(key, it->second.value.data(), it->second.value.size(), it);
+                        if (!evict(last, lastit->second.value.data(), (int)(lastit->second.value.size()), lastit)) {
+                            evict(key, it->second.value.data(), (int)(it->second.value.size()), it);
                             return false;
                         }
                     }
@@ -332,7 +332,7 @@ namespace SPTAG::SPANN {
                 while (put_size > (int)(capacity - size) && (!keys.empty())) {
                     auto last = keys.back();
                     auto lastit = cache.find(last);
-                    if (!evict(last, lastit->second.value.data(), lastit->second.value.size(), lastit)) {
+                    if (!evict(last, lastit->second.value.data(), (int)(lastit->second.value.size()), lastit)) {
                         return false;
                     }
                 }
@@ -360,7 +360,7 @@ namespace SPTAG::SPANN {
                     // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "LRUCache: merge key not found\n");
                     ErrorCode ret;
                     if ((ret = fileIO->Get(key, pageBuffer, MaxTimeout, &reqs, false)) != ErrorCode::Success || 
-                        !checksum(pageBuffer.GetBuffer(), pageBuffer.GetAvailableSize())) {
+                        !checksum(pageBuffer.GetBuffer(), (int)(pageBuffer.GetAvailableSize()))) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "LRUCache: merge key %d not found in file or checksum issue = %d\n", key, (int)(ret == ErrorCode::Success));
                         return false;  // If the key does not exist, return false
                     }
@@ -371,7 +371,7 @@ namespace SPTAG::SPANN {
                     {
                         auto last = keys.back();
                         auto lastit = cache.find(last);
-                        if (!evict(last, lastit->second.value.data(), lastit->second.value.size(), lastit))
+                        if (!evict(last, lastit->second.value.data(), (int)(lastit->second.value.size()), lastit))
                         {
                             return false;
                         }
@@ -383,7 +383,7 @@ namespace SPTAG::SPANN {
                 }
 
                 if (merge_size + it->second.value.size() > limit) {
-                    evict(key, it->second.value.data(), it->second.value.size(), it);
+                    evict(key, it->second.value.data(), (int)(it->second.value.size()), it);
                     // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "LRUCache: merge size exceeded\n");
                     return false;
                 }
@@ -392,8 +392,8 @@ namespace SPTAG::SPANN {
                 while((int)(capacity - size) < merge_size && (keys.size() > 1)) {
                     auto last = keys.back();
                     auto lastit = cache.find(last);
-                    if (!evict(last, lastit->second.value.data(), lastit->second.value.size(), lastit)) {
-                        evict(key, it->second.value.data(), it->second.value.size(), it);
+                    if (!evict(last, lastit->second.value.data(), (int)(lastit->second.value.size()), lastit)) {
+                        evict(key, it->second.value.data(), (int)(it->second.value.size()), it);
                         return false;
                     }
                 }
@@ -780,7 +780,7 @@ namespace SPTAG::SPANN {
                 return ErrorCode::Posting_OverFlow;
             }
             // Calculate whether more mapping blocks are needed
-            int delta = key + 1 - m_pBlockMapping.R();
+            SizeType delta = key + 1 - m_pBlockMapping.R();
             if (delta > 0) {
                 // std::lock_guard<std::mutex> lock(m_updateMutex);
                 m_updateMutex.lock();
@@ -797,7 +797,7 @@ namespace SPTAG::SPANN {
                 lock = &(m_pShardedLRUCache->getlock(key));
                 lock->lock();
             
-                if (m_pShardedLRUCache->put(key, (void *)(value.data()), (SPTAG::SizeType)(value.size())))
+                if (m_pShardedLRUCache->put(key, (void *)(value.data()), (int)(value.size())))
                 {
                     if (At(key) == 0xffffffffffffffff)
                     {
@@ -815,7 +815,7 @@ namespace SPTAG::SPANN {
                         At(key) = tmpblocks;
                     }
                     int64_t *postingSize = (int64_t *)At(key);
-                    int oldblocks = (*postingSize < 0) ? 0 : ((*postingSize + PageSize - 1) >> PageSizeEx);
+                    int oldblocks = (int)((*postingSize < 0) ? 0 : ((*postingSize + PageSize - 1) >> PageSizeEx));
                     if (blocks - oldblocks > 0)
                     {
                         if (!m_pBlockController.GetBlocks(postingSize + oldblocks + 1, blocks - oldblocks))
@@ -899,7 +899,7 @@ namespace SPTAG::SPANN {
                 }
 
                 // Release the original blocks
-                m_pBlockController.ReleaseBlocks(postingSize + 1, (*postingSize + PageSize - 1) >> PageSizeEx);
+                m_pBlockController.ReleaseBlocks(postingSize + 1, (int)((*postingSize + PageSize - 1) >> PageSizeEx));
                 while (InterlockedCompareExchange(&At(key), partialtmpblocks, (uintptr_t)postingSize) != (uintptr_t)postingSize) {
                     postingSize = (int64_t*)At(key);
                 }
@@ -934,7 +934,7 @@ namespace SPTAG::SPANN {
                 return ErrorCode::Posting_SizeError;
             }
 
-            int blocks = ((*postingSize + PageSize - 1) >> PageSizeEx);
+            int blocks = (int)(((*postingSize + PageSize - 1) >> PageSizeEx));
             for (int i = 1; i <= blocks; i++)
             {
                 if (postingSize[i] < 0 || postingSize[i] >= m_pBlockController.TotalBlocks())
@@ -1005,7 +1005,7 @@ namespace SPTAG::SPANN {
             }
 
             auto newSize = *postingSize + value.size();
-            int newblocks = ((newSize + PageSize - 1) >> PageSizeEx);
+            int newblocks = (int)(((newSize + PageSize - 1) >> PageSizeEx));
             if (newblocks >= m_blockLimit) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
                     "[Merge] Key %d failed: new size %lld bytes requires %d blocks (limit: %d)\n",
@@ -1017,9 +1017,9 @@ namespace SPTAG::SPANN {
                 if (lock) lock->unlock();
                 return ErrorCode::Posting_OverFlow;
             }
-            if (m_pShardedLRUCache && m_pShardedLRUCache->merge(key, (void *)(value.data()), value.size(), checksum))
+            if (m_pShardedLRUCache && m_pShardedLRUCache->merge(key, (void *)(value.data()), (int)(value.size()), checksum))
             {
-                int oldblocks = ((*postingSize + PageSize - 1) >> PageSizeEx);
+                int oldblocks = (int)(((*postingSize + PageSize - 1) >> PageSizeEx));
                 int allocblocks = newblocks - oldblocks;
                 if (allocblocks > 0 && !m_pBlockController.GetBlocks(postingSize + 1 + oldblocks, allocblocks))
                 {
@@ -1034,7 +1034,7 @@ namespace SPTAG::SPANN {
 
             postingSize = (int64_t *)At(key);
             auto sizeInPage = (*postingSize) % PageSize;    // Actual size of the last block
-            int oldblocks = (*postingSize >> PageSizeEx);
+            int oldblocks = (int)(*postingSize >> PageSizeEx);
             int allocblocks = newblocks - oldblocks;
             // If the last block is not full, we need to read it first, then append the new data, and write it back.
             if (sizeInPage != 0) {
@@ -1121,7 +1121,7 @@ namespace SPTAG::SPANN {
                 return ErrorCode::Key_NotFound;
             }
 
-            int blocks = ((*postingSize + PageSize - 1) >> PageSizeEx);
+            int blocks = (int)((*postingSize + PageSize - 1) >> PageSizeEx);
             m_pBlockController.ReleaseBlocks(postingSize + 1, blocks);
             m_buffer.push((uintptr_t)postingSize);
             //m_key_reserve.push(key);

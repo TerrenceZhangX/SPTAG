@@ -64,8 +64,7 @@ namespace SPTAG
 
             virtual float GraphAccuracyEstimation(VectorIndex* index, const SizeType samples, const std::unordered_map<SizeType, SizeType>* idmap = nullptr)
             {
-                DimensionType* correct = new DimensionType[samples];
-
+                std::vector<DimensionType> correct(samples, 0);
                 std::vector<std::thread> mythreads;
                 mythreads.reserve(m_iThreadNum);
                 std::atomic_size_t sent(0);
@@ -123,9 +122,8 @@ namespace SPTAG
                 mythreads.clear();
 
                 float acc = 0;
-                for (SizeType i = 0; i < samples; i++) acc += float(correct[i]);
+                for (SizeType i = 0; i < samples; i++) acc += (float)(correct[i]);
                 acc = acc / samples / m_iNeighborhoodSize;
-                delete[] correct;
                 return acc;
             }
 

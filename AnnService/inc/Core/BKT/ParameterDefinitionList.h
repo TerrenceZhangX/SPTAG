@@ -47,8 +47,8 @@ DefineBKTParameter(m_iThresholdOfNumberOfContinuousNoBetterPropagation, int, 3L,
 DefineBKTParameter(m_iNumberOfInitialDynamicPivots, int, 50L, "NumberOfInitialDynamicPivots")
 DefineBKTParameter(m_iNumberOfOtherDynamicPivots, int, 4L, "NumberOfOtherDynamicPivots")
 DefineBKTParameter(m_iHashTableExp, int, 2L, "HashTableExponent")
-DefineBKTParameter(m_iDataBlockSize, int, 1024 * 1024, "DataBlockSize")
-DefineBKTParameter(m_iDataCapacity, int, MaxSize, "DataCapacity")
+DefineBKTParameter(m_iDataBlockSize, SizeType, 1024 * 1024, "DataBlockSize")
+DefineBKTParameter(m_iDataCapacity, SizeType, MaxSize, "DataCapacity")
 DefineBKTParameter(m_iMetaRecordSize, int, 10, "MetaRecordSize")
 
 #endif

@@ -121,7 +121,7 @@ namespace SPTAG
         for (int i = 0; i < listInfo->listEleCount; i++) { \
             uint64_t offsetVectorID, offsetVector;\
             (this->*m_parsePosting)(offsetVectorID, offsetVector, i, listInfo->listEleCount);\
-            int vectorID = *(reinterpret_cast<int*>(p_postingListFullData + offsetVectorID));\
+            SizeType vectorID = *(reinterpret_cast<SizeType*>(p_postingListFullData + offsetVectorID));\
             if (p_exWorkSpace->m_deduper.CheckAndSet(vectorID)) { listElements--; continue; } \
             (this->*m_parseEncoding)(p_index, listInfo, (ValueType*)(p_postingListFullData + offsetVector));\
             auto distance2leaf = p_index->ComputeDistance(queryResults.GetQuantizedTarget(), p_postingListFullData + offsetVector); \
@@ -133,7 +133,7 @@ namespace SPTAG
             uint64_t offsetVectorID, offsetVector;\
             (this->*m_parsePosting)(offsetVectorID, offsetVector, p_exWorkSpace->m_offset, listInfo->listEleCount);\
             p_exWorkSpace->m_offset++;\
-            int vectorID = *(reinterpret_cast<int*>(p_postingListFullData + offsetVectorID));\
+            SizeType vectorID = *(reinterpret_cast<SizeType*>(p_postingListFullData + offsetVectorID));\
             if (p_exWorkSpace->m_deduper.CheckAndSet(vectorID)) continue; \
             if (p_exWorkSpace->m_filterFunc != nullptr && !p_exWorkSpace->m_filterFunc(p_spann->GetMetadata(vectorID))) continue; \
             (this->*m_parseEncoding)(p_index, listInfo, (ValueType*)(p_postingListFullData + offsetVector));\
@@ -261,7 +261,7 @@ namespace SPTAG
                 QueryResult& p_queryResults,
                 std::shared_ptr<VectorIndex> p_index,
                 SearchStats* p_stats,
-                std::set<int>* truth, std::map<int, std::set<int>>* found)
+                std::set<SizeType>* truth, std::map<SizeType, std::set<SizeType>>* found)
             {
                 const uint32_t postingListCount = static_cast<uint32_t>(p_exWorkSpace->m_postingIDs.size());
 
@@ -393,8 +393,8 @@ namespace SPTAG
                         }
 
                         for (size_t i = 0; i < listInfo->listEleCount; ++i) {
-                            uint64_t offsetVectorID = m_enablePostingListRearrange ? (m_vectorInfoSize - sizeof(int)) * listInfo->listEleCount + sizeof(int) * i : m_vectorInfoSize * i; \
-                            int vectorID = *(reinterpret_cast<int*>(p_postingListFullData + offsetVectorID)); \
+                            uint64_t offsetVectorID = m_enablePostingListRearrange ? (m_vectorInfoSize - sizeof(SizeType)) * listInfo->listEleCount + sizeof(SizeType) * i : m_vectorInfoSize * i; \
+                            SizeType vectorID = *(reinterpret_cast<SizeType*>(p_postingListFullData + offsetVectorID)); \
                             if (truth && truth->count(vectorID)) (*found)[curPostingID].insert(vectorID);
                         }
                     }
@@ -606,8 +606,8 @@ namespace SPTAG
                     std::string vectorID("");
                     std::string vector("");
 
-                    int vid = p_selections[selectIdx++].tonode;
-                    vectorID.append(reinterpret_cast<char *>(&vid), sizeof(int));
+                    SizeType vid = p_selections[selectIdx++].tonode;
+                    vectorID.append(reinterpret_cast<char *>(&vid), sizeof(SizeType));
 
                     ValueType *p_vector = reinterpret_cast<ValueType *>(p_fullVectors->GetVector(vid));
                     if (p_enableDeltaEncoding)
@@ -663,7 +663,7 @@ namespace SPTAG
                 {
                     headVectorIDS[static_cast<SizeType>(*(p_vectorTranslateMap[i]))] = i;
                 }
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Loaded %u Vector IDs\n", static_cast<uint32_t>(headVectorIDS.size()));
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Loaded %lld Vector IDs\n", static_cast<std::int64_t>(headVectorIDS.size()));
 
                 SizeType fullCount = 0;
                 size_t vectorInfoSize = 0;
@@ -719,7 +719,7 @@ namespace SPTAG
                         }
 
                         int sampleNum = 0;
-                        for (int j = start; j < end && sampleNum < sampleSize; j++)
+                        for (SizeType j = start; j < end && sampleNum < sampleSize; j++)
                         {
                             if (headVectorIDS.count(j) == 0) samples[sampleNum++] = j - start;
                         }
@@ -730,7 +730,7 @@ namespace SPTAG
                             COMMON::Utils::atomic_float_add(&acc, COMMON::TruthSet::CalculateRecall(p_headIndex.get(), fullVectors->GetVector(samples[j]), candidateNum));
                         }
                         acc = acc / sampleNum;
-                        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Batch %d vector(%d,%d) loaded with %d vectors (%zu) HeadIndex acc @%d:%f.\n", i, start, end, fullVectors->Count(), selections.m_selections.size(), candidateNum, acc);
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Batch %d vector(%lld,%lld) loaded with %lld vectors (%zu) HeadIndex acc @%d:%f.\n", i, (std::int64_t)start, (std::int64_t)end, (std::int64_t)(fullVectors->Count()), selections.m_selections.size(), candidateNum, acc);
 
                         p_headIndex->ApproximateRNG(fullVectors, emptySet, candidateNum, selections.m_selections.data(), p_opt.m_replicaCount, numThreads, p_opt.m_gpuSSDNumTrees, p_opt.m_gpuSSDLeafSize, p_opt.m_rngFactor, p_opt.m_numGPUs);
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Batch %d finished!\n", i);
@@ -790,17 +790,16 @@ namespace SPTAG
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Posting size limit: %d\n", postingSizeLimit);
 
                 {
-                    std::vector<int> replicaCountDist(p_opt.m_replicaCount + 1, 0);
-                    for (int i = 0; i < replicaCount.size(); ++i)
+                    std::vector<SizeType> replicaCountDist(p_opt.m_replicaCount + 1, 0);
+                    for (SizeType i = 0; i < replicaCount.size(); ++i)
                     {
-                        if (headVectorIDS.count(i) > 0) continue;
                         ++replicaCountDist[replicaCount[i]];
                     }
 
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Before Posting Cut:\n");
                     for (int i = 0; i < replicaCountDist.size(); ++i)
                     {
-                        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Replica Count Dist: %d, %d\n", i, replicaCountDist[i]);
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Replica Count Dist: %d, %lld\n", i, (std::int64_t)replicaCountDist[i]);
                     }
                 }
                 {
@@ -846,32 +845,21 @@ namespace SPTAG
                 }
                 if (p_opt.m_outputEmptyReplicaID)
                 {
-                    std::vector<int> replicaCountDist(p_opt.m_replicaCount + 1, 0);
+                    std::vector<SizeType> replicaCountDist(p_opt.m_replicaCount + 1, 0);
                     auto ptr = SPTAG::f_createIO();
                     if (ptr == nullptr || !ptr->Initialize("EmptyReplicaID.bin", std::ios::binary | std::ios::out)) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to create EmptyReplicaID.bin!\n");
                         return false;
                     }
-                    for (int i = 0; i < replicaCount.size(); ++i)
+                    for (SizeType i = 0; i < replicaCount.size(); ++i)
                     {
-                        if (headVectorIDS.count(i) > 0) continue;
-
                         ++replicaCountDist[replicaCount[i]];
-
-                        if (replicaCount[i] < 2)
-                        {
-                            long long vid = i;
-                            if (ptr->WriteBinary(sizeof(vid), reinterpret_cast<char*>(&vid)) != sizeof(vid)) {
-                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failt to write EmptyReplicaID.bin!");
-                                return false;
-                            }
-                        }
                     }
 
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "After Posting Cut:\n");
                     for (int i = 0; i < replicaCountDist.size(); ++i)
                     {
-                        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Replica Count Dist: %d, %d\n", i, replicaCountDist[i]);
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Replica Count Dist: %d, %lld\n", i, (std::int64_t)(replicaCountDist[i]));
                     }
                 }
 
@@ -992,8 +980,8 @@ namespace SPTAG
                                         {
                                             SPTAGLIB_LOG(
                                                 Helper::LogLevel::LL_Info,
-                                                "Posting list %d/%d, compressed size: %d, compression ratio: %.4f\n",
-                                                postingListId, postingListSize.size(), curPostingListBytes[j],
+                                                "Posting list %lld/%zu, compressed size: %d, compression ratio: %.4f\n",
+                                                (std::int64_t)postingListId, postingListSize.size(), curPostingListBytes[j],
                                                 curPostingListBytes[j] / float(sizeToCompress));
                                         }
                                     }
@@ -1117,7 +1105,7 @@ namespace SPTAG
                     {
                             uint64_t offsetVectorID, offsetVector; 
                             (this->*m_parsePosting)(offsetVectorID, offsetVector, i, listInfo->listEleCount); 
-                            int vectorID = *(reinterpret_cast<int*>(p_postingListFullData + offsetVectorID)); 
+                            SizeType vectorID = *(reinterpret_cast<SizeType*>(p_postingListFullData + offsetVectorID)); 
                             (this->*m_parseEncoding)(p_index, listInfo, (ValueType*)(p_postingListFullData + offsetVector)); 
                             VIDs[i] = vectorID;
                             auto outVec = vecs->GetVector(i);
@@ -1155,7 +1143,7 @@ namespace SPTAG
                 {
                     uint64_t offsetVectorID, offsetVector;
                     (this->*m_parsePosting)(offsetVectorID, offsetVector, i, listInfo->listEleCount);
-                    int vectorID = *(reinterpret_cast<int*>(p_postingListFullData + offsetVectorID));
+                    SizeType vectorID = *(reinterpret_cast<SizeType*>(p_postingListFullData + offsetVectorID));
                     (this->*m_parseEncoding)(p_index, listInfo, (ValueType*)(p_postingListFullData + offsetVector));
                     VIDs[i] = vectorID;
                     auto outVec = vecs->GetVector(i);
@@ -1188,9 +1176,9 @@ namespace SPTAG
                 }
                 m_pCompressor = std::make_unique<Compressor>(); // no need compress level to decompress
 
-                int m_listCount;
-                int m_totalDocumentCount;
-                int m_listPageOffset;
+                SizeType m_listCount;
+                SizeType m_totalDocumentCount;
+                SizeType m_listPageOffset;
 
                 if (ptr->ReadBinary(sizeof(m_listCount), reinterpret_cast<char*>(&m_listCount)) != sizeof(m_listCount)) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to read head info file!\n");
@@ -1209,8 +1197,8 @@ namespace SPTAG
                     throw std::runtime_error("Failed read file in LoadingHeadInfo");
                 }
 
-                if (m_vectorInfoSize == 0) m_vectorInfoSize = m_iDataDimension * sizeof(ValueType) + sizeof(int);
-                else if (m_vectorInfoSize != m_iDataDimension * sizeof(ValueType) + sizeof(int)) {
+                if (m_vectorInfoSize == 0) m_vectorInfoSize = m_iDataDimension * sizeof(ValueType) + sizeof(SizeType);
+                else if (m_vectorInfoSize != m_iDataDimension * sizeof(ValueType) + sizeof(SizeType)) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to read head info file! DataDimension and ValueType are not match!\n");
                     throw std::runtime_error("DataDimension and ValueType don't match in LoadingHeadInfo");
                 }
@@ -1301,11 +1289,11 @@ namespace SPTAG
                 }
 
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                    "Finish reading header info, list count %d, total doc count %d, dimension %d, list page offset %d.\n",
-                    m_listCount,
-                    m_totalDocumentCount,
+                    "Finish reading header info, list count %lld, total doc count %lld, dimension %d, list page offset %lld.\n",
+                    (std::int64_t)m_listCount,
+                    (std::int64_t)m_totalDocumentCount,
                     m_iDataDimension,
-                    m_listPageOffset);
+                    (std::int64_t)m_listPageOffset);
 
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
                     "Big page (>4K): list count %zu, total element count %zu.\n",
@@ -1324,14 +1312,14 @@ namespace SPTAG
 
             inline void ParsePostingListRearrange(uint64_t& offsetVectorID, uint64_t& offsetVector, int i, int eleCount)
             {
-                offsetVectorID = (m_vectorInfoSize - sizeof(int)) * eleCount + sizeof(int) * i;
-                offsetVector = (m_vectorInfoSize - sizeof(int)) * i;
+                offsetVectorID = (m_vectorInfoSize - sizeof(SizeType)) * eleCount + sizeof(SizeType) * i;
+                offsetVector = (m_vectorInfoSize - sizeof(SizeType)) * i;
             }
 
             inline void ParsePostingList(uint64_t& offsetVectorID, uint64_t& offsetVector, int i, int eleCount)
             {
                 offsetVectorID = m_vectorInfoSize * i;
-                offsetVector = offsetVectorID + sizeof(int);
+                offsetVector = offsetVectorID + sizeof(SizeType);
             }
 
             inline void ParseDeltaEncoding(std::shared_ptr<VectorIndex>& p_index, ListInfo* p_info, ValueType* vector)
@@ -1492,29 +1480,29 @@ namespace SPTAG
                 }
 
                 // Number of posting lists
-                int i32Val = static_cast<int>(p_postingListSizes.size());
-                if (ptr->WriteBinary(sizeof(i32Val), reinterpret_cast<char*>(&i32Val)) != sizeof(i32Val)) {
+                SizeType iVal = static_cast<SizeType>(p_postingListSizes.size());
+                if (ptr->WriteBinary(sizeof(iVal), reinterpret_cast<char*>(&iVal)) != sizeof(iVal)) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to write SSDIndex File!");
                     throw std::runtime_error("Failed to write SSDIndex File");
                 }
 
                 // Number of vectors
-                i32Val = static_cast<int>(p_fullVectors->Count());
-                if (ptr->WriteBinary(sizeof(i32Val), reinterpret_cast<char*>(&i32Val)) != sizeof(i32Val)) {
+                iVal = static_cast<SizeType>(p_fullVectors->Count());
+                if (ptr->WriteBinary(sizeof(iVal), reinterpret_cast<char*>(&iVal)) != sizeof(iVal)) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to write SSDIndex File!");
                     throw std::runtime_error("Failed to write SSDIndex File");
                 }
 
                 // Vector dimension
-                i32Val = static_cast<int>(p_fullVectors->Dimension());
+                int i32Val = static_cast<int>(p_fullVectors->Dimension());
                 if (ptr->WriteBinary(sizeof(i32Val), reinterpret_cast<char*>(&i32Val)) != sizeof(i32Val)) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to write SSDIndex File!");
                     throw std::runtime_error("Failed to write SSDIndex File");
                 }
 
                 // Page offset of list content section
-                i32Val = static_cast<int>(listOffset / PageSize);
-                if (ptr->WriteBinary(sizeof(i32Val), reinterpret_cast<char*>(&i32Val)) != sizeof(i32Val)) {
+                iVal = static_cast<SizeType>(listOffset / PageSize);
+                if (ptr->WriteBinary(sizeof(iVal), reinterpret_cast<char*>(&iVal)) != sizeof(iVal)) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to write SSDIndex File!");
                     throw std::runtime_error("Failed to write SSDIndex File");
                 }

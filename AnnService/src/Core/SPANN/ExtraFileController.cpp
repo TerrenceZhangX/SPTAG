@@ -188,7 +188,7 @@ bool FileIO::BlockController::ReadBlocks(AddressType *p_data, std::string *p_val
     }
 
     const int64_t postingSize = (int64_t)(p_data[0]);
-    auto blockNum = (postingSize + PageSize - 1) >> PageSizeEx;
+    int blockNum = (int)((postingSize + PageSize - 1) >> PageSizeEx);
     if (blockNum > reqs->size())
     {
         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "FileIO::BlockController::ReadBlocks: %d > %u\n", (int)blockNum,
@@ -239,7 +239,7 @@ bool FileIO::BlockController::ReadBlocks(
     }
 
     const int64_t postingSize = (int64_t)(p_data[0]);
-    auto blockNum = (postingSize + PageSize - 1) >> PageSizeEx;
+    int blockNum = (int)((postingSize + PageSize - 1) >> PageSizeEx);
     if (blockNum > reqs->size())
     {
         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "FileIO::BlockController::ReadBlocks: %d > %u\n", (int)blockNum,
@@ -359,7 +359,7 @@ bool FileIO::BlockController::ReadBlocks(const std::vector<AddressType *> &p_dat
     for (size_t i = 0; i < p_data.size(); i++)
     {
         AddressType *p_data_i = p_data[i];
-        int numPages = (p_values[i].GetPageSize() >> PageSizeEx);
+        int numPages = (int)(p_values[i].GetPageSize() >> PageSizeEx);
 
         if (p_data_i == nullptr || (uintptr_t)p_data_i == 0xffffffffffffffff)
         {
@@ -443,7 +443,7 @@ bool FileIO::BlockController::WriteBlocks(AddressType *p_data, int p_size, const
     // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WriteBlocks to string with blocknum=%d size=%u!\n", p_size,
     // p_value.size());
     AddressType currOffset = 0;
-    int totalSize = p_value.size();
+    auto totalSize = p_value.size();
     for (int i = 0; i < p_size; i++)
     {
         Helper::AsyncReadRequest &curr = reqs->at(i);
@@ -475,8 +475,8 @@ bool FileIO::BlockController::IOStatistics()
     int64_t read_bytes_count = read_bytes_vec;
     int64_t write_bytes_count = write_bytes_vec;
 
-    int currIOCount = currReadCount + currWriteCount;
-    int diffIOCount = currIOCount - m_preIOCompleteCount;
+    int64_t currIOCount = currReadCount + currWriteCount;
+    int64_t diffIOCount = currIOCount - m_preIOCompleteCount;
     m_preIOCompleteCount = currIOCount;
 
     int64_t currBytesCount = read_bytes_count + write_bytes_count;

@@ -243,9 +243,9 @@ bool BatchReadFileAsync(std::vector<std::shared_ptr<Helper::DiskIO>> &handlers, 
             if (handlers[currFileId]->BatchReadFile(readRequests + currReqStart, num - currReqStart, MaxTimeout) <
                 num - currReqStart)
                 return false;
-        }
-        return true;
+        }    
     }
+    return true;
 }
 #endif
 } // namespace Helper

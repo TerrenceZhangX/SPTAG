@@ -65,8 +65,8 @@ inline T max(T a, T b) {
     return a > b ? a : b;
 }
 
-#ifndef _rotl
-#define _rotl(x, n) (((x) << (n)) | ((x) >> (32-(n))))
+#ifndef _rotl64
+#define _rotl64(x, n) (((x) << (n)) | ((x) >> (64-(n))))
 #endif
 
 #define mkdir(a) mkdir(a, ACCESSPERMS)
@@ -155,7 +155,11 @@ namespace SPTAG
 #define ALIGN_ROUND(size) ((size) + 31) / 32 * 32
 #define ROUND_UP(size, val) (size + val - 1) / val * val
 
+#ifndef LARGEVID
     typedef std::int32_t SizeType;
+#else
+    typedef std::int64_t SizeType;
+#endif
     typedef std::int32_t DimensionType;
 
     const SizeType MaxSize = (std::numeric_limits<SizeType>::max)();

@@ -43,8 +43,8 @@ namespace SPTAG {
             bool m_deleteHeadVectors;
             int m_ssdIndexFileNum;
             std::string m_quantizerFilePath;
-            int m_datasetRowsInBlock;
-            int m_datasetCapacity;
+            SizeType m_datasetRowsInBlock;
+            SizeType m_datasetCapacity;
 
             // Section 2: for selecting head
             bool m_selectHead;
@@ -66,7 +66,7 @@ namespace SPTAG {
             int m_splitThreshold;
             int m_maxRandomTryCount;
             double m_ratio;
-            int m_headVectorCount;
+            SizeType m_headVectorCount;
             bool m_recursiveCheckSmallCluster;
             bool m_printSizeCount;
             std::string m_selectType;

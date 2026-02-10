@@ -11,7 +11,12 @@
 #include <atomic>
 #include <mutex>
 
-#pragma warning(disable:4996)
+#pragma warning(disable : 4996) // 'function': was declared deprecated
+#pragma warning(disable : 4018) // '<' : signed/unsigned mismatch
+#pragma warning(disable : 4242) // '=' : conversion from 'int' to 'short', possible loss of data
+#pragma warning(disable : 4244) // '=' : conversion from 'int' to 'short', possible loss of data
+#pragma warning(disable : 4267) // 'var' : conversion from 'size_t' to 'DWORD', possible loss of data
+#pragma warning(disable : 4127) // conditional expression is constant
 
 namespace SPTAG
 {

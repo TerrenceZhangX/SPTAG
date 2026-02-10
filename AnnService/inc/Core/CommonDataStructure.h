@@ -19,11 +19,11 @@ public:
     
     Array(T* p_array, std::size_t p_length, std::shared_ptr<T> p_dataHolder);
 
-    Array(Array<T>&& p_right);
+    Array(Array<T>&& p_right) noexcept;
 
     Array(const Array<T>& p_right);
 
-    Array<T>& operator= (Array<T>&& p_right);
+    Array<T>& operator= (Array<T>&& p_right) noexcept;
 
     Array<T>& operator= (const Array<T>& p_right);
 
@@ -90,7 +90,7 @@ Array<T>::Array(T* p_array, std::size_t p_length, std::shared_ptr<T> p_dataHolde
 
 
 template<typename T>
-Array<T>::Array(Array<T>&& p_right)
+Array<T>::Array(Array<T>&& p_right) noexcept
     : m_data(p_right.m_data),
     m_length(p_right.m_length),
     m_dataHolder(std::move(p_right.m_dataHolder))
@@ -109,7 +109,7 @@ Array<T>::Array(const Array<T>& p_right)
 
 template<typename T>
 Array<T>&
-Array<T>::operator= (Array<T>&& p_right)
+Array<T>::operator= (Array<T>&& p_right) noexcept
 {
     m_data = p_right.m_data;
     m_length = p_right.m_length;

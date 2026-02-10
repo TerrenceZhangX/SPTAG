@@ -25,7 +25,7 @@ namespace SPTAG
         public:
             PQQuantizer();
 
-            PQQuantizer(DimensionType NumSubvectors, SizeType KsPerSubvector, DimensionType DimPerSubvector, bool EnableADC, std::unique_ptr<T[]>&& Codebooks);
+            PQQuantizer(DimensionType NumSubvectors, int KsPerSubvector, DimensionType DimPerSubvector, bool EnableADC, std::unique_ptr<T[]>&& Codebooks);
 
             ~PQQuantizer();
 
@@ -35,11 +35,11 @@ namespace SPTAG
 
             virtual void QuantizeVector(const void* vec, std::uint8_t* vecout, bool ADC = true) const;
             
-            virtual SizeType QuantizeSize() const;
+            virtual DimensionType QuantizeSize() const;
 
             void ReconstructVector(const std::uint8_t* qvec, void* vecout) const;
 
-            virtual SizeType ReconstructSize() const;
+            virtual DimensionType ReconstructSize() const;
 
             virtual DimensionType ReconstructDim() const;
 
@@ -55,9 +55,9 @@ namespace SPTAG
 
             virtual int GetBase() const;
 
-            SizeType GetKsPerSubvector() const;
+            int GetKsPerSubvector() const;
 
-            SizeType GetBlockSize() const;
+            int GetBlockSize() const;
 
             DimensionType GetDimPerSubvector() const;
 
@@ -80,12 +80,12 @@ namespace SPTAG
 
         protected:
             DimensionType m_NumSubvectors;
-            SizeType m_KsPerSubvector;
+            int m_KsPerSubvector;
             DimensionType m_DimPerSubvector;
-            SizeType m_BlockSize;
+            int m_BlockSize;
             bool m_EnableADC;
 
-            inline SizeType m_DistIndexCalc(SizeType i, SizeType j, SizeType k) const;
+            inline int m_DistIndexCalc(int i, int j, int k) const;
             void InitializeDistanceTables();
 
             std::unique_ptr<T[]> m_codebooks;
@@ -98,7 +98,7 @@ namespace SPTAG
         }
 
         template <typename T>
-        PQQuantizer<T>::PQQuantizer(DimensionType NumSubvectors, SizeType KsPerSubvector, DimensionType DimPerSubvector, bool EnableADC, std::unique_ptr<T[]>&& Codebooks) : m_NumSubvectors(NumSubvectors), m_KsPerSubvector(KsPerSubvector), m_DimPerSubvector(DimPerSubvector), m_BlockSize(KsPerSubvector* KsPerSubvector), m_codebooks(std::move(Codebooks)), m_EnableADC(EnableADC)
+        PQQuantizer<T>::PQQuantizer(DimensionType NumSubvectors, int KsPerSubvector, DimensionType DimPerSubvector, bool EnableADC, std::unique_ptr<T[]>&& Codebooks) : m_NumSubvectors(NumSubvectors), m_KsPerSubvector(KsPerSubvector), m_DimPerSubvector(DimPerSubvector), m_BlockSize(KsPerSubvector* KsPerSubvector), m_codebooks(std::move(Codebooks)), m_EnableADC(EnableADC)
         {
             InitializeDistanceTables();
         }
@@ -180,11 +180,11 @@ namespace SPTAG
         }
 
         template <typename T>
-        SizeType PQQuantizer<T>::QuantizeSize() const
+        DimensionType PQQuantizer<T>::QuantizeSize() const
         {
             if (GetEnableADC())
             {
-                return sizeof(float) * m_NumSubvectors * m_KsPerSubvector;
+                return (DimensionType)(sizeof(float) * m_NumSubvectors * m_KsPerSubvector);
             }
             else
             {
@@ -205,9 +205,9 @@ namespace SPTAG
         }
 
         template <typename T>
-        SizeType PQQuantizer<T>::ReconstructSize() const
+        DimensionType PQQuantizer<T>::ReconstructSize() const
         {       
-            return sizeof(T) * ReconstructDim();
+            return (DimensionType)(sizeof(T) * ReconstructDim());
         }
 
         template <typename T>
@@ -220,7 +220,7 @@ namespace SPTAG
         std::uint64_t PQQuantizer<T>::BufferSize() const
         {
             return sizeof(T) * m_NumSubvectors * m_KsPerSubvector * m_DimPerSubvector + 
-                sizeof(DimensionType) + sizeof(SizeType) + sizeof(DimensionType) + sizeof(VectorValueType) + sizeof(QuantizerType);
+                sizeof(DimensionType) + sizeof(int) + sizeof(DimensionType) + sizeof(VectorValueType) + sizeof(QuantizerType);
         }
 
         template <typename T>
@@ -231,7 +231,7 @@ namespace SPTAG
             IOBINARY(p_out, WriteBinary, sizeof(QuantizerType), (char*)&qtype);
             IOBINARY(p_out, WriteBinary, sizeof(VectorValueType), (char*)&rtype);
             IOBINARY(p_out, WriteBinary, sizeof(DimensionType), (char*)&m_NumSubvectors);
-            IOBINARY(p_out, WriteBinary, sizeof(SizeType), (char*)&m_KsPerSubvector);
+            IOBINARY(p_out, WriteBinary, sizeof(int), (char*)&m_KsPerSubvector);
             IOBINARY(p_out, WriteBinary, sizeof(DimensionType), (char*)&m_DimPerSubvector);
             IOBINARY(p_out, WriteBinary, sizeof(T) * m_NumSubvectors * m_KsPerSubvector * m_DimPerSubvector, (char*)m_codebooks.get());
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Saving quantizer: Subvectors:%d KsPerSubvector:%d DimPerSubvector:%d\n", m_NumSubvectors, m_KsPerSubvector, m_DimPerSubvector);
@@ -244,7 +244,7 @@ namespace SPTAG
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Loading Quantizer.\n");
             IOBINARY(p_in, ReadBinary, sizeof(DimensionType), (char*)&m_NumSubvectors);
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "After read subvecs: %s.\n", std::to_string(m_NumSubvectors).c_str());
-            IOBINARY(p_in, ReadBinary, sizeof(SizeType), (char*)&m_KsPerSubvector);
+            IOBINARY(p_in, ReadBinary, sizeof(int), (char*)&m_KsPerSubvector);
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "After read ks: %s.\n", std::to_string(m_KsPerSubvector).c_str());
             IOBINARY(p_in, ReadBinary, sizeof(DimensionType), (char*)&m_DimPerSubvector);
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "After read dim: %s.\n", std::to_string(m_DimPerSubvector).c_str());
@@ -266,8 +266,8 @@ namespace SPTAG
             m_NumSubvectors = *(DimensionType*)raw_bytes;
             raw_bytes += sizeof(DimensionType);
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "After read subvecs: %s.\n", std::to_string(m_NumSubvectors).c_str());
-            m_KsPerSubvector = *(SizeType*)raw_bytes;
-            raw_bytes += sizeof(SizeType);
+            m_KsPerSubvector = *(int*)raw_bytes;
+            raw_bytes += sizeof(int);
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "After read ks: %s.\n", std::to_string(m_KsPerSubvector).c_str());
             m_DimPerSubvector = *(DimensionType*)raw_bytes;
             raw_bytes += sizeof(DimensionType);
@@ -296,13 +296,13 @@ namespace SPTAG
         }
 
         template <typename T>
-        SizeType PQQuantizer<T>::GetKsPerSubvector() const
+        int PQQuantizer<T>::GetKsPerSubvector() const
         {
             return m_KsPerSubvector;
         }
 
         template <typename T>
-        SizeType PQQuantizer<T>::GetBlockSize() const
+        int PQQuantizer<T>::GetBlockSize() const
         {
             return m_BlockSize;
         }
@@ -326,7 +326,7 @@ namespace SPTAG
         }
 
         template <typename T>
-        inline SizeType PQQuantizer<T>::m_DistIndexCalc(SizeType i, SizeType j, SizeType k) const {
+        inline int PQQuantizer<T>::m_DistIndexCalc(int i, int j, int k) const {
             return m_BlockSize * i + j * m_KsPerSubvector + k;
         }
 
@@ -337,7 +337,7 @@ namespace SPTAG
             auto L2Dist = DistanceCalcSelector<T>(DistCalcMethod::L2);
 
             for (int i = 0; i < m_NumSubvectors; i++) {
-                SizeType baseIdx = i * m_KsPerSubvector * m_DimPerSubvector;
+                int baseIdx = i * m_KsPerSubvector * m_DimPerSubvector;
                 for (int j = 0; j < m_KsPerSubvector; j++) {
                     for (int k = 0; k < m_KsPerSubvector; k++) {
                         temp_m_L2DistanceTables[m_DistIndexCalc(i, j, k)] = L2Dist(&m_codebooks[baseIdx + j * m_DimPerSubvector], &m_codebooks[baseIdx + k * m_DimPerSubvector], m_DimPerSubvector);

@@ -29,9 +29,9 @@ namespace SPTAG
                 m_data.Initialize(size, 1, blockSize, capacity);
             }
 
-            inline size_t Count() const { return m_data.R(); }
+            inline SizeType Count() const { return m_data.R(); }
 
-            inline size_t GetDeleteCount() const { return m_deleted.load();}
+            inline SizeType GetDeleteCount() const { return m_deleted.load();}
 
             inline bool Deleted(const SizeType& key) const
             {

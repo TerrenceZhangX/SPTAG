@@ -142,6 +142,29 @@ FileMetadataSet::FileMetadataSet(const std::string &p_metafile, const std::strin
     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Load MetaIndex(%d) Meta(%llu)\n", m_count, m_offsets[m_count]);
 }
 
+FileMetadataSet::FileMetadataSet(std::shared_ptr<Helper::DiskIO> p_metain, std::shared_ptr<Helper::DiskIO> fpidx,
+                                 std::uint64_t p_blockSize, std::uint64_t p_capacity, std::uint64_t p_metaSize)
+{
+    m_fp = p_metain;
+    if (fpidx->ReadBinary(sizeof(m_count), (char *)&m_count) != sizeof(m_count))
+    {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "ERROR: Cannot read FileMetadataSet!\n");
+        throw std::runtime_error("Cannot read meta files");
+    }
+
+    m_offsets.reserve(p_blockSize);
+    m_offsets.resize(m_count + 1);
+    if (fpidx->ReadBinary(sizeof(std::uint64_t) * (m_count + 1), (char *)m_offsets.data()) !=
+        sizeof(std::uint64_t) * (m_count + 1))
+    {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "ERROR: Cannot read FileMetadataSet!\n");
+        throw std::runtime_error("Cannot read meta files");
+    }
+    m_newdata.reserve(p_blockSize * p_metaSize);
+    m_lock.reset(new std::shared_timed_mutex, std::default_delete<std::shared_timed_mutex>());
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Load MetaIndex(%d) Meta(%llu)\n", m_count, m_offsets[m_count]);
+}
+
 FileMetadataSet::~FileMetadataSet()
 {
 }
@@ -276,7 +299,7 @@ MemMetadataSet::MemMetadataSet(std::uint64_t p_blockSize, std::uint64_t p_capaci
 }
 
 ErrorCode MemMetadataSet::Init(std::shared_ptr<Helper::DiskIO> p_metain, std::shared_ptr<Helper::DiskIO> p_metaindexin,
-                               std::uint64_t p_blockSize, std::uint64_t p_capacity, std::uint64_t p_metaSize, int start, int count)
+                               std::uint64_t p_blockSize, std::uint64_t p_capacity, std::uint64_t p_metaSize, SizeType start, SizeType count)
 {
     IOBINARY(p_metaindexin, ReadBinary, sizeof(m_count), (char *)&m_count);
     if (start > m_count) start = m_count;
@@ -292,7 +315,7 @@ ErrorCode MemMetadataSet::Init(std::shared_ptr<Helper::DiskIO> p_metain, std::sh
         offset = tmp[start];
         if (offset > 0)
         {
-             for (int i = start; i <= start + count; i++)
+             for (SizeType i = start; i <= start + count; i++)
             tmp[i] -= offset;
         }
         m_offsets.assign(tmp.data() + start, tmp.data() + start + count + 1);
@@ -319,7 +342,7 @@ MemMetadataSet::MemMetadataSet(std::shared_ptr<Helper::DiskIO> p_metain, std::sh
 
 MemMetadataSet::MemMetadataSet(const std::string &p_metafile, const std::string &p_metaindexfile,
                                std::uint64_t p_blockSize, std::uint64_t p_capacity, std::uint64_t p_metaSize,
-                               int start, int count)
+                               SizeType start, SizeType count)
 {
     std::shared_ptr<Helper::DiskIO> ptrMeta = f_createIO(), ptrMetaIndex = f_createIO();
     if (ptrMeta == nullptr || ptrMetaIndex == nullptr ||

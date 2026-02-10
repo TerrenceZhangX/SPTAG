@@ -59,7 +59,7 @@ namespace SPTAG
             struct iocb myiocb;
 #endif
 
-            AsyncReadRequest() : m_offset(0), m_readSize(0), m_buffer(nullptr), m_status(0), m_payload(nullptr), m_success(false), m_extension(nullptr) {}
+            AsyncReadRequest() : m_offset(0), m_readSize(0), m_buffer(nullptr), m_status(0), m_payload(nullptr), m_success(false), m_extension(nullptr), m_ctrl(nullptr) {}
         };
 
         void SetThreadAffinity(int threadID, std::thread& thread, NumaStrategy socketStrategy = NumaStrategy::LOCAL, OrderStrategy idStrategy = OrderStrategy::ASC);
@@ -552,7 +552,7 @@ namespace SPTAG
 
             HandleWrapper m_fileHandle;
 
-            uint64_t m_currSize;
+            uint64_t m_currSize = 0;
             
             HandleWrapper m_fileIocp;
 

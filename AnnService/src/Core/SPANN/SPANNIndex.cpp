@@ -12,10 +12,6 @@
 #include "inc/Core/ResultIterator.h"
 #include "inc/Core/SPANN/SPANNResultIterator.h"
 
-#pragma warning(disable : 4242) // '=' : conversion from 'int' to 'short', possible loss of data
-#pragma warning(disable : 4244) // '=' : conversion from 'int' to 'short', possible loss of data
-#pragma warning(disable : 4127) // conditional expression is constant
-
 namespace SPTAG
 {
 template <typename T> thread_local std::unique_ptr<T> COMMON::ThreadLocalWorkSpaceFactory<T>::m_workspace;
@@ -643,8 +639,8 @@ template <typename T> std::unique_ptr<COMMON::WorkSpace> Index<T>::RentWorkSpace
 
 template <typename T>
 ErrorCode Index<T>::DebugSearchDiskIndex(QueryResult &p_query, int p_subInternalResultNum, int p_internalResultNum,
-                                         SearchStats *p_stats, std::set<int> *truth,
-                                         std::map<int, std::set<int>> *found) const
+                                         SearchStats *p_stats, std::set<SizeType> *truth,
+                                         std::map<SizeType, std::set<SizeType>> *found) const
 {
     if (nullptr == m_extraSearcher)
         return ErrorCode::EmptyIndex;

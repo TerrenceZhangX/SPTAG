@@ -5,10 +5,6 @@
 #include "inc/Core/ResultIterator.h"
 #include <chrono>
 
-#pragma warning(disable : 4242) // '=' : conversion from 'int' to 'short', possible loss of data
-#pragma warning(disable : 4244) // '=' : conversion from 'int' to 'short', possible loss of data
-#pragma warning(disable : 4127) // conditional expression is constant
-
 namespace SPTAG
 {
 template <typename T> thread_local std::unique_ptr<T> COMMON::ThreadLocalWorkSpaceFactory<T>::m_workspace;
@@ -1147,8 +1143,8 @@ ErrorCode Index<T>::AddIndex(const void *p_data, SizeType p_vectorNum, Dimension
 }
 
 template <typename T>
-ErrorCode Index<T>::AddIndexId(const void *p_data, SizeType p_vectorNum, DimensionType p_dimension, int &beginHead,
-                               int &endHead)
+ErrorCode Index<T>::AddIndexId(const void *p_data, SizeType p_vectorNum, DimensionType p_dimension,
+                               SizeType &beginHead, SizeType &endHead)
 {
     if (p_data == nullptr || p_vectorNum == 0 || p_dimension == 0)
         return ErrorCode::EmptyData;

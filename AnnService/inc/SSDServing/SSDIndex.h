@@ -415,7 +415,7 @@ namespace SPTAG {
                                         }
                                     }
 
-                                    std::map<int, std::set<int>> tmpFound; // headID->truths
+                                    std::map<SizeType, std::set<SizeType>> tmpFound; // headID->truths
                                     p_index->DebugSearchDiskIndex(queryBFHeads, internalResultNum, sampleK, nullptr,
                                                                   &truth[samples[i]], &tmpFound);
 
@@ -429,7 +429,7 @@ namespace SPTAG {
                                         truth[samples[i]].erase(results[samples[i]].GetResult(z)->VID);
                                     }
 
-                                    for (std::map<int, std::set<int>>::iterator it = tmpFound.begin();
+                                    for (std::map<SizeType, std::set<SizeType>>::iterator it = tmpFound.begin();
                                          it != tmpFound.end(); it++)
                                     {
                                         float q2truthposting = headIndex->ComputeDistance(

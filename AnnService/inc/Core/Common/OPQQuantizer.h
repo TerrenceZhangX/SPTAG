@@ -24,7 +24,7 @@ namespace SPTAG
 
             OPQQuantizer();
 
-            OPQQuantizer(DimensionType NumSubvectors, SizeType KsPerSubvector, DimensionType DimPerSubvector, bool EnableADC, std::unique_ptr<T[]>&& Codebooks, std::unique_ptr<OPQMatrixType[]>&& OPQMatrix);
+            OPQQuantizer(DimensionType NumSubvectors, int KsPerSubvector, DimensionType DimPerSubvector, bool EnableADC, std::unique_ptr<T[]>&& Codebooks, std::unique_ptr<OPQMatrixType[]>&& OPQMatrix);
 
             virtual void QuantizeVector(const void* vec, std::uint8_t* vecout, bool ADC = true) const;
 
@@ -36,7 +36,7 @@ namespace SPTAG
 
             virtual ErrorCode LoadQuantizer(std::uint8_t* raw_bytes);
 
-            virtual SizeType ReconstructSize() const;
+            virtual DimensionType ReconstructSize() const;
 
             virtual std::uint64_t BufferSize() const;
 
@@ -78,7 +78,7 @@ namespace SPTAG
         }
 
         template <typename T>
-        OPQQuantizer<T>::OPQQuantizer(DimensionType NumSubvectors, SizeType KsPerSubvector, DimensionType DimPerSubvector, bool EnableADC, std::unique_ptr<T[]>&& Codebooks, std::unique_ptr<OPQMatrixType[]>&& OPQMatrix) : m_OPQMatrix(std::move(OPQMatrix)), PQQuantizer<T>::PQQuantizer(NumSubvectors, KsPerSubvector, DimPerSubvector, EnableADC, std::move(Codebooks)), m_matrixDim(NumSubvectors * DimPerSubvector)
+        OPQQuantizer<T>::OPQQuantizer(DimensionType NumSubvectors, int KsPerSubvector, DimensionType DimPerSubvector, bool EnableADC, std::unique_ptr<T[]>&& Codebooks, std::unique_ptr<OPQMatrixType[]>&& OPQMatrix) : m_OPQMatrix(std::move(OPQMatrix)), PQQuantizer<T>::PQQuantizer(NumSubvectors, KsPerSubvector, DimPerSubvector, EnableADC, std::move(Codebooks)), m_matrixDim(NumSubvectors * DimPerSubvector)
         {
             m_InitMatrixTranspose();
         }
@@ -138,7 +138,7 @@ namespace SPTAG
             IOBINARY(p_out, WriteBinary, sizeof(QuantizerType), (char*)&qtype);
             IOBINARY(p_out, WriteBinary, sizeof(VectorValueType), (char*)&rtype);
             IOBINARY(p_out, WriteBinary, sizeof(DimensionType), (char*)&m_NumSubvectors);
-            IOBINARY(p_out, WriteBinary, sizeof(SizeType), (char*)&m_KsPerSubvector);
+            IOBINARY(p_out, WriteBinary, sizeof(int), (char*)&m_KsPerSubvector);
             IOBINARY(p_out, WriteBinary, sizeof(DimensionType), (char*)&m_DimPerSubvector);
             IOBINARY(p_out, WriteBinary, sizeof(OPQMatrixType) * m_NumSubvectors * m_KsPerSubvector * m_DimPerSubvector, (char*)m_codebooks.get());
             IOBINARY(p_out, WriteBinary, sizeof(OPQMatrixType) * m_matrixDim * m_matrixDim, (char*)m_OPQMatrix.get());
@@ -167,7 +167,7 @@ namespace SPTAG
         ErrorCode OPQQuantizer<T>::LoadQuantizer(std::uint8_t* raw_bytes)
         {
             PQQuantizer<OPQMatrixType>::LoadQuantizer(raw_bytes);
-            raw_bytes += sizeof(DimensionType) + sizeof(SizeType) + sizeof(DimensionType) + (sizeof(OPQMatrixType) * m_NumSubvectors * m_KsPerSubvector * m_DimPerSubvector);
+            raw_bytes += sizeof(DimensionType) + sizeof(int) + sizeof(DimensionType) + (sizeof(OPQMatrixType) * m_NumSubvectors * m_KsPerSubvector * m_DimPerSubvector);
             m_matrixDim = m_NumSubvectors * m_DimPerSubvector;
             m_OPQMatrix = std::make_unique<OPQMatrixType[]>(m_matrixDim * m_matrixDim);
             std::memcpy(m_OPQMatrix.get(), raw_bytes, sizeof(OPQMatrixType) * m_matrixDim * m_matrixDim);
@@ -178,9 +178,9 @@ namespace SPTAG
         }
 
         template <typename T>
-        SizeType OPQQuantizer<T>::ReconstructSize() const
+        DimensionType OPQQuantizer<T>::ReconstructSize() const
         {
-            return sizeof(T) * ReconstructDim();
+            return (DimensionType)(sizeof(T) * ReconstructDim());
         }
 
         template <typename T>

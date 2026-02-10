@@ -122,7 +122,7 @@ std::shared_ptr<IQuantizer> IQuantizer::LoadIQuantizer(SPTAG::ByteArray bytes)
 }
 
 template <>
-std::function<float(const std::uint8_t *, const std::uint8_t *, SizeType)> IQuantizer::DistanceCalcSelector<
+std::function<float(const std::uint8_t *, const std::uint8_t *, DimensionType)> IQuantizer::DistanceCalcSelector<
     std::uint8_t>(SPTAG::DistCalcMethod p_method) const
 {
     if (p_method == SPTAG::DistCalcMethod::L2)
@@ -140,14 +140,14 @@ std::function<float(const std::uint8_t *, const std::uint8_t *, SizeType)> IQuan
 }
 
 template <typename T>
-std::function<float(const T *, const T *, SizeType)> IQuantizer::DistanceCalcSelector(
+std::function<float(const T *, const T *, DimensionType)> IQuantizer::DistanceCalcSelector(
     SPTAG::DistCalcMethod p_method) const
 {
     return SPTAG::COMMON::DistanceCalcSelector<T>(p_method);
 }
 
 #define DefineVectorValueType(Name, Type)                                                                              \
-    template std::function<float(const Type *, const Type *, SizeType)> IQuantizer::DistanceCalcSelector<Type>(        \
+    template std::function<float(const Type *, const Type *, DimensionType)> IQuantizer::DistanceCalcSelector<Type>(        \
         SPTAG::DistCalcMethod p_method) const;
 #include "inc/Core/DefinitionList.h"
 #undef DefineVectorValueType

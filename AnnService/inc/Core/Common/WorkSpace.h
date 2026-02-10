@@ -80,7 +80,7 @@ namespace SPTAG
             int m_exp;
 
             // Max pool size.
-            int m_poolSize;
+            std::uint64_t m_poolSize;
 
             // Record 2 hash tables.
             // [0~m_poolSize + 1) is the first block.
@@ -88,15 +88,15 @@ namespace SPTAG
             std::unique_ptr<SizeType[]> m_hashTable;
 
 
-            inline unsigned hash_func2(unsigned idx, int poolSize, int loop)
+            inline std::uint64_t hash_func2(std::uint64_t idx, std::uint64_t poolSize, int loop)
             {
                 return (idx + loop) & poolSize;
             }
 
 
-            inline unsigned hash_func(unsigned idx, int poolSize)
+            inline std::uint64_t hash_func(std::uint64_t idx, std::uint64_t poolSize)
             {
-                return ((unsigned)(idx * 99991) + _rotl(idx, 2) + 101) & poolSize;
+                return ((std::uint64_t)(idx * 99991) + _rotl64(idx, 2) + 101) & poolSize;
             }
 
         public:
@@ -114,7 +114,7 @@ namespace SPTAG
                 }
                 m_secondHash = true;
                 m_exp = exp;
-                m_poolSize = (1 << (ex + exp)) - 1;
+                m_poolSize = (((std::uint64_t)1) << (ex + exp)) - 1;
                 m_hashTable.reset(new SizeType[(m_poolSize + 1) * 2]);
                 clear();
             }
@@ -146,12 +146,12 @@ namespace SPTAG
 
             inline void DoubleSize()
             {
-                int new_poolSize = ((m_poolSize + 1) << 1) - 1; 
+                std::uint64_t new_poolSize = ((m_poolSize + 1) << 1) - 1; 
                 SizeType* new_hashTable = new SizeType[(new_poolSize + 1) * 2];
                 memset(new_hashTable, 0, sizeof(SizeType) * (new_poolSize + 1) * 2);
 
                 m_secondHash = false;
-                for (int i = 0; i <= new_poolSize; i++)
+                for (std::uint64_t i = 0; i <= new_poolSize; i++)
                     if (m_hashTable[i]) _CheckAndSet(new_hashTable, new_poolSize, true, m_hashTable[i]);
 
                 m_exp++;
@@ -159,9 +159,9 @@ namespace SPTAG
                 m_hashTable.reset(new_hashTable);
             }
 
-            inline int _CheckAndSet(SizeType* hashTable, int poolSize, bool isFirstTable, SizeType idx)
+            inline int _CheckAndSet(SizeType *hashTable, std::uint64_t poolSize, bool isFirstTable, SizeType idx)
             {
-                unsigned index = hash_func((unsigned)idx, poolSize);
+                std::uint64_t index = hash_func((std::uint64_t)idx, poolSize);
                 for (int loop = 0; loop < m_maxLoop; ++loop)
                 {
                     if (!hashTable[index])

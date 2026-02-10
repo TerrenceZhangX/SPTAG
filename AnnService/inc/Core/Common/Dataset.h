@@ -256,7 +256,7 @@ namespace SPTAG
                 }
             }
 
-            void Initialize(SizeType rows_, DimensionType cols_, SizeType rowsInBlock_, SizeType capacity_, const void* data_ = nullptr, bool shareOwnership_ = true, std::shared_ptr<std::vector<char*>> incBlocks_ = nullptr, int colStart_ = 0, int rowEnd_ = -1)
+            ErrorCode Initialize(SizeType rows_, DimensionType cols_, SizeType rowsInBlock_, SizeType capacity_, const void* data_ = nullptr, bool shareOwnership_ = true, std::shared_ptr<std::vector<char*>> incBlocks_ = nullptr, int colStart_ = 0, int rowEnd_ = -1)
             {
                 if (data != nullptr) {
                     if (ownData) ALIGN_FREE(data);
@@ -278,6 +278,12 @@ namespace SPTAG
                 {
                     ownData = true;
                     data = (char*)ALIGN_ALLOC(((size_t)rows) * cols);
+                    if (data == nullptr)
+                    {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Cannot allocate %zu memory for dataset!\n",
+                                     ((size_t)rows) * cols);
+                        return ErrorCode::MemoryOverFlow;
+                    }
                     if (data_ != nullptr) memcpy(data, data_, ((size_t)rows) * cols);
                     else std::memset(data, -1, ((size_t)rows) * cols);
                 }
@@ -290,6 +296,7 @@ namespace SPTAG
 
                 colStart = colStart_;
                 mycols = cols_;
+                return ErrorCode::Success;
             }
 
             bool IsReady() const { return data != nullptr; }
