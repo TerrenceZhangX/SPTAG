@@ -30,7 +30,7 @@ void TestDataGenerator<T>::RunBatches(std::shared_ptr<SPTAG::VectorSet>& vecset,
     addvecset = LoadVectorSet(paddset, m_m, 0, m_a);
     addmetaset = LoadMetadataSet(paddmetaset, paddmetaidx, 0, m_a);
     queryset = LoadVectorSet(pqueryset, m_m, 0, m_q); 
-    truths = LoadVectorSet(ptruth, m_k);
+    truths = TestDataGenerator<float>::LoadVectorSet(ptruth, m_k);
 }
 
 template <typename T>
