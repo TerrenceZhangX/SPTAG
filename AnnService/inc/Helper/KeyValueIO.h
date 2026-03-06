@@ -36,8 +36,7 @@ namespace SPTAG
 
             virtual ErrorCode Merge(const SizeType key, const std::string &value,
                                     const std::chrono::microseconds &timeout,
-                                    std::vector<Helper::AsyncReadRequest> *reqs,
-                                    std::function<bool(const void *val, const int size)> checksum) = 0;
+                                    std::vector<Helper::AsyncReadRequest> *reqs, int& size) = 0;
 
             virtual ErrorCode Delete(SizeType key) = 0;
 
@@ -51,12 +50,12 @@ namespace SPTAG
             
             virtual bool Available() { return false; }
 
-            virtual ErrorCode Check(const SizeType key, int size, std::vector<std::uint8_t> *visited)
+            virtual ErrorCode Check(const SizeType key, std::vector<std::uint8_t> *visited)
             {
                 return ErrorCode::Undefined;
             }
 
-            virtual int64_t GetApproximateMemoryUsage() const
+            virtual int64_t GetApproximateMemoryUsage()
             {
                 return 0;
             }

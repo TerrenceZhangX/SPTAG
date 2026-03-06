@@ -45,6 +45,8 @@ public:
 
     static Array<T> Alloc(std::size_t p_length);
 
+    static Array<T> Alloc(T* p_array, std::size_t p_length);
+
     const static Array<T> c_empty;
 
 private:
@@ -215,6 +217,25 @@ Array<T>::Alloc(std::size_t p_length)
 
     arr.m_length = p_length;
     arr.m_data = arr.m_dataHolder.get();
+    return arr;
+}
+
+
+template<typename T>
+Array<T>
+Array<T>::Alloc(T* p_array, std::size_t p_length)
+{
+    Array<T> arr;
+    if (0 == p_length)
+    {
+        return arr;
+    }
+
+    arr.m_dataHolder.reset(new T[p_length], std::default_delete<T[]>());
+
+    arr.m_length = p_length;
+    arr.m_data = arr.m_dataHolder.get();
+    memcpy(arr.m_data, p_array, sizeof(T) * p_length);
     return arr;
 }
 

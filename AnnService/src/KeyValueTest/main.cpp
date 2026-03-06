@@ -39,7 +39,7 @@ int main(int argc, char *argv[])
     opt.m_ssdMappingFile = "pbfile";
     opt.m_postingPageLimit = max_blocks * 2;
     opt.m_spdkBatchSize = 64;
-    SPANN::FileIO fileIO(opt);
+    SPANN::FileIO fileIO(opt, 0);
 
     bool single_thread_test = false;
     bool multi_thread_test = false;
@@ -397,8 +397,8 @@ MixReadWriteTest:
                         {
                             mergeValue += (char)(rand() % 256);
                         }
-                        fileIO.Merge(key, mergeValue, MaxTimeout, &(workspace.m_diskRequests),
-                                     [](const void* val, const int size) -> bool { return true; });
+                        int finalSize = 0;
+                        fileIO.Merge(key, mergeValue, MaxTimeout, &(workspace.m_diskRequests), finalSize);
                         write_count++;
                         read_count++;
                         std::string readValue;

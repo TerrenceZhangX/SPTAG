@@ -5,6 +5,7 @@
 #include "inc/Helper/KeyValueIO.h"
 #include "inc/Core/Common/Dataset.h"
 #include "inc/Core/Common/LabelSet.h"
+#include "inc/Core/Common/Checksum.h"
 #include "inc/Core/Common/FineGrainedLock.h"
 #include "inc/Core/VectorIndex.h"
 #include "inc/Helper/ThreadPool.h"
@@ -20,6 +21,7 @@
 namespace SPTAG::SPANN {
     typedef std::int64_t AddressType;
     class FileIO : public Helper::KeyValueIO {
+
         class BlockController {
         private:
             char m_filePath[1024] = "";
@@ -67,7 +69,7 @@ namespace SPTAG::SPANN {
             // static void Stop(void* args);
 
         public:
-            bool Initialize(SPANN::Options& p_opt);
+            bool Initialize(SPANN::Options& p_opt, int p_layer);
 
             bool GetBlocks(AddressType* p_data, int p_size);
 
@@ -351,7 +353,7 @@ namespace SPTAG::SPANN {
                 return true;
             }
 
-            bool merge(SizeType key, void *value, int merge_size, std::function<bool(const void* val, const int size)> checksum)
+            bool merge(SizeType key, void *value, int merge_size)
             {
                 ++put_counter;
                 // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "LRUCache: merge size: %lld\n", merge_size);
@@ -359,9 +361,8 @@ namespace SPTAG::SPANN {
                 if (it == cache.end()) {
                     // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "LRUCache: merge key not found\n");
                     ErrorCode ret;
-                    if ((ret = fileIO->Get(key, pageBuffer, MaxTimeout, &reqs, false)) != ErrorCode::Success || 
-                        !checksum(pageBuffer.GetBuffer(), (int)(pageBuffer.GetAvailableSize()))) {
-                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "LRUCache: merge key %d not found in file or checksum issue = %d\n", key, (int)(ret == ErrorCode::Success));
+                    if ((ret = fileIO->Get(key, pageBuffer, MaxTimeout, &reqs, false)) != ErrorCode::Success) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "LRUCache: merge key %lld not found in file\n", (std::int64_t)key);
                         return false;  // If the key does not exist, return false
                     }
                     std::string valstr(pageBuffer.GetAvailableSize() + merge_size, '\0');
@@ -471,10 +472,9 @@ namespace SPTAG::SPANN {
                 return caches[hash(key)]->del(key);
             }
 
-            bool merge(SizeType key, void *value, int merge_size,
-                       std::function<bool(const void *val, const int size)> checksum)
+            bool merge(SizeType key, void *value, int merge_size)
             {
-                return caches[hash(key)]->merge(key, value, merge_size, checksum);
+                return caches[hash(key)]->merge(key, value, merge_size);
             }
 
             bool flush() {
@@ -519,8 +519,9 @@ namespace SPTAG::SPANN {
         };
 
     public:
-        FileIO(SPANN::Options& p_opt) {
-            m_mappingPath = p_opt.m_indexDirectory + FolderSep + p_opt.m_ssdMappingFile;
+        FileIO(SPANN::Options& p_opt, int p_layer) {
+            m_mappingPath = p_opt.m_indexDirectory + FolderSep + p_opt.m_ssdMappingFile + "_" + std::to_string(p_layer);
+            m_layer = p_layer;
             m_blockLimit = max(p_opt.m_postingPageLimit, p_opt.m_searchPostingPageLimit) + p_opt.m_bufferLength + 1;
             m_bufferLimit = 1024;
             m_shutdownCalled = true;
@@ -533,9 +534,9 @@ namespace SPTAG::SPANN {
             }
 
             if (p_opt.m_recovery) {
-                std::string recoverpath = p_opt.m_persistentBufferPath + FolderSep + p_opt.m_ssdMappingFile;
+                std::string recoverpath = p_opt.m_persistentBufferPath + FolderSep + p_opt.m_ssdMappingFile + "_" + std::to_string(p_layer);
                 if (fileexists(recoverpath.c_str())) {
-                    Load(recoverpath, 1024 * 1024, MaxSize);
+                    Load(recoverpath);
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Load block mapping successfully from %s!\n", recoverpath.c_str());
                 }
                 else {
@@ -545,37 +546,23 @@ namespace SPTAG::SPANN {
             }
             else {
                 if (fileexists(m_mappingPath.c_str())) {
-                    Load(m_mappingPath, 1024 * 1024, MaxSize);
+                    Load(m_mappingPath);
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Load block mapping successfully from %s!\n", m_mappingPath.c_str());
-		    /*
-                    for (int i = 0; i < 10; i++) {
-                        std::cout << "i=" << i << ": ";
-                        for (int j = 0; j < 10; j++) {
-                            std::cout << m_pBlockMapping[i][j] << " ";
-                        }
-                        std::cout << std::endl;
-                    }
-                    for (int i = m_pBlockMapping.R() - 10; i < m_pBlockMapping.R(); i++) {
-                        std::cout << "i=" << i << ": ";
-                        for (int j = 0; j < 10; j++) {
-                            std::cout << m_pBlockMapping[i][j] << " ";
-                        }
-                        std::cout << std::endl;
-                    }
-		    */
                 }
                 else {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Initialize block mapping successfully!\n");
-                    m_pBlockMapping.Initialize(0, 1, 1024 * 1024, MaxSize);
                 }
             }
+            m_checkSumMultiGet = p_opt.m_checksumInRead;
+            m_checkSum.Initialize(!p_opt.m_checksumCheck, 0, 0);
+
             for (int i = 0; i < m_bufferLimit; i++) {
                 m_buffer.push((uintptr_t)(new AddressType[m_blockLimit]));
             }
             m_compactionThreadPool = std::make_shared<Helper::ThreadPool>();
             m_compactionThreadPool->init(1);
 
-            if (!m_pBlockController.Initialize(p_opt)) {
+            if (!m_pBlockController.Initialize(p_opt, p_layer)) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to Initialize FileIO!\n");
                 return;
             }
@@ -597,25 +584,17 @@ namespace SPTAG::SPANN {
                 return;
             }
             m_shutdownCalled = true;
-            while (!m_key_reserve.empty())
-            {
-                SizeType cleanKey = 0xffffffff;
-                if (m_key_reserve.try_pop(cleanKey))
-                {
-                    At(cleanKey) = 0xffffffffffffffff;
-                }
-            }
+
             if (!m_mappingPath.empty()) Save(m_mappingPath);
             // TODO: Should we add a lock here?
-            for (int i = 0; i < m_pBlockMapping.R(); i++) {
-                if (At(i) != 0xffffffffffffffff) {
-                    //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "delete at %d for addr: %llu\n", i, At(i));
-                    delete[]((AddressType*)At(i));
-                    At(i) = 0xffffffffffffffff;
-                }
+
+            for (auto it : m_pBlockMapping) {
+                delete[]((AddressType*)(it.second));
             }
+            m_pBlockMapping.clear();
+
             while (!m_buffer.empty()) {
-                uintptr_t ptr = 0xffffffffffffffff;
+                uintptr_t ptr = InvalidPointer;
                 if (m_buffer.try_pop(ptr)) delete[]((AddressType*)ptr);
             }
 	        m_pBlockController.ShutDown();
@@ -625,33 +604,52 @@ namespace SPTAG::SPANN {
             }
         }
 
-        inline uintptr_t& At(SizeType key) {
-            return *(m_pBlockMapping[key]);
+        inline uintptr_t GetKey(SizeType key) {
+            {
+                std::shared_lock<std::shared_timed_mutex> lock(m_updateMutex);
+                auto it = m_pBlockMapping.find(key);
+                if (it != m_pBlockMapping.end()) return it->second;
+            }
+            return InvalidPointer;
         }
         
-        ErrorCode Get(const SizeType key, std::string* value, const std::chrono::microseconds &timeout, std::vector<Helper::AsyncReadRequest>* reqs, bool useCache) {
-            SizeType r = m_pBlockMapping.R();
-            if (key >= r) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Key OverFlow! Key:%d R:%d\n", key, r);
-                return ErrorCode::Key_OverFlow;
+        inline uintptr_t& AtKey(SizeType key) {
+            uintptr_t* value;
+            {
+                std::shared_lock<std::shared_timed_mutex> lock(m_updateMutex);
+                value = &(m_pBlockMapping[key]);
             }
-            AddressType* addr = (AddressType*)(At(key));
-            if (((uintptr_t)addr) == 0xffffffffffffffff) {
-                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Key NotFound! Key:%d\n", key);
+            return *value;
+        }
+
+        ErrorCode Get(const SizeType key, std::string* value, const std::chrono::microseconds &timeout, std::vector<Helper::AsyncReadRequest>* reqs, bool useCache) {
+            AddressType* addr = (AddressType*)(GetKey(key));
+            if (((uintptr_t)addr) == InvalidPointer) {
+                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Key NotFound! Key %lld\n", (std::int64_t)key);
                 return ErrorCode::Key_NotFound;
             }
 
-            int size = (int)(addr[0]);
+            int size = (int)(addr[0]);     
             if (size < 0) return ErrorCode::Posting_SizeError;
+            
+            ChecksumType checksum = (ChecksumType)(addr[0] >> 32);
+            bool result = false;
 
             if (useCache && m_pShardedLRUCache) {
                 if (m_pShardedLRUCache->get(key, *value)) {
-                    return ErrorCode::Success;
+                    result = true;
                 }
             }
-            
-            auto result = m_pBlockController.ReadBlocks((AddressType*)At(key), value, timeout, reqs);
-            return result ? ErrorCode::Success : ErrorCode::Fail;
+            if (!result) {
+                result = m_pBlockController.ReadBlocks((AddressType*)GetKey(key), value, timeout, reqs);
+            }
+
+            if (result && m_checkSum.ValidateChecksum(value->c_str(), (int)(value->size()), checksum)) {
+                return ErrorCode::Success;
+            } else {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Get Key %lld Fail! Checksum error: %d\n", (std::int64_t)key, (int)(result));
+                return ErrorCode::Posting_ChecksumError;
+            }
         }
 
         ErrorCode Get(const SizeType key, std::string* value, const std::chrono::microseconds &timeout, std::vector<Helper::AsyncReadRequest>* reqs) override {
@@ -665,83 +663,109 @@ namespace SPTAG::SPANN {
         ErrorCode Get(const SizeType key, Helper::PageBuffer<std::uint8_t> &value,
                       const std::chrono::microseconds &timeout, std::vector<Helper::AsyncReadRequest> *reqs, bool useCache = true) override
         {
-            SizeType r = m_pBlockMapping.R();
-            if (key >= r)
+            AddressType *addr = (AddressType *)(GetKey(key));
+            if (((uintptr_t)addr) == InvalidPointer)
             {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Key OverFlow! Key:%d R:%d\n", key, r);
-                return ErrorCode::Key_OverFlow;
-            }
-            AddressType *addr = (AddressType *)(At(key));
-            if (((uintptr_t)addr) == 0xffffffffffffffff)
-            {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Key NotFound! Key:%d\n", key);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Key NotFound! Key %lld\n", (std::int64_t)key);
                 return ErrorCode::Key_NotFound;
             }
 
             int size = (int)(addr[0]);
             if (size < 0) return ErrorCode::Posting_SizeError;
 
+            ChecksumType checksum = (ChecksumType)(addr[0] >> 32);
+            bool result = false;
+
             if (useCache && m_pShardedLRUCache)
             {
                 if (m_pShardedLRUCache->get(key, value))
                 {
-                    return ErrorCode::Success;
+                    result = true;
                 }
             }
 
-            auto result = m_pBlockController.ReadBlocks((AddressType *)At(key), value, timeout, reqs);
-            return result ? ErrorCode::Success : ErrorCode::Fail;
+            if (!result) {
+                result = m_pBlockController.ReadBlocks((AddressType *)GetKey(key), value, timeout, reqs);
+            }
+            if (result && m_checkSum.ValidateChecksum((const char*)(value.GetBuffer()), (int)(value.GetAvailableSize()), checksum)) {
+                return ErrorCode::Success;
+            } else {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Get Key %lld Fail! Checksum error: %d\n", (std::int64_t)key, (int)(result));
+                return ErrorCode::Posting_ChecksumError;
+            }
         }
 
         ErrorCode MultiGet(const std::vector<SizeType>& keys, std::vector<Helper::PageBuffer<std::uint8_t>>& values,
             const std::chrono::microseconds &timeout, std::vector<Helper::AsyncReadRequest>* reqs) override {
-            std::vector<AddressType*> blocks;
-            SizeType r;
-            int i = 0;
-            for (SizeType key : keys) {
-                r = m_pBlockMapping.R();
-                if (key < r) {
-                    if (m_pShardedLRUCache && m_pShardedLRUCache->get(key, values[i]))
-                    {
-                        blocks.push_back(nullptr);
-                    } else {
-                        AddressType* addr = (AddressType*)(At(key));
-                        blocks.push_back(addr);
+            std::vector<AddressType*> blocks(keys.size(), nullptr);
+            std::vector<ChecksumType> checksums(keys.size(), 0);
+            for (int i = 0; i < keys.size(); i++) {
+                SizeType key = keys[i];
+                if (m_pShardedLRUCache && m_pShardedLRUCache->get(key, values[i]))
+                {
+                    AddressType* addr = (AddressType*)(GetKey(key));
+                    checksums[i] = (ChecksumType)(addr[0] >> 32);
+                } else {
+                    AddressType* addr = (AddressType*)(GetKey(key));
+                    blocks[i] = addr;
+                    if (((uintptr_t)addr) != InvalidPointer) {
+                        checksums[i] = (ChecksumType)(addr[0] >> 32);
                     }
                 }
-                else {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to read key:%d total key number:%d\n", key, r);
-                }
-                i++;
             }
             auto result = m_pBlockController.ReadBlocks(blocks, values, timeout, reqs);
+            if (result && m_checkSumMultiGet) {
+                for (int i = 0; i < keys.size(); i++)
+                {
+                    if (!m_checkSum.ValidateChecksum((const char *)(values[i].GetBuffer()),
+                                                    values[i].GetAvailableSize(), checksums[i]))
+                    {
+                        SPTAGLIB_LOG(
+                            Helper::LogLevel::LL_Error,
+                            "MultiGet Checksum fail: Key %lld, buffer size %d\n",
+                            (std::int64_t)(keys[i]), (int)(values[i].GetAvailableSize()));
+                        return ErrorCode::Posting_ChecksumError;
+                    }
+                }
+            }
             return result ? ErrorCode::Success : ErrorCode::Fail;
         }
 
 
         ErrorCode MultiGet(const std::vector<SizeType>& keys, std::vector<std::string>* values,
             const std::chrono::microseconds& timeout, std::vector<Helper::AsyncReadRequest>* reqs) {
-            std::vector<AddressType*> blocks;
-            SizeType r;
+            std::vector<AddressType*> blocks(keys.size(), nullptr);
+            std::vector<ChecksumType> checksums(keys.size(), 0);
             values->resize(keys.size());
-            int i = 0;
-            for (SizeType key : keys) {
-                r = m_pBlockMapping.R();
-                if (key < r) {
-                    if (m_pShardedLRUCache && m_pShardedLRUCache->get(key, (*values)[i])) {
-                        blocks.push_back(nullptr);
-                    }
-                    else {
-                        AddressType* addr = (AddressType*)(At(key));
-                        blocks.push_back(addr);
-                    }
+            for (int i = 0; i < keys.size(); i++) {
+                SizeType key = keys[i];
+                if (m_pShardedLRUCache && m_pShardedLRUCache->get(key, (*values)[i])) {
+                    AddressType* addr = (AddressType*)(GetKey(key));
+                    checksums[i] = (ChecksumType)(addr[0] >> 32);
                 }
                 else {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to read key:%d total key number:%d\n", key, r);
+                    AddressType* addr = (AddressType*)(GetKey(key));
+                    blocks[i] = addr;
+                    if (((uintptr_t)addr) != InvalidPointer) {
+                        checksums[i] = (ChecksumType)(addr[0] >> 32);
+                    }
                 }
-                i++;
             }
             auto result = m_pBlockController.ReadBlocks(blocks, values, timeout, reqs);
+            if (result && m_checkSumMultiGet) {
+                for (int i = 0; i < keys.size(); i++)
+                {
+                    if (!m_checkSum.ValidateChecksum((*values)[i].c_str(),
+                                                    (*values)[i].size(), checksums[i]))
+                    {
+                        SPTAGLIB_LOG(
+                            Helper::LogLevel::LL_Error,
+                            "MultiGet Checksum fail: Key %lld, buffer size %d\n",
+                            (std::int64_t)(keys[i]), (int)((*values)[i].size()));
+                        return ErrorCode::Posting_ChecksumError;
+                    }
+                }
+            }
             return result ? ErrorCode::Success : ErrorCode::Fail;
         }
 
@@ -754,43 +778,14 @@ namespace SPTAG::SPANN {
             return MultiGet(int_keys, values, timeout, reqs);
         }
 
-        /*
-        ErrorCode Scan(const SizeType start_key, const int record_count, std::vector<ByteArray> &values, const std::chrono::microseconds &timeout = (std::chrono::microseconds::max)(), std::vector<Helper::AsyncReadRequest>* reqs = nullptr) {
-            std::vector<SizeType> keys;
-            std::vector<AddressType*> blocks;
-            SizeType curr_key = start_key;
-            while(keys.size() < record_count && curr_key < m_pBlockMapping.R()) {
-                if (At(curr_key) == 0xffffffffffffffff) {
-                    curr_key++;
-                    continue;
-                }
-                keys.push_back(curr_key);
-                blocks.push_back((AddressType*)At(curr_key));
-                curr_key++;
-            }
-            auto result = m_pBlockController.ReadBlocks(blocks, values, timeout, reqs);
-            return result ? ErrorCode::Success : ErrorCode::Fail;
-        }
-        */
-
         ErrorCode Put(const SizeType key, const std::string& value, const std::chrono::microseconds& timeout, std::vector<Helper::AsyncReadRequest>* reqs, bool useCache) {
             int blocks = (int)(((value.size() + PageSize - 1) >> PageSizeEx));
             if (blocks >= m_blockLimit) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to put key:%d value:%lld since value too long!\n", key, value.size());
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to put Key %lld value %lld since value too long!\n", (std::int64_t)key, (std::int64_t)value.size());
                 return ErrorCode::Posting_OverFlow;
             }
-            // Calculate whether more mapping blocks are needed
-            SizeType delta = key + 1 - m_pBlockMapping.R();
-            if (delta > 0) {
-                // std::lock_guard<std::mutex> lock(m_updateMutex);
-                m_updateMutex.lock();
-                delta = key + 1 - m_pBlockMapping.R();
-                if (delta > 0) {
-                    m_pBlockMapping.AddBatch(delta);
-                }
-                m_updateMutex.unlock();
-            }
 
+            int64_t checksum = ((int64_t)m_checkSum.CalcChecksum(value.c_str(), (int)(value.size()))) << 32;
             std::shared_timed_mutex *lock = nullptr;
             if (useCache && m_pShardedLRUCache)
             {
@@ -799,9 +794,9 @@ namespace SPTAG::SPANN {
             
                 if (m_pShardedLRUCache->put(key, (void *)(value.data()), (int)(value.size())))
                 {
-                    if (At(key) == 0xffffffffffffffff)
+                    if (GetKey(key) == InvalidPointer)
                     {
-                        uintptr_t tmpblocks = 0xffffffffffffffff;
+                        uintptr_t tmpblocks = InvalidPointer;
                         if (m_buffer.unsafe_size() > m_bufferLimit)
                         {
                             while (!m_buffer.try_pop(tmpblocks));
@@ -812,10 +807,10 @@ namespace SPTAG::SPANN {
                         }
                         // The 0th element of the block address list represents the data size; set it to -1.
                         memset((AddressType *)tmpblocks, -1, sizeof(AddressType) * m_blockLimit);
-                        At(key) = tmpblocks;
+                        AtKey(key) = tmpblocks;
                     }
-                    int64_t *postingSize = (int64_t *)At(key);
-                    int oldblocks = (int)((*postingSize < 0) ? 0 : ((*postingSize + PageSize - 1) >> PageSizeEx));
+                    int64_t *postingSize = (int64_t *)GetKey(key);
+                    int oldblocks = (static_cast<int>(*postingSize) < 0) ? 0 : ((static_cast<int>(*postingSize) + PageSize - 1) >> PageSizeEx);
                     if (blocks - oldblocks > 0)
                     {
                         if (!m_pBlockController.GetBlocks(postingSize + oldblocks + 1, blocks - oldblocks))
@@ -834,14 +829,14 @@ namespace SPTAG::SPANN {
                             return ErrorCode::DiskIOFail;
                         }
                     }
-                    *postingSize = (int64_t)(value.size());
+                    *postingSize = ((int64_t)(value.size()) | checksum);
                     lock->unlock();
                     return ErrorCode::Success;
                 }
             }
-            uintptr_t tmpblocks = 0xffffffffffffffff;
+            uintptr_t tmpblocks = InvalidPointer;
             // If this key has not been assigned mapping blocks yet, allocate a batch.
-            if (At(key) == 0xffffffffffffffff) {
+            if (GetKey(key) == InvalidPointer) {
                 // If there are spare blocks in m_buffer, use them directly; otherwise, allocate a new batch.
                 if (m_buffer.unsafe_size() > m_bufferLimit) {
                     while (!m_buffer.try_pop(tmpblocks));
@@ -852,11 +847,11 @@ namespace SPTAG::SPANN {
                 // The 0th element of the block address list represents the data size; set it to -1.
                 memset((AddressType*)tmpblocks, -1, sizeof(AddressType) * m_blockLimit);
             } else {
-                tmpblocks = At(key);
+                tmpblocks = GetKey(key);
             }
             int64_t* postingSize = (int64_t*)tmpblocks;
             // If postingSize is less than 0, it means the mapping block is newly allocated—directly
-            if (*postingSize < 0) {
+            if (static_cast<int>(*postingSize) < 0) {
                 if (!m_pBlockController.GetBlocks(postingSize + 1, blocks))
                 {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
@@ -864,7 +859,7 @@ namespace SPTAG::SPANN {
                     if (lock) lock->unlock();
                     return ErrorCode::DiskIOFail;
                 }
-                *postingSize = value.size();
+                *postingSize = ((int64_t)(value.size()) | checksum);                 
                 if (!m_pBlockController.WriteBlocks(postingSize + 1, blocks, value, timeout, reqs))
                 {
                     m_pBlockController.ReleaseBlocks(postingSize + 1, blocks);
@@ -872,11 +867,11 @@ namespace SPTAG::SPANN {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Put] Write new block failed!\n");
                     if (lock) lock->unlock();
                     return ErrorCode::DiskIOFail;
-                }            
-                At(key) = tmpblocks;
+                }     
+                AtKey(key) = tmpblocks;
             }
             else {
-                uintptr_t partialtmpblocks = 0xffffffffffffffff;
+                uintptr_t partialtmpblocks = InvalidPointer;
                 // Take a batch of mapping blocks from the buffer, and return a batch back later.
                 while (!m_buffer.try_pop(partialtmpblocks));
                 // Acquire a new batch of disk blocks and write data directly.
@@ -887,8 +882,8 @@ namespace SPTAG::SPANN {
                     m_buffer.push(partialtmpblocks);
                     if (lock) lock->unlock();
                     return ErrorCode::DiskIOFail;
-                }
-                *((int64_t*)partialtmpblocks) = value.size();
+                }               
+                *((int64_t*)partialtmpblocks) = ((int64_t)(value.size()) | checksum);
                 if (!m_pBlockController.WriteBlocks((AddressType*)partialtmpblocks + 1, blocks, value, timeout, reqs))
                 {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Put] Write new block failed!\n");
@@ -899,9 +894,9 @@ namespace SPTAG::SPANN {
                 }
 
                 // Release the original blocks
-                m_pBlockController.ReleaseBlocks(postingSize + 1, (int)((*postingSize + PageSize - 1) >> PageSizeEx));
-                while (InterlockedCompareExchange(&At(key), partialtmpblocks, (uintptr_t)postingSize) != (uintptr_t)postingSize) {
-                    postingSize = (int64_t*)At(key);
+                m_pBlockController.ReleaseBlocks(postingSize + 1, (static_cast<int>(*postingSize) + PageSize - 1) >> PageSizeEx);
+                while (InterlockedCompareExchange(&AtKey(key), partialtmpblocks, (uintptr_t)postingSize) != (uintptr_t)postingSize) {
+                    postingSize = (int64_t*)GetKey(key);
                 }
                 m_buffer.push((uintptr_t)postingSize);
             }
@@ -917,30 +912,22 @@ namespace SPTAG::SPANN {
             return Put(std::stoi(key), value, timeout, reqs, true);
         }
 
-        ErrorCode Check(const SizeType key, int size, std::vector<std::uint8_t> *visited) override
+        ErrorCode Check(const SizeType key, std::vector<std::uint8_t> *visited) override
         {
-            SizeType r = m_pBlockMapping.R();
-
-            if (key >= r || At(key) == 0xffffffffffffffff)
+            int64_t *postingSize = (int64_t *)GetKey(key);
+            if ((uintptr_t)postingSize == InvalidPointer)
             {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Check] Key range error: key: %d, mapping size: %d\n", key, r);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Check] Key error: Key %lld\n", (int64_t)key);
                 return ErrorCode::Key_OverFlow;
             }
 
-            int64_t *postingSize = (int64_t *)At(key);
-            if ((*postingSize) != size)
-            {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Check] Key %d failed: postingSize %d is not match real size %d\n", key, (int)(*postingSize), size);
-                return ErrorCode::Posting_SizeError;
-            }
-
-            int blocks = (int)(((*postingSize + PageSize - 1) >> PageSizeEx));
+            int blocks = ((static_cast<int>(*postingSize) + PageSize - 1) >> PageSizeEx);
             for (int i = 1; i <= blocks; i++)
             {
                 if (postingSize[i] < 0 || postingSize[i] >= m_pBlockController.TotalBlocks())
                 {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                                 "[Check] Key %d failed: error block id %d (should be 0 ~ %d)\n", key,
+                                 "[Check] Key %lld failed: error block id %d (should be 0 ~ %d)\n", (int64_t)key,
                                  (int)(postingSize[i]), m_pBlockController.TotalBlocks());
                     return ErrorCode::Block_IDError;
                 }
@@ -948,14 +935,14 @@ namespace SPTAG::SPANN {
 
                 if (postingSize[i] >= visited->size()) 
                 {
-                	SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Check] Key %d failed: BLOCK %lld exceed total block size %zu!\n", key,
+                	SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Check] Key %lld failed: BLOCK %lld exceed total block size %zu!\n", (int64_t)key,
                                 postingSize[i], visited->size());
                     continue;
                 }
                 
                 if (visited->at(postingSize[i]) > 0)
                 {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Check] Key %d failed: Block %lld double used!\n", key, postingSize[i]);
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Check] Key %lld failed: Block %lld double used!\n", (int64_t)key, postingSize[i]);
                     return ErrorCode::Block_IDError;
                 }
                 else
@@ -966,9 +953,13 @@ namespace SPTAG::SPANN {
             return ErrorCode::Success;
         }
 
-        int64_t GetApproximateMemoryUsage() const override
+        int64_t GetApproximateMemoryUsage() override
         {
-            int64_t result = m_pBlockMapping.BufferSize();
+            int64_t result = 0;
+            {
+                std::shared_lock<std::shared_timed_mutex> lock(m_updateMutex);
+                result = m_pBlockMapping.size() * m_blockLimit * sizeof(AddressType);
+            }
             if (m_pShardedLRUCache)
             {
                 result += m_pShardedLRUCache->GetApproximateMemoryUsage();
@@ -978,16 +969,8 @@ namespace SPTAG::SPANN {
         }
         
         ErrorCode Merge(const SizeType key, const std::string &value, const std::chrono::microseconds &timeout,
-                        std::vector<Helper::AsyncReadRequest> *reqs,
-                        std::function<bool(const void *val, const int size)> checksum)
+                        std::vector<Helper::AsyncReadRequest> *reqs, int& size) override
         {
-            SizeType r = m_pBlockMapping.R();
-            if (key >= r)
-            {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Key range error: key: %d, mapping size: %d\n", key, r);
-                return ErrorCode::Key_OverFlow;
-            }
-
             std::shared_timed_mutex *lock = nullptr;
             if (m_pShardedLRUCache)
             {
@@ -995,31 +978,34 @@ namespace SPTAG::SPANN {
                 lock->lock();
             }
 
-            int64_t* postingSize = (int64_t*)At(key);
-            if (((uintptr_t)postingSize) == 0xffffffffffffffff || *postingSize < 0)
+            int64_t* postingSize = (int64_t*)GetKey(key);
+            if (((uintptr_t)postingSize) == InvalidPointer || static_cast<int>(*postingSize) < 0)
             {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Merge] Key %d failed: postingSize < 0\n", key);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Merge] Key %lld failed: postingSize < 0\n", (int64_t)key);
                 if (lock) lock->unlock();
                 return ErrorCode::Key_NotFound;
                 //return Put(key, value, timeout, reqs);
             }
 
-            auto newSize = *postingSize + value.size();
+            auto newSize = static_cast<int>(*postingSize) + value.size();
             int newblocks = (int)(((newSize + PageSize - 1) >> PageSizeEx));
             if (newblocks >= m_blockLimit) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "[Merge] Key %d failed: new size %lld bytes requires %d blocks (limit: %d)\n",
-                    key, static_cast<long long>(newSize), newblocks, m_blockLimit);
+                    "[Merge] Key %lld failed: new size %d bytes requires %d blocks (limit: %d)\n",
+                    (int64_t)key, (int)newSize, newblocks, m_blockLimit);
 
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "[Merge] Original size: %lld bytes, Merge size: %lld bytes\n",
-                    static_cast<long long>(*postingSize), static_cast<long long>(value.size()));
+                    "[Merge] Original size: %d bytes, Merge size: %d bytes\n",
+                    static_cast<int>(*postingSize), static_cast<int>(value.size()));
                 if (lock) lock->unlock();
                 return ErrorCode::Posting_OverFlow;
             }
-            if (m_pShardedLRUCache && m_pShardedLRUCache->merge(key, (void *)(value.data()), (int)(value.size()), checksum))
+            
+            ChecksumType checksum = (ChecksumType)(*postingSize >> 32);
+            checksum = m_checkSum.AppendChecksum(checksum, value.c_str(), (int)(value.size()));
+            if (m_pShardedLRUCache && m_pShardedLRUCache->merge(key, (void *)(value.data()), (int)(value.size())))
             {
-                int oldblocks = (int)(((*postingSize + PageSize - 1) >> PageSizeEx));
+                int oldblocks = ((static_cast<int>(*postingSize) + PageSize - 1) >> PageSizeEx);
                 int allocblocks = newblocks - oldblocks;
                 if (allocblocks > 0 && !m_pBlockController.GetBlocks(postingSize + 1 + oldblocks, allocblocks))
                 {
@@ -1027,14 +1013,15 @@ namespace SPTAG::SPANN {
                     if (lock) lock->unlock();
                     return ErrorCode::DiskIOFail;
                 }
-                *postingSize = newSize;
+                *postingSize = (newSize | (((int64_t)checksum) << 32));
                 if (lock) lock->unlock();
+                size = (int)newSize;
                 return ErrorCode::Success;
             }
 
-            postingSize = (int64_t *)At(key);
-            auto sizeInPage = (*postingSize) % PageSize;    // Actual size of the last block
-            int oldblocks = (int)(*postingSize >> PageSizeEx);
+            postingSize = (int64_t *)GetKey(key);
+            int sizeInPage = static_cast<int>(*postingSize) % PageSize;    // Actual size of the last block
+            int oldblocks = static_cast<int>(*postingSize) >> PageSizeEx;
             int allocblocks = newblocks - oldblocks;
             // If the last block is not full, we need to read it first, then append the new data, and write it back.
             if (sizeInPage != 0) {
@@ -1050,7 +1037,7 @@ namespace SPTAG::SPANN {
                 //PrintPostingDiff(lastblock, newValue, "0");
                 newValue += value;
 
-                uintptr_t tmpblocks = 0xffffffffffffffff;
+                uintptr_t tmpblocks = InvalidPointer;
                 while (!m_buffer.try_pop(tmpblocks));
                 memcpy((AddressType*)tmpblocks, postingSize, sizeof(AddressType) * (oldblocks + 1));
                 if (!m_pBlockController.GetBlocks((AddressType *)tmpblocks + 1 + oldblocks, allocblocks))
@@ -1070,12 +1057,12 @@ namespace SPTAG::SPANN {
                     if (lock) lock->unlock();
                     return ErrorCode::DiskIOFail;
                 }
-                *((int64_t *)tmpblocks) = newSize;
+                *((int64_t *)tmpblocks) = (newSize | (((int64_t)checksum) << 32));
 
                 // This is also to ensure checkpoint correctness, so we release the partially used block and allocate a new one.
                 m_pBlockController.ReleaseBlocks(postingSize + 1 + oldblocks, 1);
-                while (InterlockedCompareExchange(&At(key), tmpblocks, (uintptr_t)postingSize) != (uintptr_t)postingSize) {
-                    postingSize = (int64_t*)At(key);
+                while (InterlockedCompareExchange(&AtKey(key), tmpblocks, (uintptr_t)postingSize) != (uintptr_t)postingSize) {
+                    postingSize = (int64_t*)GetKey(key);
                 }
                 m_buffer.push((uintptr_t)postingSize);
             }
@@ -1095,17 +1082,15 @@ namespace SPTAG::SPANN {
                     if (lock) lock->unlock();
                     return ErrorCode::DiskIOFail;
                 }
-                *postingSize = newSize;
+                *postingSize = (newSize | (((int64_t)checksum)<< 32));
             }
             if (lock) lock->unlock();
+            size = (int)newSize;
             return ErrorCode::Success;
         }
 
 
         ErrorCode Delete(SizeType key) override {
-            SizeType r = m_pBlockMapping.R();
-            if (key >= r) return ErrorCode::Key_OverFlow;
-
             std::shared_timed_mutex *lock = nullptr;
             if (m_pShardedLRUCache)
             {
@@ -1114,28 +1099,21 @@ namespace SPTAG::SPANN {
                 m_pShardedLRUCache->del(key);
             }
 
-            int64_t* postingSize = (int64_t*)At(key);
-            if (((uintptr_t)postingSize) == 0xffffffffffffffff || *postingSize < 0)
+            int64_t* postingSize = (int64_t*)GetKey(key);
+            if (((uintptr_t)postingSize) == InvalidPointer || static_cast<int>(*postingSize) < 0)
             {
                 if (lock) lock->unlock();
                 return ErrorCode::Key_NotFound;
             }
 
-            int blocks = (int)((*postingSize + PageSize - 1) >> PageSizeEx);
+            int blocks = (static_cast<int>(*postingSize)+ PageSize - 1) >> PageSizeEx;
             m_pBlockController.ReleaseBlocks(postingSize + 1, blocks);
             m_buffer.push((uintptr_t)postingSize);
-            //m_key_reserve.push(key);
-            /*
-            while (m_key_reserve.unsafe_size() > m_bufferLimit)
+
             {
-                SizeType cleanKey = 0;
-                if (m_key_reserve.try_pop(cleanKey))
-                {
-                    At(cleanKey) = 0xffffffffffffffff;
-                }
+                std::unique_lock<std::shared_timed_mutex> updatelock(m_updateMutex);
+                m_pBlockMapping.unsafe_erase(key);
             }
-            */
-            At(key) = 0xffffffffffffffff;
             if (lock) lock->unlock();
             return ErrorCode::Success;
         }
@@ -1172,7 +1150,7 @@ namespace SPTAG::SPANN {
             m_pBlockController.IOStatistics();
         }
 
-        ErrorCode Load(std::string path, SizeType blockSize, SizeType capacity) {
+        ErrorCode Load(std::string path) {
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Load mapping From %s\n", path.c_str());
             auto ptr = f_createIO();
             if (ptr == nullptr || !ptr->Initialize(path.c_str(), std::ios::binary | std::ios::in)) return ErrorCode::FailedOpenFile;
@@ -1180,14 +1158,15 @@ namespace SPTAG::SPANN {
             SizeType CR, mycols;
             IOBINARY(ptr, ReadBinary, sizeof(SizeType), (char*)&CR);
             IOBINARY(ptr, ReadBinary, sizeof(SizeType), (char*)&mycols);
-            if (mycols > m_blockLimit) m_blockLimit = mycols;
+            if (mycols > m_blockLimit + 1) m_blockLimit = mycols - 1;
 
-            m_pBlockMapping.Initialize(CR, 1, blockSize, capacity);
             for (int i = 0; i < CR; i++) {
-                At(i) = (uintptr_t)(new AddressType[m_blockLimit]);
-                IOBINARY(ptr, ReadBinary, sizeof(AddressType) * mycols, (char*)At(i));
+                AddressType key;
+                IOBINARY(ptr, ReadBinary, sizeof(AddressType), (char*)&key);
+                AtKey((SizeType)key) = (uintptr_t)(new AddressType[m_blockLimit]);
+                IOBINARY(ptr, ReadBinary, sizeof(AddressType) * m_blockLimit, (char*)GetKey(key));
             }
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Load mapping (%d,%d) Finish!\n", CR, mycols);
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Load mapping (%lld,%lld) Finish!\n", (std::int64_t)CR, (std::int64_t)mycols);
             return ErrorCode::Success;
         }
         
@@ -1203,36 +1182,18 @@ namespace SPTAG::SPANN {
             auto ptr = f_createIO();
             if (ptr == nullptr || !ptr->Initialize(path.c_str(), std::ios::binary | std::ios::out)) return ErrorCode::FailedCreateFile;
 
-            SizeType CR = m_pBlockMapping.R();
+            std::unique_lock<std::shared_timed_mutex> updatelock(m_updateMutex);
+            SizeType CR = m_pBlockMapping.size();
+            SizeType CC = m_blockLimit + 1;
             IOBINARY(ptr, WriteBinary, sizeof(SizeType), (char*)&CR);
-            IOBINARY(ptr, WriteBinary, sizeof(SizeType), (char*)&m_blockLimit);
-            std::vector<AddressType> empty(m_blockLimit, 0xffffffffffffffff);
-            for (int i = 0; i < CR; i++) {
-                if (At(i) == 0xffffffffffffffff) {
-                    IOBINARY(ptr, WriteBinary, sizeof(AddressType) * m_blockLimit, (char*)(empty.data()));
-                }
-                else {
-                    int64_t* postingSize = (int64_t*)At(i);
-                    IOBINARY(ptr, WriteBinary, sizeof(AddressType) * m_blockLimit, (char*)postingSize);
-                }
+            IOBINARY(ptr, WriteBinary, sizeof(SizeType), (char*)&CC);
+            for (auto& it : m_pBlockMapping) {
+                AddressType key = (AddressType)it.first;
+                IOBINARY(ptr, WriteBinary, sizeof(AddressType), (char*)&(key));
+                int64_t* postingSize = (int64_t*)(it.second);
+                IOBINARY(ptr, WriteBinary, sizeof(AddressType) * m_blockLimit, (char*)postingSize);
             }
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Save mapping (%d,%d) Finish!\n", CR, m_blockLimit);
-	    /*
-            for (int i = 0; i < 10; i++) {
-                std::cout << "i=" << i << ": ";
-                for (int j = 0; j < 10; j++) {
-                    std::cout << m_pBlockMapping[i][j] << " ";
-                }
-                std::cout << std::endl;
-            }
-            for (int i = m_pBlockMapping.R() - 10; i < m_pBlockMapping.R(); i++) {
-                std::cout << "i=" << i << ": ";
-                for (int j = 0; j < 10; j++) {
-                    std::cout << m_pBlockMapping[i][j] << " ";
-                }
-                std::cout << std::endl;
-            }
-	    */
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Save mapping (%lld, %lld) Finish!\n", (std::int64_t)CR, (std::int64_t)CC);
             return ErrorCode::Success;
         }
 
@@ -1248,20 +1209,24 @@ namespace SPTAG::SPANN {
             return m_pBlockController.TotalBlocks();
         }
 
+        static const uintptr_t InvalidPointer = 0xffffffffffffffff;
+
     private:
         std::string m_mappingPath;
+        int m_layer;
         SizeType m_blockLimit;
-        COMMON::Dataset<uintptr_t> m_pBlockMapping;
+        Helper::Concurrent::ConcurrentMap<SizeType, uintptr_t> m_pBlockMapping;
+        bool m_checkSumMultiGet;
+        COMMON::Checksum m_checkSum;
         SizeType m_bufferLimit;
         Helper::Concurrent::ConcurrentQueue<uintptr_t> m_buffer;
-        Helper::Concurrent::ConcurrentQueue<SizeType> m_key_reserve;
 
         std::shared_ptr<Helper::ThreadPool> m_compactionThreadPool;
         BlockController m_pBlockController;
         ShardedLRUCache *m_pShardedLRUCache{nullptr};
 
         bool m_shutdownCalled;
-        std::shared_mutex m_updateMutex;
+        std::shared_timed_mutex m_updateMutex;
     };
 }
 #endif

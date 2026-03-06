@@ -349,8 +349,7 @@ namespace SPTAG::SPANN
         }
 
         ErrorCode Merge(SizeType key, const std::string &value, const std::chrono::microseconds &timeout,
-                        std::vector<Helper::AsyncReadRequest> *reqs,
-                        std::function<bool(const void *val, const int size)> checksum) override
+                        std::vector<Helper::AsyncReadRequest> *reqs, int& size) override
         {
             if (key >= m_pBlockMapping.R()) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Key range error: key: %d, mapping size: %d\n", key, m_pBlockMapping.R());
@@ -398,6 +397,7 @@ namespace SPTAG::SPANN
                 m_pBlockController.WriteBlocks(postingSize + 1 + oldblocks, allocblocks, value, timeout, reqs);
                 *postingSize = newSize;
             }
+            size = (int)newSize;
             return ErrorCode::Success;
         }
 

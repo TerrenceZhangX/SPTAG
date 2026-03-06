@@ -104,8 +104,6 @@ namespace SPTAG {
             std::string m_ssdInfoFile;
             std::string m_checksumFile;
             bool m_useDirectIO;
-            bool m_preReassign;
-            float m_preReassignRatio;
             bool m_enableWAL;
             bool m_disableCheckpoint;
 
@@ -197,6 +195,9 @@ namespace SPTAG {
             int m_asyncAppendQueueSize;
             bool m_allowZeroReplica;
 
+            // Multi layers
+            int m_layers;
+            
             Options() {
 #define DefineBasicParameter(VarName, VarType, DefaultValue, RepresentStr) \
                 VarName = DefaultValue; \

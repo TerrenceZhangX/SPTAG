@@ -77,6 +77,8 @@ bool BatchReadFileAsync(std::vector<std::shared_ptr<Helper::DiskIO>> &handlers, 
     {
         AsyncReadRequest *readRequest = &(readRequests[i]);
 
+        if (readRequest->m_readSize == 0) continue;
+
         iocp = readRequest->m_status & 0xffff;
         int fileid = (readRequest->m_status >> 16);
 
@@ -227,7 +229,7 @@ bool BatchReadFileAsync(std::vector<std::shared_ptr<Helper::DiskIO>> &handlers, 
         for (int i = 0; i < num; i++)
         {
             AsyncReadRequest *readRequest = &(readRequests[i]);
-
+            if (readRequest->m_readSize == 0) continue;
             int fileid = (readRequest->m_status >> 16);
             if (fileid != currFileId)
             {

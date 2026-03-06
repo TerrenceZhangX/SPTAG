@@ -280,16 +280,24 @@ namespace SPTAG::SPANN
         }
 
         ErrorCode Merge(const SizeType key, const std::string &value, const std::chrono::microseconds &timeout,
-                        std::vector<Helper::AsyncReadRequest> *reqs,
-                        std::function<bool(const void *val, const int size)> checksum) override
+                        std::vector<Helper::AsyncReadRequest> *reqs, int& size) override
         {
             if (value.empty()) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Error! empty append posting!\n");
             }
             std::string k((char*)&key, sizeof(SizeType));
+            std::string v;
             auto s = db->Merge(rocksdb::WriteOptions(), k, value);
             if (s == rocksdb::Status::OK()) {
-                return ErrorCode::Success;
+                s = db->Get(rocksdb::ReadOptions(), k, &v);
+                if (s == rocksdb::Status::OK()) {
+                    size = v.size();
+                    return ErrorCode::Success;
+                }
+                else {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "\e[0;31mError in Get\e[0m: %s, key: %d\n", s.getState(), key);
+                    return ErrorCode::Fail;
+                }
             }
             else {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "\e[0;31mError in Merge\e[0m: %s, key: %d\n", s.getState(), key);

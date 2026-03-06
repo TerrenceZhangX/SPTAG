@@ -22,6 +22,7 @@ public:
         : m_target(nullptr),
           m_resultNum(0),
           m_withMeta(false),
+          m_withVec(false),
           m_quantizedTarget(nullptr),
           m_quantizedSize(0),
           m_scanned(0)
@@ -30,19 +31,24 @@ public:
 
     QueryResult(int p_resultNum)
     {
-        Init(nullptr, p_resultNum, true);
+        Init(nullptr, p_resultNum, true, false);
     }
 
     QueryResult(const void* p_target, int p_resultNum, bool p_withMeta)
     {
-        Init(p_target, p_resultNum, p_withMeta);
+        Init(p_target, p_resultNum, p_withMeta, false);
     }
 
-    
+    QueryResult(const void* p_target, int p_resultNum, bool p_withMeta, bool p_withVec)
+    {
+        Init(p_target, p_resultNum, p_withMeta, p_withVec);
+    }
+
     QueryResult(const void* p_target, int p_resultNum, bool p_withMeta, BasicResult* p_results)
         : m_target(p_target),
           m_resultNum(p_resultNum),
           m_withMeta(p_withMeta),
+          m_withVec(false),
           m_quantizedTarget((void*)p_target),
           m_quantizedSize(0), 
           m_scanned(0)
@@ -53,7 +59,7 @@ public:
 
     QueryResult(const QueryResult& p_other)
     {
-        Init(p_other.m_target, p_other.m_resultNum, p_other.m_withMeta);
+        Init(p_other.m_target, p_other.m_resultNum, p_other.m_withMeta, p_other.m_withVec);
         if (m_resultNum > 0)
         {
             std::copy(p_other.m_results.Data(), p_other.m_results.Data() + m_resultNum, m_results.Data());
@@ -71,7 +77,7 @@ public:
     {
         if (m_target != m_quantizedTarget) ALIGN_FREE(m_quantizedTarget);
 
-        Init(p_other.m_target, p_other.m_resultNum, p_other.m_withMeta);
+        Init(p_other.m_target, p_other.m_resultNum, p_other.m_withMeta, p_other.m_withVec);
         if (m_resultNum > 0)
         {
             std::copy(p_other.m_results.Data(), p_other.m_results.Data() + m_resultNum, m_results.Data());
@@ -95,11 +101,12 @@ public:
     }
 
 
-    inline void Init(const void* p_target, int p_resultNum, bool p_withMeta)
+    inline void Init(const void* p_target, int p_resultNum, bool p_withMeta, bool p_withVec)
     {
         m_target = p_target;
         m_resultNum = p_resultNum;
         m_withMeta = p_withMeta;
+        m_withVec = p_withVec;
         m_quantizedTarget = (void*)p_target;
         m_quantizedSize = 0;
         m_scanned = 0;
@@ -187,6 +194,11 @@ public:
     }
 
 
+    inline bool WithVec() const
+    {
+        return m_withVec;
+    }
+
     inline const ByteArray& GetMetadata(int p_index) const
     {
         if (p_index < m_resultNum && m_withMeta)
@@ -207,6 +219,25 @@ public:
     }
 
 
+    inline const ByteArray& GetVec(int p_index) const
+    {
+        if (p_index < m_resultNum && m_withVec)
+        {
+            return m_results[p_index].Vec;
+        }
+
+        return ByteArray::c_empty;
+    }
+
+
+    inline void SetVec(int p_index, ByteArray p_vec)
+    {
+        if (p_index < m_resultNum && m_withVec)
+        {
+            m_results[p_index].Vec = std::move(p_vec);
+        }
+    }
+
     inline void Reset()
     {
         for (int i = 0; i < m_resultNum; i++)
@@ -214,6 +245,8 @@ public:
             m_results[i].VID = -1;
             m_results[i].Dist = MaxDist;
             m_results[i].Meta.Clear();
+            m_results[i].Vec.Clear();
+            m_results[i].RelaxedMono = false;
         }
     }
 
@@ -261,6 +294,8 @@ protected:
     int m_resultNum;
 
     bool m_withMeta;
+
+    bool m_withVec;
 
     Array<BasicResult> m_results;
 

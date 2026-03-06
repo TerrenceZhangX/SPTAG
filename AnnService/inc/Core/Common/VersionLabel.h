@@ -24,9 +24,24 @@ namespace SPTAG
                 m_data.SetName("versionLabelID");
             }
 
-            void Initialize(SizeType size, SizeType blockSize, SizeType capacity)
+            void Initialize(SizeType size, SizeType blockSize, SizeType capacity, COMMON::Dataset<SizeType>* globalIDs = nullptr)
             {
                 m_data.Initialize(size, 1, blockSize, capacity);
+                if (globalIDs != nullptr && globalIDs->R() > 0) {
+                    DeleteAll();
+                    for (SizeType i = 0; i < globalIDs->R(); i++) {
+                        SizeType globalID = *(globalIDs->At(i));
+                        SetVersion(globalID, -1);
+                    }
+                }
+            }
+
+            void DeleteAll() 
+            {
+                m_deleted = m_data.R();
+                for (SizeType i = 0; i < m_data.R(); i++) {
+                    *m_data[i] = 0xfe;
+                }
             }
 
             inline SizeType Count() const { return m_data.R(); }
@@ -73,7 +88,8 @@ namespace SPTAG
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Error vid in VersionLabel SetVersion operation: %d. Max Allowed: %d\n", key, m_data.R());
                     return;
                 }
-                (*m_data[key]) = version;
+                uint8_t oldvalue = (uint8_t)InterlockedExchange8((char*)(m_data[key]), (char)version);
+                if (oldvalue == 0xfe && version != 0xfe) m_deleted--;
             }
 
             inline bool IncVersion(const SizeType& key, uint8_t* newVersion)

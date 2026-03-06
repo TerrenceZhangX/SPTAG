@@ -288,40 +288,55 @@ namespace SPTAG {
             }
             virtual bool Available() = 0;
 
-            virtual bool LoadIndex(Options& p_options, COMMON::VersionLabel& p_versionMap, COMMON::Dataset<std::uint64_t>& m_vectorTranslateMap,  std::shared_ptr<VectorIndex> m_index) = 0;
+            virtual bool LoadIndex(Options& p_options) = 0;
 
             virtual ErrorCode SearchIndex(ExtraWorkSpace* p_exWorkSpace,
                 QueryResult& p_queryResults,
-                std::shared_ptr<VectorIndex> p_index,
                 SearchStats* p_stats, std::set<SizeType>* truth = nullptr, std::map<SizeType, std::set<SizeType>>* found = nullptr) = 0;
 
             virtual ErrorCode SearchIterativeNext(ExtraWorkSpace* p_exWorkSpace, QueryResult& p_headResults,
-                QueryResult& p_queryResults,
-                std::shared_ptr<VectorIndex> p_index, const VectorIndex* p_spann) = 0;
+                QueryResult& p_queryResults) = 0;
 
             virtual ErrorCode SearchIndexWithoutParsing(ExtraWorkSpace* p_exWorkSpace) = 0;
 
             virtual ErrorCode SearchNextInPosting(ExtraWorkSpace* p_exWorkSpace, QueryResult& p_headResults,
-                QueryResult& p_queryResults,
-                std::shared_ptr<VectorIndex>& p_index, const VectorIndex* p_spann) = 0;
+                QueryResult& p_queryResults) = 0;
 
             virtual bool BuildIndex(std::shared_ptr<Helper::VectorSetReader>& p_reader, 
                 std::shared_ptr<VectorIndex> p_index, 
-                Options& p_opt, COMMON::VersionLabel& p_versionMap, COMMON::Dataset<std::uint64_t>& p_vectorTranslateMap, SizeType upperBound = -1) = 0;
+                Options& p_opt, COMMON::Dataset<SizeType>& p_headtoLocal, Helper::Concurrent::ConcurrentMap<SizeType, SizeType>& p_headGlobaltoLocal, COMMON::Dataset<SizeType>& p_localToGlobal, SizeType upperBound = -1) = 0;
 
             virtual void InitWorkSpace(ExtraWorkSpace* p_exWorkSpace, bool clear = false) = 0;
-
-            virtual ErrorCode GetPostingDebug(ExtraWorkSpace* p_exWorkSpace, std::shared_ptr<VectorIndex> p_index, SizeType vid, std::vector<SizeType>& VIDs, std::shared_ptr<VectorSet>& vecs) = 0;
             
-            virtual ErrorCode RefineIndex(std::shared_ptr<VectorIndex>& p_index, bool p_prereassign = true,
-                                          std::vector<SizeType> *p_headmapping = nullptr,
-                                          std::vector<SizeType> *p_mapping = nullptr)
+            virtual ErrorCode RefineIndex()
             {
                 return ErrorCode::Undefined;
             }
             virtual ErrorCode AddIndex(ExtraWorkSpace* p_exWorkSpace, std::shared_ptr<VectorSet>& p_vectorSet,
-                std::shared_ptr<VectorIndex> p_index, SizeType p_begin) { return ErrorCode::Undefined; }
+                SizeType p_begin) { return ErrorCode::Undefined; }
             virtual ErrorCode DeleteIndex(SizeType p_id) { return ErrorCode::Undefined; }
+
+            virtual SizeType GetNumSamples() const = 0;
+
+            virtual bool ContainSample(const SizeType idx) const
+            {
+                return true;
+            }
+
+            virtual SizeType GetNumDeleted() const
+            {
+                return 0;
+            }
+
+            virtual ErrorCode GetContainedIDs(std::vector<SizeType>& globalIDs) 
+            {
+                return ErrorCode::Undefined;
+            }
+            
+            virtual ErrorCode AddIDCapacity(SizeType capa, bool deleted) 
+            {
+                return ErrorCode::Undefined;
+            }
 
             virtual bool AllFinished() { return false; }
             virtual void GetDBStats() { return; }
@@ -329,13 +344,9 @@ namespace SPTAG {
             virtual void GetIndexStats(int finishedInsert, bool cost, bool reset) { return; }
             virtual void ForceCompaction() { return; }
 
-            virtual bool CheckValidPosting(SizeType postingID) = 0;
             virtual ErrorCode CheckPosting(SizeType postingiD, std::vector<std::uint8_t> *visited = nullptr,
                                            ExtraWorkSpace *p_exWorkSpace = nullptr) = 0;
-            virtual SizeType SearchVector(ExtraWorkSpace* p_exWorkSpace, std::shared_ptr<VectorSet>& p_vectorSet,
-                std::shared_ptr<VectorIndex> p_index, int testNum = 64, SizeType VID = -1) { return -1; }
-            virtual void ForceGC(ExtraWorkSpace* p_exWorkSpace, VectorIndex* p_index) { return; }
-
+            
             virtual ErrorCode GetWritePosting(ExtraWorkSpace *p_exWorkSpace, SizeType pid, std::string &posting,
                                               bool write = false)
             {

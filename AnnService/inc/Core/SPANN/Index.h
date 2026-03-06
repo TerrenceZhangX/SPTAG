@@ -30,6 +30,7 @@
 
 #include <functional>
 #include <shared_mutex>
+#include <memory>
 
 namespace SPTAG
 {
@@ -46,15 +47,18 @@ namespace SPTAG
 	    class SPANNResultIterator;
 
         template<typename T>
+        class Index;
+        template<typename T>
         class Index : public VectorIndex
         {
         private:
-            std::shared_ptr<VectorIndex> m_index;
-	        COMMON::Dataset<std::uint64_t> m_vectorTranslateMap;
-            std::unordered_map<std::string, std::string> m_headParameters;
+            std::shared_ptr<VectorIndex> m_topIndex;
+	        COMMON::Dataset<SizeType> m_topLocalToGlobalID;
+            Helper::Concurrent::ConcurrentMap<SizeType, SizeType> m_topGlobalToLocalID;
+            std::shared_timed_mutex m_topLocalToGlobalIDLock;
+            std::unordered_map<std::string, std::string> m_topParameters;
 
-            COMMON::VersionLabel m_versionMap;
-            std::shared_ptr<IExtraSearcher> m_extraSearcher;
+            std::vector<std::shared_ptr<IExtraSearcher>> m_extraSearchers;
             std::unique_ptr<SPTAG::COMMON::IWorkSpaceFactory<ExtraWorkSpace>> m_workSpaceFactory;
 
             Options m_options;
@@ -65,8 +69,6 @@ namespace SPTAG
             std::mutex m_dataAddLock;
             std::shared_timed_mutex m_dataDeleteLock;
             std::shared_timed_mutex m_checkPointLock;
-
- 
 
         public:
             Index()
@@ -79,12 +81,13 @@ namespace SPTAG
 
             ~Index() {}
 
-            inline std::shared_ptr<VectorIndex> GetMemoryIndex() { return m_index; }
-            inline std::shared_ptr<IExtraSearcher> GetDiskIndex() { return m_extraSearcher; }
+            inline std::shared_ptr<VectorIndex> GetMemoryIndex() { return m_topIndex; }
+            inline std::shared_ptr<IExtraSearcher> GetDiskIndex(int layer = 0) { if (layer < m_extraSearchers.size()) return m_extraSearchers[layer]; else return nullptr; }
             inline Options* GetOptions() { return &m_options; }
 
-            inline SizeType GetNumSamples() const { return m_versionMap.Count(); }
-            inline DimensionType GetFeatureDim() const { return m_index->GetFeatureDim(); }
+            inline SizeType GetNumSamples() const { return GetNumSamples(0); }
+            inline SizeType GetNumSamples(int layer) const { if (layer < m_extraSearchers.size()) return m_extraSearchers[layer]->GetNumSamples(); else return m_topIndex->GetNumSamples(); }
+            inline DimensionType GetFeatureDim() const { return m_topIndex->GetFeatureDim(); }
             inline SizeType GetValueSize() const { return m_options.m_dim * sizeof(T); }
 
             inline int GetCurrMaxCheck() const { return m_options.m_maxCheck; }
@@ -108,21 +111,29 @@ namespace SPTAG
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "GetDistance NOT SUPPORT FOR SPANN");
                 return -1;
             }
-            inline bool ContainSample(const SizeType idx) const { return idx >= 0 && idx < m_versionMap.Count() && !m_versionMap.Deleted(idx); }
+            inline bool ContainSample(const SizeType idx) const { return ContainSample(idx, 0); }
+            inline bool ContainSample(const SizeType idx, int layer) const { 
+                if (layer < m_extraSearchers.size()) return m_extraSearchers[layer]->ContainSample(idx); 
+                else {
+                    auto it = m_topGlobalToLocalID.find(idx);
+                    if (it == m_topGlobalToLocalID.end()) return false;
+                    return m_topIndex->ContainSample(it->second);
+                }
+            }
 
             std::shared_ptr<std::vector<std::uint64_t>> BufferSize() const
             {
                 std::shared_ptr<std::vector<std::uint64_t>> buffersize(new std::vector<std::uint64_t>);
-                auto headIndexBufferSize = m_index->BufferSize();
+                auto headIndexBufferSize = m_topIndex->BufferSize();
                 buffersize->insert(buffersize->end(), headIndexBufferSize->begin(), headIndexBufferSize->end());
-                buffersize->push_back(sizeof(long long) * m_index->GetNumSamples());
+                buffersize->push_back(sizeof(long long) * m_topIndex->GetNumSamples());
                 return std::move(buffersize);
             }
 
             std::shared_ptr<std::vector<std::string>> GetIndexFiles() const
             {
                 std::shared_ptr<std::vector<std::string>> files(new std::vector<std::string>);
-                auto headfiles = m_index->GetIndexFiles();
+                auto headfiles = m_topIndex->GetIndexFiles();
                 for (auto file : *headfiles) {
                     files->push_back(m_options.m_headIndexFolder + FolderSep + file);
                 }
@@ -151,7 +162,8 @@ namespace SPTAG
 
             ErrorCode SearchIndexWithFilter(QueryResult& p_query, std::function<bool(const ByteArray&)> filterFunc, int maxCheck = 0, bool p_searchDeleted = false) const;
 
-            ErrorCode SearchDiskIndex(QueryResult& p_query, SearchStats* p_stats = nullptr) const;
+            ErrorCode SearchHeadIndex(QueryResult& p_query, int p_tolayer, ExtraWorkSpace *p_exWorkSpace = nullptr) const;
+            ErrorCode SearchDiskIndex(QueryResult& p_query, SearchStats* p_stats = nullptr, int p_tolayer = 0, ExtraWorkSpace *p_exWorkSpace = nullptr) const;
 	        ErrorCode SearchDiskIndexIterative(QueryResult& p_headQuery, QueryResult& p_query, ExtraWorkSpace* extraWorkspace) const;
             ErrorCode DebugSearchDiskIndex(QueryResult& p_query, int p_subInternalResultNum, int p_internalResultNum,
                 SearchStats* p_stats = nullptr, std::set<SizeType>* truth = nullptr, std::map<SizeType, std::set<SizeType>>* found = nullptr) const;
@@ -161,15 +173,63 @@ namespace SPTAG
             std::string GetParameter(const char* p_param, const char* p_section = nullptr) const;
 
             inline const void* GetSample(const SizeType idx) const { return nullptr; }
-            inline SizeType GetNumDeleted() const { return m_versionMap.GetDeleteCount(); }
+            inline SizeType GetNumDeleted() const { return GetNumDeleted(0); }
+            inline SizeType GetNumDeleted(int layer) const { if (layer < m_extraSearchers.size()) return m_extraSearchers[layer]->GetNumDeleted(); else return m_topIndex->GetNumDeleted(); }
             inline bool NeedRefine() const
             {
-                return m_versionMap.GetDeleteCount() > (size_t)(GetNumSamples() * m_options.m_fDeletePercentageForRefine);
+                return GetNumDeleted(0) > (size_t)(GetNumSamples(0) * m_options.m_fDeletePercentageForRefine);
             }
             ErrorCode RefineSearchIndex(QueryResult &p_query, bool p_searchDeleted = false) const { return ErrorCode::Undefined; }
             ErrorCode SearchTree(QueryResult& p_query) const { return ErrorCode::Undefined; }
-            ErrorCode AddIndex(const void* p_data, SizeType p_vectorNum, DimensionType p_dimension, std::shared_ptr<MetadataSet> p_metadataSet, bool p_withMetaIndex = false, bool p_normalized = false);
-            ErrorCode DeleteIndex(const SizeType& p_id);
+            ErrorCode AddHeadIndex(const void* p_data, SizeType VID, uint8_t version, DimensionType p_dimension, int tolayer, ExtraWorkSpace* extraWorkspace)
+            {
+                if (tolayer < m_extraSearchers.size()) {
+                    std::shared_ptr<VectorSet> vectorSet(new BasicVectorSet(ByteArray((std::uint8_t*)p_data, m_options.m_dim * sizeof(T), false),
+                        GetEnumValueType<T>(), m_options.m_dim, 1));
+                    return m_extraSearchers[tolayer]->AddIndex(extraWorkspace, vectorSet, VID);
+                }
+
+                SizeType begin, end;
+                ErrorCode ret;
+                if ((ret = m_topIndex->AddIndexId(p_data, 1, p_dimension, begin, end)) != ErrorCode::Success)
+                {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to add head index for VID %d to top index.\n", VID);
+                    return ret;
+                }
+
+                {
+                    std::unique_lock<std::shared_timed_mutex> tmplock(m_topLocalToGlobalIDLock);
+                    m_topLocalToGlobalID.AddBatch(1);
+                    *(m_topLocalToGlobalID.At(begin)) = VID;
+                    m_topGlobalToLocalID[VID] = begin;
+                }
+                return m_topIndex->AddIndexIdx(begin, end);
+            }
+            
+            ErrorCode GetHeadIndexMapping(int tolayer, std::vector<SizeType>& globalIDs) {
+                globalIDs.clear();
+                if (tolayer >= m_extraSearchers.size()) {
+                    for (SizeType i = 0; i < m_topLocalToGlobalID.R(); i++) {
+                        if (m_topIndex->ContainSample(i))
+                            globalIDs.push_back(*(m_topLocalToGlobalID.At(i)));
+                    }
+                    return ErrorCode::Success;
+                }
+                return m_extraSearchers[tolayer]->GetContainedIDs(globalIDs);
+            }
+
+            std::string GetPriorityID(SizeType headID, std::shared_ptr<std::string> headVec, int tolayer)
+            {
+                return std::to_string(headID);
+            }
+
+            ErrorCode AddIndex(const void* p_data, SizeType p_vectorNum, DimensionType p_dimension, std::shared_ptr<MetadataSet> p_metadataSet, bool p_withMetaIndex = false, bool p_normalized = false) 
+            { 
+                return AddIndex(p_data, p_vectorNum, p_dimension, p_metadataSet, p_withMetaIndex, p_normalized, nullptr); 
+            }
+            ErrorCode AddIndex(const void* p_data, SizeType p_vectorNum, DimensionType p_dimension, std::shared_ptr<MetadataSet> p_metadataSet, bool p_withMetaIndex, bool p_normalized, SizeType* VID);
+            ErrorCode DeleteIndex(const SizeType& p_id) { return DeleteIndex(p_id, 0); }
+            ErrorCode DeleteIndex(const SizeType& p_id, int layer);
 
             ErrorCode DeleteIndex(const void* p_vectors, SizeType p_vectorNum);
             ErrorCode RefineIndex(const std::vector<std::shared_ptr<Helper::DiskIO>> &p_indexStreams,
@@ -188,14 +248,14 @@ namespace SPTAG
                 if (!raw_specialized_ptr)
                 {
                     // If it is of type SPTAG::COMMON::WorkSpace, we should pass on to child index
-                    if (!m_index) 
+                    if (!m_topIndex) 
                     {
                         delete raw_generic_ptr;
                         return ErrorCode::Fail;
                     }
                     else
                     {
-                        return m_index->SetWorkSpaceFactory(std::unique_ptr<SPTAG::COMMON::IWorkSpaceFactory<SPTAG::COMMON::IWorkSpace>>(raw_generic_ptr));
+                        return m_topIndex->SetWorkSpaceFactory(std::unique_ptr<SPTAG::COMMON::IWorkSpaceFactory<SPTAG::COMMON::IWorkSpace>>(raw_generic_ptr));
                     }
                     
                 }
@@ -205,13 +265,6 @@ namespace SPTAG
                     return ErrorCode::Success;
                 }
             }
-
-            SizeType GetGlobalVID(SizeType vid)
-            {
-                return static_cast<SizeType>(*(m_vectorTranslateMap[vid]));
-            }
-
-            ErrorCode GetPostingDebug(SizeType vid, std::vector<SizeType>& VIDs, std::shared_ptr<VectorSet>& vecs);
 
         private:
             bool CheckHeadIndexType();
@@ -225,34 +278,31 @@ namespace SPTAG
             ErrorCode BuildIndexInternal(std::shared_ptr<Helper::VectorSetReader>& p_reader);
 
         public:
-            bool AllFinished() { if (m_options.m_storage != Storage::STATIC) return m_extraSearcher->AllFinished(); return true; }
-
-            void GetDBStat() { 
-                if (m_options.m_storage != Storage::STATIC) m_extraSearcher->GetDBStats();
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Current Vector Num: %d, Deleted: %d .\n", GetNumSamples(), GetNumDeleted());
+            bool AllFinished() { 
+                if (m_options.m_storage != Storage::STATIC) {
+                    for (auto& searcher : m_extraSearchers) {
+                        if (searcher && !searcher->AllFinished()) return false; 
+                    }
+                }
+                return true;
             }
 
-            void GetIndexStat(int finishedInsert, bool cost, bool reset) { if (m_options.m_storage != Storage::STATIC) m_extraSearcher->GetIndexStats(finishedInsert, cost, reset); }
+            void GetDBStat() { 
+                //if (m_options.m_storage != Storage::STATIC) m_extraSearcher->GetDBStats();
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Current Vector Num: %d, Deleted: %d .\n", GetNumSamples(), GetNumDeleted());
+            }
             
-            void ForceCompaction() { if (m_options.m_storage == Storage::ROCKSDBIO) m_extraSearcher->ForceCompaction(); }
+            void ForceCompaction() { 
+                if (m_options.m_storage == Storage::ROCKSDBIO) {
+                    for (auto& searcher : m_extraSearchers) {
+                        if (searcher) searcher->ForceCompaction(); 
+                    }
+                }
+            }
 
             void StopMerge() { m_options.m_inPlace = true; }
 
             void OpenMerge() { m_options.m_inPlace = false; }
-
-            void ForceGC() { 
-                auto workSpace = m_workSpaceFactory->GetWorkSpace();
-                if (!workSpace) {
-                    workSpace.reset(new ExtraWorkSpace());
-                    m_extraSearcher->InitWorkSpace(workSpace.get(), false);
-                }
-                else {
-                    m_extraSearcher->InitWorkSpace(workSpace.get(), true);
-                }
-                workSpace->m_deduper.clear();
-                workSpace->m_postingIDs.clear();
-                m_extraSearcher->ForceGC(workSpace.get(), m_index.get()); 
-            }
             
             ErrorCode Checkpoint() {
                 /** Lock & wait until all jobs done **/
@@ -269,70 +319,20 @@ namespace SPTAG
                 // Flush block pool states & block mapping states
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Saving storage states\n");
                 ErrorCode ret;
-                if ((ret = m_extraSearcher->Checkpoint(m_options.m_persistentBufferPath)) != ErrorCode::Success)
-                    return ret;
+                for (auto& searcher : m_extraSearchers) {
+                    if (searcher) {
+                        if ((ret = searcher->Checkpoint(m_options.m_persistentBufferPath)) != ErrorCode::Success)
+                            return ret;
+                    }
+                }
 
                 /** Flush the checkpoint file: SPTAG states, block pool states, block mapping states **/
                 std::string filename = m_options.m_persistentBufferPath + FolderSep + m_options.m_headIndexFolder;
                 // Flush SPTAG
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Saving in-memory index to %s\n", filename.c_str());
-                if ((ret = m_index->SaveIndex(filename)) != ErrorCode::Success)
+                if ((ret = m_topIndex->SaveIndex(filename)) != ErrorCode::Success)
                     return ret;
                 return ErrorCode::Success;
-            }
-
-            ErrorCode AddIndexSPFresh(const void *p_data, SizeType p_vectorNum, DimensionType p_dimension, SizeType* VID) {
-                if (m_options.m_storage == Storage::STATIC || m_extraSearcher == nullptr) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Only Support KV Extra Update\n");
-                    return ErrorCode::Fail;
-                }
-
-                if (p_data == nullptr || p_vectorNum == 0 || p_dimension == 0) return ErrorCode::EmptyData;
-                if (p_dimension != GetFeatureDim()) return ErrorCode::DimensionSizeMismatch;
-
-                std::shared_lock<std::shared_timed_mutex> lock(m_checkPointLock);
-
-                SizeType begin;
-                {
-                    std::lock_guard<std::mutex> lock(m_dataAddLock);
-
-                    begin = m_versionMap.GetVectorNum();
-
-                    if (begin == 0) { return ErrorCode::EmptyIndex; }
-
-                    if (m_versionMap.AddBatch(p_vectorNum) != ErrorCode::Success) {
-                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "MemoryOverFlow: VID: %d, Map Size:%d\n", begin, m_versionMap.BufferSize());
-                        return ErrorCode::MemoryOverFlow;
-                    }
-                }
-                for (int i = 0; i < p_vectorNum; i++) VID[i] = begin + i;
-
-                std::shared_ptr<VectorSet> vectorSet;
-                if (m_options.m_distCalcMethod == DistCalcMethod::Cosine) {
-                    ByteArray arr = ByteArray::Alloc(sizeof(T) * p_vectorNum * p_dimension);
-                    memcpy(arr.Data(), p_data, sizeof(T) * p_vectorNum * p_dimension);
-                    vectorSet.reset(new BasicVectorSet(arr, GetEnumValueType<T>(), p_dimension, p_vectorNum));
-                    int base = COMMON::Utils::GetBase<T>();
-                    for (SizeType i = 0; i < p_vectorNum; i++) {
-                        COMMON::Utils::Normalize((T*)(vectorSet->GetVector(i)), p_dimension, base);
-                    }
-                }
-                else {
-                    vectorSet.reset(new BasicVectorSet(ByteArray((std::uint8_t*)p_data, sizeof(T) * p_vectorNum * p_dimension, false),
-                        GetEnumValueType<T>(), p_dimension, p_vectorNum));
-                }
-
-                auto workSpace = m_workSpaceFactory->GetWorkSpace();
-                if (!workSpace) {
-                    workSpace.reset(new ExtraWorkSpace());
-                    m_extraSearcher->InitWorkSpace(workSpace.get(), false);
-                }
-                else {
-                    m_extraSearcher->InitWorkSpace(workSpace.get(), true);
-                }
-                workSpace->m_deduper.clear();
-                workSpace->m_postingIDs.clear();
-                return m_extraSearcher->AddIndex(workSpace.get(), vectorSet, m_index, begin);
             }
         };
     } // namespace SPANN

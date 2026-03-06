@@ -355,7 +355,7 @@ namespace SPTAG
                     }
                 }
                 //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "AsyncFileReader::ReadBlocks: finish\n");
-                return batchTotalDone;
+                return batchTotalDone + skip;
             }
 
             virtual std::uint32_t BatchWriteFile(AsyncReadRequest* readRequests, std::uint32_t requestCount, const std::chrono::microseconds& timeout, int batchSize = -1)
@@ -808,14 +808,14 @@ namespace SPTAG
                     batchTotalDone += totalDone;
                     auto t2 = std::chrono::high_resolution_clock::now();
                     if (std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1) > timeout) {
-                        if (batchTotalDone < requestCount) {
+                        if (batchTotalDone < realCount) {
                             SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "AsyncFileReader::ReadBlocks (batch[%d:%d]) : timeout, continue for next batch...\n", currSubIoStartId, currSubIoEndId);
                         }
                         //break;
                     }
                 }
                 //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "AsyncFileReader::ReadBlocks: finish\n");
-                return batchTotalDone;
+                return batchTotalDone + (requestCount - realCount);
             }
 
             virtual std::uint32_t BatchWriteFile(AsyncReadRequest* readRequests, std::uint32_t requestCount, const std::chrono::microseconds& timeout, int batchSize = -1)

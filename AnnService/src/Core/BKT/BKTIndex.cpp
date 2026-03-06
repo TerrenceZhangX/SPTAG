@@ -704,6 +704,17 @@ template <typename T> ErrorCode Index<T>::SearchIndex(QueryResult &p_query, bool
             p_query.SetMetadata(i, (result < 0) ? ByteArray::c_empty : m_pMetadata->GetMetadataCopy(result));
         }
     }
+    if (p_query.WithVec())
+    {
+        for (int i = 0; i < p_query.GetResultNum(); ++i)
+        {
+            SizeType result = p_query.GetResult(i)->VID;
+            if (result >= 0)
+            {
+                p_query.SetVec(i, ByteArray((uint8_t*)(m_pSamples[result]), sizeof(T) * m_pSamples.C(), false));
+            }
+        }
+    }
     return ErrorCode::Success;
 }
 

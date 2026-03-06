@@ -86,7 +86,7 @@ void Test(std::string path, std::string type, bool debug = false)
     }
     else
     {
-        db.reset(new FileIO(opt));
+        db.reset(new FileIO(opt, 0));
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -108,8 +108,8 @@ void Test(std::string path, std::string type, bool debug = false)
     {
         for (int j = 0; j < mergeIters; j++)
         {
-            db->Merge(i, std::to_string(i), MaxTimeout, &(workspace.m_diskRequests),
-                      [](const void* val, const int size) -> bool { return true; });
+            int finalSize = 0;
+            db->Merge(i, std::to_string(i), MaxTimeout, &(workspace.m_diskRequests), finalSize);
         }
     }
     t2 = std::chrono::high_resolution_clock::now();

@@ -769,9 +769,9 @@ namespace SPTAG {
                             if (p_opts.m_stressTest) p_index->DeleteIndex(mapping[insertSet[index]]);
                             auto insertBegin = std::chrono::high_resolution_clock::now();
                             if (p_opts.m_loadAllVectors)
-                                p_index->AddIndexSPFresh(vectorSet->GetVector(insertSet[index]), 1, p_opts.m_dim, &mapping[insertSet[index]]);
+                                p_index->AddIndex(vectorSet->GetVector(insertSet[index]), 1, p_opts.m_dim, nullptr, false, false, &mapping[insertSet[index]]);
                             else
-                                p_index->AddIndexSPFresh(vectorSet->GetVector(index), 1, p_opts.m_dim, &mapping[insertSet[index]]);
+                                p_index->AddIndex(vectorSet->GetVector(index), 1, p_opts.m_dim, nullptr, false, false, &mapping[insertSet[index]]);
                             auto insertEnd = std::chrono::high_resolution_clock::now();
                             latency_vector[index] = std::chrono::duration_cast<std::chrono::microseconds>(insertEnd - insertBegin).count();
                         }
@@ -985,7 +985,7 @@ namespace SPTAG {
                                 showStatus = true;
                                 nextSamplePoint += sampleSize;
                                 ShowMemoryStatus(vectorSet, sw.getElapsedSec());
-                                p_index->GetIndexStat(-1, false, false);
+                                //p_index->GetIndexStat(-1, false, false);
                             } else {
                                 showStatus = false;
                             }
@@ -997,7 +997,7 @@ namespace SPTAG {
 
                     curCount += updateSize;
 
-                    p_index->GetIndexStat(updateSize, true, true);
+                    //p_index->GetIndexStat(updateSize, true, true);
                     p_index->GetDBStat();
 
                     ShowMemoryStatus(vectorSet, sw.getElapsedSec());
@@ -1175,7 +1175,7 @@ namespace SPTAG {
                         insert_status = insert_future.wait_for(std::chrono::seconds(3));
                         if (insert_status == std::future_status::timeout) {
                             ShowMemoryStatus(vectorSet, sw.getElapsedSec());
-                            p_index->GetIndexStat(-1, false, false);
+                            //p_index->GetIndexStat(-1, false, false);
                             p_index->GetDBStat();
                             if(p_opts.m_searchDuringUpdate) StableSearch(p_index, numThreads, querySet, vectorSet, searchTimes, p_opts.m_queryCountLimit, internalResultNum, tempFileName, p_opts, sw.getElapsedSec());
                         }
@@ -1185,7 +1185,7 @@ namespace SPTAG {
                     finishedInsert += step;
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Total Vector num %d \n", curCount);
 
-                    p_index->GetIndexStat(finishedInsert, true, true);
+                    //p_index->GetIndexStat(finishedInsert, true, true);
 
                     ShowMemoryStatus(vectorSet, sw.getElapsedSec());
 

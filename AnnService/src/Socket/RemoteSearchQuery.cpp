@@ -167,7 +167,7 @@ const std::uint8_t *RemoteSearchResult::Read(const std::uint8_t *p_buffer)
         bool withMeta = false;
         p_buffer = SimpleSerialization::SimpleReadBuffer(p_buffer, withMeta);
 
-        indexRes.m_results.Init(nullptr, resNum, withMeta);
+        indexRes.m_results.Init(nullptr, resNum, withMeta, false);
         for (auto &res : indexRes.m_results)
         {
             p_buffer = SimpleSerialization::SimpleReadBuffer(p_buffer, res.VID);

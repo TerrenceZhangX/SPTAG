@@ -31,10 +31,14 @@ template<typename T>
 class QueryResultSet : public QueryResult
 {
 public:
-    QueryResultSet(const T* _target, int _K) : QueryResult(_target, _K, false)
+    QueryResultSet(const T* _target, int _K) : QueryResult(_target, _K, false, false)
     {
     }
 
+    QueryResultSet(const T* _target, int _K, bool _withMeta, bool _withVec) : QueryResult(_target, _K, _withMeta, _withVec)
+    {
+    }
+    
     QueryResultSet(const QueryResultSet& other) : QueryResult(other)
     {
     }
@@ -74,12 +78,13 @@ public:
         return m_results[0].Dist;
     }
 
-    bool AddPoint(const SizeType index, float dist)
+    bool AddPoint(const SizeType index, float dist, ByteArray vec = ByteArray::c_empty)
     {
         if (dist < m_results[0].Dist || (dist == m_results[0].Dist && index < m_results[0].VID))
         {
             m_results[0].VID = index;
             m_results[0].Dist = dist;
+            m_results[0].Vec = vec;
             Heapify(m_resultNum);
             return true;
         }

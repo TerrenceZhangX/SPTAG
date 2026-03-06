@@ -4,16 +4,16 @@ namespace SPTAG::SPANN
 {
 extern std::function<std::shared_ptr<Helper::DiskIO>(void)> f_createAsyncIO;
 
-bool FileIO::BlockController::Initialize(SPANN::Options &p_opt)
+bool FileIO::BlockController::Initialize(SPANN::Options &p_opt, int p_layer)
 {
     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "FileIO::BlockController::Initialize(%s, %d)\n",
-                 p_opt.m_ssdMappingFile.c_str(), p_opt.m_spdkBatchSize);
+                 (p_opt.m_ssdMappingFile + "_" + std::to_string(p_layer)).c_str(), p_opt.m_spdkBatchSize);
 
     m_growthThreshold = p_opt.m_growThreshold;
     m_growthBlocks = ((std::uint64_t)p_opt.m_growthFileSize) << (30 - PageSizeEx);
     m_maxBlocks = ((std::uint64_t)p_opt.m_maxFileSize) << (30 - PageSizeEx);
     m_batchSize = p_opt.m_spdkBatchSize;
-    strcpy(m_filePath, (p_opt.m_indexDirectory + FolderSep + p_opt.m_ssdMappingFile + "_postings").c_str());
+    strcpy(m_filePath, (p_opt.m_indexDirectory + FolderSep + p_opt.m_ssdMappingFile + "_" + std::to_string(p_layer) + "_postings").c_str());
     m_disableCheckpoint = p_opt.m_disableCheckpoint;
     m_startTime = std::chrono::high_resolution_clock::now();
 
@@ -38,7 +38,7 @@ bool FileIO::BlockController::Initialize(SPANN::Options &p_opt)
         return false;
     }
     std::string blockpoolPath = (p_opt.m_recovery)
-                                    ? p_opt.m_persistentBufferPath + FolderSep + p_opt.m_ssdMappingFile + "_postings"
+                                    ? p_opt.m_persistentBufferPath + FolderSep + p_opt.m_ssdMappingFile + "_" + std::to_string(p_layer) + "_postings"
                                     : m_filePath;
     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "FileIO::BlockController:Loading block pool from file:%s\n",
                  blockpoolPath.c_str());
@@ -181,13 +181,13 @@ bool FileIO::BlockController::ReadBlocks(AddressType *p_data, std::string *p_val
                                          const std::chrono::microseconds &timeout,
                                          std::vector<Helper::AsyncReadRequest> *reqs)
 {
-    if ((uintptr_t)p_data == 0xffffffffffffffff)
+    if ((uintptr_t)p_data == InvalidPointer)
     {
         p_value->resize(0);
         return true;
     }
 
-    const int64_t postingSize = (int64_t)(p_data[0]);
+    const int postingSize = (int)(p_data[0]);
     int blockNum = (int)((postingSize + PageSize - 1) >> PageSizeEx);
     if (blockNum > reqs->size())
     {
@@ -232,13 +232,13 @@ bool FileIO::BlockController::ReadBlocks(
     AddressType *p_data, Helper::PageBuffer<std::uint8_t> &p_value, const std::chrono::microseconds &timeout,
     std::vector<Helper::AsyncReadRequest> *reqs)
 {
-    if ((uintptr_t)p_data == 0xffffffffffffffff)
+    if ((uintptr_t)p_data == InvalidPointer)
     {
         p_value.SetAvailableSize(0);
         return true;
     }
 
-    const int64_t postingSize = (int64_t)(p_data[0]);
+    const int postingSize = (int)(p_data[0]);
     int blockNum = (int)((postingSize + PageSize - 1) >> PageSizeEx);
     if (blockNum > reqs->size())
     {
@@ -285,13 +285,13 @@ bool FileIO::BlockController::ReadBlocks(const std::vector<AddressType *> &p_dat
     {
         AddressType *p_data_i = p_data[i];
 
-        if (p_data_i == nullptr || (uintptr_t)p_data_i == 0xffffffffffffffff)
+        if (p_data_i == nullptr || (uintptr_t)p_data_i == InvalidPointer)
         {
             if (p_data_i != nullptr) (*p_values)[i].resize(0);
             continue;
         }
 
-        std::size_t postingSize = (std::size_t)p_data_i[0];
+        int postingSize = (int)p_data_i[0];
         AddressType currOffset = 0;
         AddressType dataIdx = 1;
         while (currOffset < postingSize)
@@ -361,7 +361,7 @@ bool FileIO::BlockController::ReadBlocks(const std::vector<AddressType *> &p_dat
         AddressType *p_data_i = p_data[i];
         int numPages = (int)(p_values[i].GetPageSize() >> PageSizeEx);
 
-        if (p_data_i == nullptr || (uintptr_t)p_data_i == 0xffffffffffffffff)
+        if (p_data_i == nullptr || (uintptr_t)p_data_i == InvalidPointer)
         {
             if (p_data_i != nullptr) p_values[i].SetAvailableSize(0);
             for (std::uint32_t r = 0; r < numPages; r++)
@@ -374,7 +374,7 @@ bool FileIO::BlockController::ReadBlocks(const std::vector<AddressType *> &p_dat
             continue;
         }
 
-        std::size_t postingSize = (std::size_t)p_data_i[0];
+        int postingSize = (int)p_data_i[0];
         p_values[i].SetAvailableSize(postingSize);
         AddressType currOffset = 0;
         AddressType dataIdx = 1;

@@ -45,9 +45,10 @@ namespace SPTAG::SPANN {
         {
             std::string BKTID;
             int headID;
+            std::shared_ptr<std::string> headVec;
             std::string posting;
 
-            AppendPair(std::string p_BKTID = "", int p_headID = -1, std::string p_posting = "") : BKTID(p_BKTID), headID(p_headID), posting(p_posting) {}
+            AppendPair(std::string p_BKTID = "", int p_headID = -1, std::shared_ptr<std::string> p_headVec = nullptr, std::string p_posting = "") : BKTID(p_BKTID), headID(p_headID), headVec(p_headVec), posting(p_posting) {}
             inline bool operator < (const AppendPair& rhs) const
             {
                 return std::strcmp(BKTID.c_str(), rhs.BKTID.c_str()) < 0;
@@ -62,21 +63,21 @@ namespace SPTAG::SPANN {
         class MergeAsyncJob : public Helper::ThreadPool::Job
         {
         private:
-            VectorIndex* m_index;
             ExtraDynamicSearcher<ValueType>* m_extraIndex;
-            SizeType headID;
-            bool disableReassign;
+            SizeType m_headID;
+            std::shared_ptr<std::string> m_headVec;
+            bool m_disableReassign;
             std::function<void()> m_callback;
         public:
-            MergeAsyncJob(VectorIndex* headIndex, ExtraDynamicSearcher<ValueType>* extraIndex, SizeType headID, bool disableReassign, std::function<void()> p_callback)
-                : m_index(headIndex), m_extraIndex(extraIndex), headID(headID), disableReassign(disableReassign), m_callback(std::move(p_callback)) {}
+            MergeAsyncJob(ExtraDynamicSearcher<ValueType>* extraIndex, SizeType headID, std::shared_ptr<std::string> headVec, bool disableReassign, std::function<void()> p_callback)
+                : m_extraIndex(extraIndex), m_headID(headID), m_headVec(headVec), m_disableReassign(disableReassign), m_callback(std::move(p_callback)) {}
 
             ~MergeAsyncJob() {}
             inline void exec(IAbortOperation* p_abort) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Cannot support job.exec(abort)!\n");
             }
             inline void exec(void* p_workSpace, IAbortOperation* p_abort) override {
-                ErrorCode ret = m_extraIndex->MergePostings((ExtraWorkSpace*)p_workSpace, m_index, headID, !disableReassign);
+                ErrorCode ret = m_extraIndex->MergePostings((ExtraWorkSpace*)p_workSpace, m_headID, m_headVec, !m_disableReassign);
                 if (ret != ErrorCode::Success)
                     m_extraIndex->m_asyncStatus = ret;
                 if (m_callback != nullptr) {
@@ -88,21 +89,21 @@ namespace SPTAG::SPANN {
         class SplitAsyncJob : public Helper::ThreadPool::Job
         {
         private:
-            VectorIndex* m_index;
             ExtraDynamicSearcher<ValueType>* m_extraIndex;
-            SizeType headID;
-            bool disableReassign;
+            SizeType m_headID;
+            std::shared_ptr<std::string> m_headVec;
+            bool m_disableReassign;
             std::function<void()> m_callback;
         public:
-            SplitAsyncJob(VectorIndex* headIndex, ExtraDynamicSearcher<ValueType>* extraIndex, SizeType headID, bool disableReassign, std::function<void()> p_callback)
-                : m_index(headIndex), m_extraIndex(extraIndex), headID(headID), disableReassign(disableReassign), m_callback(std::move(p_callback)) {}
+            SplitAsyncJob(ExtraDynamicSearcher<ValueType>* extraIndex, SizeType headID, std::shared_ptr<std::string> headVec, bool disableReassign, std::function<void()> p_callback)
+                : m_extraIndex(extraIndex), m_headID(headID), m_headVec(headVec), m_disableReassign(disableReassign), m_callback(std::move(p_callback)) {}
 
             ~SplitAsyncJob() {}
             inline void exec(IAbortOperation* p_abort) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Cannot support job.exec(abort)!\n");
             }
             inline void exec(void* p_workSpace, IAbortOperation* p_abort) override {
-                ErrorCode ret = m_extraIndex->Split((ExtraWorkSpace*)p_workSpace, m_index, headID, !disableReassign);
+                ErrorCode ret = m_extraIndex->Split((ExtraWorkSpace*)p_workSpace, m_headID, m_headVec, !m_disableReassign);
                 if (ret != ErrorCode::Success)
                     m_extraIndex->m_asyncStatus = ret;
                 if (m_callback != nullptr) {
@@ -114,15 +115,15 @@ namespace SPTAG::SPANN {
         class ReassignAsyncJob : public Helper::ThreadPool::Job
         {
         private:
-            VectorIndex* m_index;
             ExtraDynamicSearcher<ValueType>* m_extraIndex;
-            std::shared_ptr<std::string> vectorInfo;
-            SizeType HeadPrev;
+            std::shared_ptr<std::string> m_vectorInfo;
+            SizeType m_headPrev;
+            std::shared_ptr<std::string> m_headVec;
             std::function<void()> m_callback;
         public:
-            ReassignAsyncJob(VectorIndex* headIndex, ExtraDynamicSearcher<ValueType>* extraIndex,
-                std::shared_ptr<std::string> vectorInfo, SizeType HeadPrev, std::function<void()> p_callback)
-                : m_index(headIndex), m_extraIndex(extraIndex), vectorInfo(std::move(vectorInfo)), HeadPrev(HeadPrev), m_callback(std::move(p_callback)) {}
+            ReassignAsyncJob(ExtraDynamicSearcher<ValueType>* extraIndex,
+                std::shared_ptr<std::string> vectorInfo, SizeType headPrev, std::shared_ptr<std::string> headVec, std::function<void()> p_callback)
+                : m_extraIndex(extraIndex), m_vectorInfo(std::move(vectorInfo)), m_headPrev(headPrev), m_headVec(std::move(headVec)), m_callback(std::move(p_callback)) {}
 
             ~ReassignAsyncJob() {}
             
@@ -131,7 +132,7 @@ namespace SPTAG::SPANN {
             }
 
             void exec(void* p_workSpace, IAbortOperation* p_abort) override {
-                ErrorCode ret = m_extraIndex->Reassign((ExtraWorkSpace*)p_workSpace, m_index, vectorInfo, HeadPrev);
+                ErrorCode ret = m_extraIndex->Reassign((ExtraWorkSpace*)p_workSpace, m_vectorInfo, m_headPrev, m_headVec);
                 if (ret != ErrorCode::Success)
                     m_extraIndex->m_asyncStatus = ret;
                 if (m_callback != nullptr) {
@@ -173,40 +174,36 @@ namespace SPTAG::SPANN {
         std::shared_ptr<Helper::Concurrent::ConcurrentQueue<int>> m_freeWorkSpaceIds;
         std::atomic<int> m_workspaceCount = 0;
 
-        Helper::Concurrent::ConcurrentPriorityQueue<AppendPair> m_asyncAppendQueue;
         std::mutex m_asyncAppendLock;
-
+        Helper::Concurrent::ConcurrentPriorityQueue<AppendPair> m_asyncAppendQueue;
+             
         std::shared_ptr<Helper::KeyValueIO> db;
 
-        COMMON::VersionLabel* m_versionMap;
+        SPANN::Index<ValueType>* m_headIndex;
+        COMMON::VersionLabel m_versionMap;
         Options* m_opt;
-
-        std::mutex m_dataAddLock;
-
-        std::mutex m_mergeLock;
+        int m_layer;
 
         COMMON::FineGrainedRWLock m_rwLocks;
-
-        COMMON::PostingSizeRecord m_postingSizes;
-
-        COMMON::Checksum m_checkSum;
-        COMMON::Dataset<ChecksumType> m_checkSums;
 
         IndexStats m_stat;
 
         std::shared_ptr<PersistentBuffer> m_wal;
 
-        std::mutex m_runningLock;
-        std::unordered_set<SizeType>m_splitList;
+        std::shared_timed_mutex m_splitListLock;
+        Helper::Concurrent::ConcurrentMap<SizeType, int> m_splitList;
 
-        Helper::Concurrent::ConcurrentMap<SizeType, SizeType> m_mergeList;
         std::shared_timed_mutex m_mergeListLock;
+        Helper::Concurrent::ConcurrentSet<SizeType> m_mergeList;        
 
     public:
-        ExtraDynamicSearcher(SPANN::Options& p_opt) {
+        ExtraDynamicSearcher(SPANN::Options& p_opt, int layer, SPANN::Index<ValueType>* headIndex) {
             m_opt = &p_opt;
+            m_layer = layer;
+            m_headIndex = headIndex;
             m_metaDataSize = sizeof(SizeType) + sizeof(uint8_t);
-            m_vectorInfoSize = p_opt.m_dim * sizeof(ValueType) + m_metaDataSize;
+            m_vectorDataSize = sizeof(ValueType) * m_opt->m_dim;
+            m_vectorInfoSize = m_vectorDataSize + m_metaDataSize;
             p_opt.m_postingPageLimit = max(p_opt.m_postingPageLimit, static_cast<int>((p_opt.m_postingVectorLimit * m_vectorInfoSize + PageSize - 1) / PageSize));
             p_opt.m_searchPostingPageLimit = p_opt.m_postingPageLimit;
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Setting index with posting page limit:%d\n", p_opt.m_postingPageLimit);
@@ -215,7 +212,7 @@ namespace SPTAG::SPANN {
 
             if(p_opt.m_storage == Storage::FILEIO) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ExtraDynamicSearcher:UseFileIO\n");
-                db.reset(new FileIO(p_opt));
+                db.reset(new FileIO(p_opt, layer));
             }
             else if (p_opt.m_storage == Storage::SPDKIO) {
 #ifdef SPDK
@@ -230,8 +227,8 @@ namespace SPTAG::SPANN {
 #ifdef ROCKSDB
                 std::string indexDir = (p_opt.m_recovery)? p_opt.m_persistentBufferPath + FolderSep: p_opt.m_indexDirectory + FolderSep;
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ExtraDynamicSearcher:UseKV\n");
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ExtraDynamicSearcher:dbPath:%s\n", (indexDir + p_opt.m_KVFile).c_str());
-                db.reset(new RocksDBIO((indexDir + p_opt.m_KVFile).c_str(), p_opt.m_useDirectIO, p_opt.m_enableWAL, p_opt.m_recovery));
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ExtraDynamicSearcher:dbPath:%s\n", (indexDir + p_opt.m_KVFile + "_" + std::to_string(layer)).c_str());
+                db.reset(new RocksDBIO((indexDir + p_opt.m_KVFile + "_" + std::to_string(layer)).c_str(), p_opt.m_useDirectIO, p_opt.m_enableWAL, p_opt.m_recovery));
 #else
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "ExtraDynamicSearcher:RocksDB unsupport! Use -DROCKSDB to enable RocksDB when doing cmake.\n");
                 return;
@@ -240,8 +237,7 @@ namespace SPTAG::SPANN {
 
             
             m_hardLatencyLimit = std::chrono::microseconds((int)(p_opt.m_latencyLimit) * 1000);
-            m_mergeThreshold = p_opt.m_mergeThreshold;
-            m_checkSum.Initialize(!p_opt.m_checksumCheck, 0, 0);
+            m_mergeThreshold = p_opt.m_mergeThreshold;          
 
             int maxIOThreads =  max(p_opt.m_ioThreads, (2 * max(p_opt.m_searchThreadNum, p_opt.m_iSSDNumberOfThreads) +
                                     p_opt.m_insertThreadNum + p_opt.m_reassignThreadNum + p_opt.m_appendThreadNum));
@@ -260,179 +256,53 @@ namespace SPTAG::SPANN {
             return db->Available();
         }
 
-        //headCandidates: search data structrue for "vid" vector
-        //headID: the head vector that stands for vid
-        bool IsAssumptionBroken(VectorIndex* p_index, SizeType headID, ValueType* vector, SizeType vid)
+        virtual SizeType GetNumSamples() const override
         {
-            COMMON::QueryResultSet<ValueType> headCandidates(vector, m_opt->m_reassignK);
-            std::shared_ptr<std::uint8_t> rec_query;
-            if (p_index->m_pQuantizer) {
-                rec_query.reset((uint8_t*)ALIGN_ALLOC(p_index->m_pQuantizer->ReconstructSize()), [=](std::uint8_t* ptr) { ALIGN_FREE(ptr); });
-                p_index->m_pQuantizer->ReconstructVector((const uint8_t*)headCandidates.GetTarget(), rec_query.get());
-                headCandidates.SetTarget((ValueType*)(rec_query.get()), p_index->m_pQuantizer);
-            }
-            p_index->SearchIndex(headCandidates);
-            int replicaCount = 0;
-            BasicResult* queryResults = headCandidates.GetResults();
-            std::vector<Edge> selections(static_cast<size_t>(m_opt->m_replicaCount));
-            for (int i = 0; i < headCandidates.GetResultNum() && replicaCount < m_opt->m_replicaCount; ++i) {
-                if (queryResults[i].VID == -1) {
-                    break;
-                }
-                // RNG Check.
-                bool rngAccpeted = true;
-                for (int j = 0; j < replicaCount; ++j) {
-                    float nnDist = p_index->ComputeDistance(
-                        p_index->GetSample(queryResults[i].VID),
-                        p_index->GetSample(selections[j].node));
-                    if (nnDist < queryResults[i].Dist) {
-                        rngAccpeted = false;
-                        break;
-                    }
-                }
-                if (!rngAccpeted)
-                    continue;
-
-                selections[replicaCount].node = queryResults[i].VID;
-                // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "head:%d\n", queryResults[i].VID);
-                if (selections[replicaCount].node == headID) return false;
-                ++replicaCount;
-            }
-            return true;
+            return m_versionMap.Count();
         }
 
-        //Measure that in "headID" posting list, how many vectors break their assumption
-        int QuantifyAssumptionBroken(VectorIndex* p_index, SizeType headID, std::string& postingList, SizeType SplitHead, std::vector<SizeType>& newHeads, std::set<SizeType>& brokenID, int topK = 0, float ratio = 1.0)
+        virtual bool ContainSample(const SizeType idx) const override
         {
-            int assumptionBrokenNum = 0;
-            int postVectorNum = postingList.size() / m_vectorInfoSize;
-            uint8_t* postingP = reinterpret_cast<uint8_t*>(postingList.data());
-            float minDist;
-            float maxDist;
-            float avgDist = 0;
-            std::vector<float> distanceSet;
+            return !m_versionMap.Deleted(idx);
+        }
 
-            for (int j = 0; j < postVectorNum; j++) {
-                uint8_t* vectorId = postingP + j * m_vectorInfoSize;
-                SizeType vid = *(reinterpret_cast<SizeType*>(vectorId));
-                uint8_t version = *(reinterpret_cast<uint8_t*>(vectorId + sizeof(SizeType)));
-                float_t dist = p_index->ComputeDistance(reinterpret_cast<ValueType*>(vectorId + m_metaDataSize), p_index->GetSample(headID));
-                // if (dist < Epsilon) SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "head found: vid: %d, head: %d\n", vid, headID);
-                avgDist += dist;
-                distanceSet.push_back(dist);
-                if (m_versionMap->Deleted(vid) || m_versionMap->GetVersion(vid) != version) continue;
-                
-                if (brokenID.find(vid) == brokenID.end() && IsAssumptionBroken(p_index, headID, reinterpret_cast<ValueType*>(vectorId + m_metaDataSize), vid)) {
-                    /*
-                    float_t headDist = p_index->ComputeDistance(headCandidates.GetTarget(), p_index->GetSample(SplitHead));
-                    float_t newHeadDist_1 = p_index->ComputeDistance(headCandidates.GetTarget(), p_index->GetSample(newHeads[0]));
-                    float_t newHeadDist_2 = p_index->ComputeDistance(headCandidates.GetTarget(), p_index->GetSample(newHeads[1]));
+        virtual SizeType GetNumDeleted() const override
+        {
+            return m_versionMap.GetDeleteCount();
+        }
 
-                    float_t splitDist = p_index->ComputeDistance(p_index->GetSample(SplitHead), p_index->GetSample(headID));
-
-                    float_t headToNewHeadDist_1 = p_index->ComputeDistance(p_index->GetSample(headID), p_index->GetSample(newHeads[0]));
-                    float_t headToNewHeadDist_2 = p_index->ComputeDistance(p_index->GetSample(headID), p_index->GetSample(newHeads[1]));
-
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "broken vid to head distance: %f, to split head distance: %f\n", dist, headDist);
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "broken vid to new head 1 distance: %f, to new head 2 distance: %f\n", newHeadDist_1, newHeadDist_2);
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "head to spilit head distance: %f\n", splitDist);
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "head to new head 1 distance: %f, to new head 2 distance: %f\n", headToNewHeadDist_1, headToNewHeadDist_2);
-                    */
-                    assumptionBrokenNum++;
-                    brokenID.insert(vid);
+        virtual ErrorCode GetContainedIDs(std::vector<SizeType>& globalIDs) override
+        {
+            for (SizeType i = 0; i < m_versionMap.Count(); i++) 
+            {
+                if (!m_versionMap.Deleted(i))
+                    globalIDs.push_back(i);
+            }
+            return ErrorCode::Success;
+        }
+        
+        virtual ErrorCode AddIDCapacity(SizeType capa, bool deleted) override
+        {
+            SizeType begin = m_versionMap.Count();
+            auto ret = m_versionMap.AddBatch(capa);
+            if (ret == ErrorCode::Success && deleted) {
+                for (SizeType i = begin; i < begin + capa; i++) {
+                    m_versionMap.Delete(i);
                 }
             }
-
-            if (assumptionBrokenNum != 0) {
-                std::sort(distanceSet.begin(), distanceSet.end());
-                minDist = distanceSet[1];
-                maxDist = distanceSet.back();
-                // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "distance: min: %f, max: %f, avg: %f, 50th: %f\n", minDist, maxDist, avgDist/postVectorNum, distanceSet[distanceSet.size() * 0.5]);
-                // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "assumption broken num: %d\n", assumptionBrokenNum);
-                float_t splitDist = p_index->ComputeDistance(p_index->GetSample(SplitHead), p_index->GetSample(headID));
-
-                float_t headToNewHeadDist_1 = p_index->ComputeDistance(p_index->GetSample(headID), p_index->GetSample(newHeads[0]));
-                float_t headToNewHeadDist_2 = p_index->ComputeDistance(p_index->GetSample(headID), p_index->GetSample(newHeads[1]));
-
-                // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "head to spilt head distance: %f/%d/%.2f\n", splitDist, topK, ratio);
-                // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "head to new head 1 distance: %f, to new head 2 distance: %f\n", headToNewHeadDist_1, headToNewHeadDist_2);
-            }
-
-            return assumptionBrokenNum;
+            return ret;
         }
-
-        int QuantifySplitCaseA(VectorIndex* p_index, std::vector<SizeType>& newHeads, std::vector<std::string>& postingLists, SizeType SplitHead, int split_order, std::set<SizeType>& brokenID)
+        
+        bool CheckIsNeedReassign(std::vector<std::shared_ptr<std::string>>& newHeadsVec, ValueType* data, std::shared_ptr<std::string> splitHeadVec, float_t headToSplitHeadDist, float_t currentHeadDist, bool isInSplitHead)
         {
-            int assumptionBrokenNum = 0;
-            assumptionBrokenNum += QuantifyAssumptionBroken(p_index, newHeads[0], postingLists[0], SplitHead, newHeads, brokenID);
-            assumptionBrokenNum += QuantifyAssumptionBroken(p_index, newHeads[1], postingLists[1], SplitHead, newHeads, brokenID);
-            int vectorNum = (postingLists[0].size() + postingLists[1].size()) / m_vectorInfoSize;
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "After Split%d, Top0 nearby posting lists, caseA : %d/%d\n", split_order, assumptionBrokenNum, vectorNum);
-            return assumptionBrokenNum;
-        }
-
-        //Measure that around "headID", how many vectors break their assumption
-        //"headID" is the head vector before split
-        void QuantifySplitCaseB(ExtraWorkSpace* p_exWorkSpace, VectorIndex* p_index, SizeType headID, std::vector<SizeType>& newHeads, SizeType SplitHead, int split_order, int assumptionBrokenNum_top0, std::set<SizeType>& brokenID)
-        {
-            COMMON::QueryResultSet<ValueType> nearbyHeads((ValueType*)(p_index->GetSample(headID)), m_opt->m_reassignK);
-            std::shared_ptr<std::uint8_t> rec_query;
-            if (p_index->m_pQuantizer) {
-                rec_query.reset((uint8_t*)ALIGN_ALLOC(p_index->m_pQuantizer->ReconstructSize()), [=](std::uint8_t* ptr) { ALIGN_FREE(ptr); });
-                p_index->m_pQuantizer->ReconstructVector((const uint8_t*)nearbyHeads.GetTarget(), rec_query.get());
-                nearbyHeads.SetTarget((ValueType*)(rec_query.get()), p_index->m_pQuantizer);
-            }
-            p_index->SearchIndex(nearbyHeads);
-            std::vector<std::string> postingLists;
-            std::string postingList;
-            BasicResult* queryResults = nearbyHeads.GetResults();
-            int topk = 8;
-            int assumptionBrokenNum = assumptionBrokenNum_top0;
-            int assumptionBrokenNum_topK = assumptionBrokenNum_top0;
-            int i;
-            int containedHead = 0;
-            if (assumptionBrokenNum_top0 != 0) containedHead++;
-            int vectorNum = 0;
-            float furthestDist = 0;
-            for (i = 0; i < nearbyHeads.GetResultNum(); i++) {
-                if (queryResults[i].VID == -1) {
-                    break;
-                }
-                furthestDist = queryResults[i].Dist;
-                if (i == topk) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "After Split%d, Top%d nearby posting lists, caseB : %d in %d/%d\n", split_order, i, assumptionBrokenNum, containedHead, vectorNum);
-                    topk *= 2;
-                }
-                if (queryResults[i].VID == newHeads[0] || queryResults[i].VID == newHeads[1]) continue;
-                db->Get(queryResults[i].VID, &postingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests));
-                vectorNum += postingList.size() / m_vectorInfoSize;
-                int tempNum = QuantifyAssumptionBroken(p_index, queryResults[i].VID, postingList, SplitHead, newHeads, brokenID, i, queryResults[i].Dist / queryResults[1].Dist);
-                assumptionBrokenNum += tempNum;
-                if (tempNum != 0) containedHead++;
-            }
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "After Split%d, Top%d nearby posting lists, caseB : %d in %d/%d\n", split_order, i, assumptionBrokenNum, containedHead, vectorNum);
-        }
-
-        void QuantifySplit(ExtraWorkSpace* p_exWorkSpace, VectorIndex* p_index, SizeType headID, std::vector<std::string>& postingLists, std::vector<SizeType>& newHeads, SizeType SplitHead, int split_order)
-        {
-            std::set<SizeType> brokenID;
-            brokenID.clear();
-            // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Split Quantify: %d, head1:%d, head2:%d\n", split_order, newHeads[0], newHeads[1]);
-            int assumptionBrokenNum = QuantifySplitCaseA(p_index, newHeads, postingLists, SplitHead, split_order, brokenID);
-            QuantifySplitCaseB(p_exWorkSpace, p_index, headID, newHeads, SplitHead, split_order, assumptionBrokenNum, brokenID);
-        }
-
-        bool CheckIsNeedReassign(VectorIndex* p_index, std::vector<SizeType>& newHeads, ValueType* data, SizeType splitHead, float_t headToSplitHeadDist, float_t currentHeadDist, bool isInSplitHead, SizeType currentHead)
-        {
-
-            float_t splitHeadDist = p_index->ComputeDistance(data, p_index->GetSample(splitHead));
+            float_t splitHeadDist = m_headIndex->ComputeDistance(data, splitHeadVec->data());
 
             if (isInSplitHead) {
                 if (splitHeadDist >= currentHeadDist) return false;
             }
             else {
-                float_t newHeadDist_1 = p_index->ComputeDistance(data, p_index->GetSample(newHeads[0]));
-                float_t newHeadDist_2 = p_index->ComputeDistance(data, p_index->GetSample(newHeads[1]));
+                float_t newHeadDist_1 = m_headIndex->ComputeDistance(data, newHeadsVec[0]->data());
+                float_t newHeadDist_2 = m_headIndex->ComputeDistance(data, newHeadsVec[1]->data());
                 if (splitHeadDist <= newHeadDist_1 && splitHeadDist <= newHeadDist_2) return false;
                 if (currentHeadDist <= newHeadDist_1 && currentHeadDist <= newHeadDist_2) return false;
             }
@@ -442,45 +312,7 @@ namespace SPTAG::SPANN {
         inline void Serialize(char* ptr, SizeType VID, std::uint8_t version, const void* vector) {
             memcpy(ptr, &VID, sizeof(VID));
             memcpy(ptr + sizeof(VID), &version, sizeof(version));
-            memcpy(ptr + m_metaDataSize, vector, m_vectorInfoSize - m_metaDataSize);
-        }
-
-        void CalculatePostingDistribution(VectorIndex* p_index)
-        {
-            int top = m_postingSizeLimit / 10 + 1;
-            int page = m_opt->m_postingPageLimit + 1;
-            std::vector<int> lengthDistribution(top, 0);
-            std::vector<int> sizeDistribution(page + 2, 0);
-            int deletedHead = 0;
-            for (int i = 0; i < p_index->GetNumSamples(); i++) {
-                if (!p_index->ContainSample(i)) deletedHead++;
-                lengthDistribution[m_postingSizes.GetSize(i) / 10]++;
-                int size = m_postingSizes.GetSize(i) * m_vectorInfoSize;
-                if (size < PageSize) {
-                    if (size < 512) sizeDistribution[0]++;
-                    else if (size < 1024) sizeDistribution[1]++;
-                    else sizeDistribution[2]++;
-                }
-                else {
-                    sizeDistribution[size / PageSize + 2]++;
-                }
-            }
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Posting Length (Vector Num):\n");
-            for (int i = 0; i < top; ++i)
-            {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "%d ~ %d: %d, \n", i * 10, (i + 1) * 10 - 1, lengthDistribution[i]);
-            }
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Posting Length (Data Size):\n");
-            for (int i = 0; i < page + 2; ++i)
-            {
-                if (i <= 2) {
-                    if (i == 0) SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "0 ~ 512 B: %d, \n", sizeDistribution[0] - deletedHead);
-                    else if (i == 1) SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "512 B ~ 1 KB: %d, \n", sizeDistribution[1]);
-                    else SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "1 KB ~ 4 KB: %d, \n", sizeDistribution[2]);
-                }
-                else
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "%d ~ %d KB: %d, \n", (i - 2) * 4, (i - 1) * 4, sizeDistribution[i]);
-            }
+            memcpy(ptr + m_metaDataSize, vector, m_vectorDataSize);
         }
 
         void PrintErrorInPosting(std::string &posting, SizeType headID)
@@ -490,41 +322,32 @@ namespace SPTAG::SPANN {
             for (int j = 0; j < postVectorNum; j++, vectorId += m_vectorInfoSize)
             {
                 SizeType VID = *((SizeType *)(vectorId));
-                if (VID < 0 || VID >= m_versionMap->Count())
+                if (VID < 0 || VID >= m_versionMap.Count())
                 {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
                                  "PrintErrorInPosting found wrong VID:%d in headID:%d (should be less than %d)\n", VID,
-                                 headID, m_versionMap->Count());
+                                 headID, m_versionMap.Count());
                 }
             }
         }
 
         // TODO
-        ErrorCode RefineIndex(std::shared_ptr<VectorIndex>& p_index,
-                              bool p_prereassign, std::vector<SizeType> *p_headmapping, std::vector<SizeType> *p_mapping) override
+        ErrorCode RefineIndex() override
         {
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Begin RefineIndex\n");
 
-            COMMON::PostingSizeRecord new_postingSizes;
-            COMMON::Dataset<ChecksumType> new_checkSums;
-            if (!p_prereassign)
-            {
-                new_postingSizes.Initialize(p_index->GetNumSamples() - p_index->GetNumDeleted(),
-                            p_index->m_iDataBlockSize, p_index->m_iDataCapacity);
-                new_checkSums.Initialize(p_index->GetNumSamples() - p_index->GetNumDeleted(), 1,
-                                            p_index->m_iDataBlockSize, p_index->m_iDataCapacity);
-            }
             std::atomic_bool doneReassign = false;
-            Helper::Concurrent::ConcurrentSet<SizeType> mergelist;
+            Helper::Concurrent::ConcurrentMap<SizeType, std::shared_ptr<std::string>> mergelist;
             while (!doneReassign) {
                 auto preReassignTimeBegin = std::chrono::high_resolution_clock::now();
                 std::atomic<ErrorCode> finalcode = ErrorCode::Success;
                 doneReassign = true;
                 std::vector<std::thread> threads;
                 std::atomic<SizeType> nextPostingID(0);
-                SizeType currentPostingNum = p_index->GetNumSamples();
-                int limit = m_postingSizeLimit * m_opt->m_preReassignRatio;
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Batch PreReassign, Current PostingNum: %d, Current Limit: %d\n", currentPostingNum, limit);
+                std::vector<SizeType> globalIDs;
+                m_headIndex->GetHeadIndexMapping(m_layer + 1, globalIDs);
+                SizeType currentPostingNum = globalIDs.size();
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Batch Refine for layer %d with %lld posting lists\n", m_layer, (std::int64_t)currentPostingNum);
                 auto func = [&]()
                 {
                     ErrorCode ret;
@@ -540,80 +363,63 @@ namespace SPTAG::SPANN {
                             {
                                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Sent %.2lf%%...\n", index * 100.0 / currentPostingNum);
                             }
-                            if (p_prereassign)
+
+                            SizeType globalID = globalIDs[index];
+
+                            // ForceCompaction
+                            std::string postingList;
+                            if ((ret = db->Get(globalID, &postingList, MaxTimeout, &(workSpace.m_diskRequests))) !=
+                                    ErrorCode::Success)
                             {
-                                if (m_postingSizes.GetSize(index) >= limit)
-                                {
-                                    doneReassign = false;
-                                    Split(&workSpace, p_index.get(), index, false, p_prereassign);
-                                }
+                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                                                "RefineIndex failed to get posting %lld, read size:%d\n",
+                                                (std::int64_t)globalID, (int)(postingList.size()));
+                                PrintErrorInPosting(postingList, globalID);
+                                finalcode = ErrorCode::Fail;
+                                //return;
                             }
-                            else
+                            SizeType postVectorNum = (SizeType)(postingList.size() / m_vectorInfoSize);
+                            auto *postingP = reinterpret_cast<uint8_t *>(postingList.data());
+                            uint8_t *vectorId = postingP;
+                            int vectorCount = 0;
+                            std::shared_ptr<std::string> vecStr;
+                            bool hasHead = false;
+                            for (int j = 0; j < postVectorNum;
+                                    j++, vectorId += m_vectorInfoSize)
                             {
-                                if (!p_index->ContainSample(index))
+                                uint8_t version = *(vectorId + sizeof(SizeType));
+                                SizeType VID = *((SizeType *)(vectorId));
+
+                                if (VID == globalID) vecStr = std::make_shared<std::string>((char*)vectorId + m_metaDataSize, m_vectorDataSize);
+                                
+                                if (m_versionMap.Deleted(VID) || m_versionMap.GetVersion(VID) != version)
                                     continue;
 
-                                // ForceCompaction
-                                std::string postingList;
-                                if ((ret = db->Get(index, &postingList, MaxTimeout, &(workSpace.m_diskRequests))) !=
-                                        ErrorCode::Success ||
-                                    !m_checkSum.ValidateChecksum(postingList.c_str(), (int)(postingList.size()),
-                                                                *m_checkSums[index]))
-                                {
-                                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                                                 "RefineIndex failed to get posting %lld, required size:%d, read size:%d "
-                                                 "checksum issue:%d\n",
-                                                 (std::int64_t)index, (int)(m_postingSizes.GetSize(index) * m_vectorInfoSize),
-                                                 (int)(postingList.size()), (int)(ret == ErrorCode::Success));
-                                    PrintErrorInPosting(postingList, index);
-                                    finalcode = ErrorCode::Fail;
-                                    //return;
-                                }
-                                SizeType postVectorNum = (SizeType)(postingList.size() / m_vectorInfoSize);
-                                auto *postingP = reinterpret_cast<uint8_t *>(postingList.data());
-                                uint8_t *vectorId = postingP;
-                                int vectorCount = 0;
-                                for (int j = 0; j < postVectorNum;
-                                     j++, vectorId += m_vectorInfoSize)
-                                {
-                                    uint8_t version = *(vectorId + sizeof(SizeType));
-                                    SizeType VID = *((SizeType *)(vectorId));
+                                if (VID == globalID) hasHead = true;
 
-                                    if (m_versionMap->Deleted(VID) || m_versionMap->GetVersion(VID) != version)
-                                        continue;
-
-                                    *((SizeType *)(vectorId)) = (*p_mapping)[VID];
-                                    if (j != vectorCount)
-                                    {
-                                        memcpy(postingP + vectorCount * m_vectorInfoSize, vectorId, m_vectorInfoSize);
-                                    }
-                                    vectorCount++;
-                                }
-
-                                if (vectorCount <= m_mergeThreshold) mergelist.insert(p_headmapping->at(index));
-
-                                postingList.resize(vectorCount * m_vectorInfoSize);
-                                if ((ret = db->Put(p_headmapping->at(index), postingList, MaxTimeout,
-                                                       &(workSpace.m_diskRequests))) !=
-                                    ErrorCode::Success)
+                                if (j != vectorCount)
                                 {
-                                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                                                 "RefineIndex Failed to write back compacted posting %lld\n",
-                                                 (std::int64_t)(p_headmapping->at(index)));
-                                    finalcode = ret;
-                                    return;
+                                    memcpy(postingP + vectorCount * m_vectorInfoSize, vectorId, m_vectorInfoSize);
                                 }
-                                new_postingSizes.UpdateSize(p_headmapping->at(index), vectorCount);
-                                *new_checkSums[p_headmapping->at(index)] =
-                                    m_checkSum.CalcChecksum(postingList.c_str(), (int)(postingList.size()));
-                                if (m_opt->m_consistencyCheck && (ret = db->Check(p_headmapping->at(index), new_postingSizes.GetSize(p_headmapping->at(index)) * m_vectorInfoSize, nullptr)) != ErrorCode::Success)
-                                {
-                                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                                                    "RefineIndex: Check failed after Put %lld\n",
-                                                    (std::int64_t)(p_headmapping->at(index)));
-                                    finalcode = ret;
-                                    return;
-                                }
+                                vectorCount++;
+                            }
+                            if (!hasHead && vecStr != nullptr)
+                            {
+                                Serialize((char*)postingP + vectorCount * m_vectorInfoSize, globalID, m_versionMap.GetVersion(globalID), vecStr->data());
+                                vectorCount++;
+                            }
+                            if (vectorCount <= m_mergeThreshold) mergelist.emplace(globalID, vecStr);
+
+                            postingList.resize(vectorCount * m_vectorInfoSize);
+                            if ((ret = db->Put(globalID, postingList, MaxTimeout,
+                                                    &(workSpace.m_diskRequests))) !=
+                                ErrorCode::Success)
+                            {
+                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                                                "RefineIndex Failed to write back compacted posting %lld\n",
+                                                (std::int64_t)(globalID));
+                                finalcode = ret;
+                                return;
                             }
                         }
                         else
@@ -631,62 +437,24 @@ namespace SPTAG::SPANN {
                 if (finalcode != ErrorCode::Success)
                     return finalcode;
 
-                if (p_prereassign)
+                if (mergelist.size() > 0)
                 {
-                    Checkpoint(m_opt->m_indexDirectory);
-                    p_index->SaveIndex(m_opt->m_indexDirectory + FolderSep + m_opt->m_headIndexFolder);
-                    CalculatePostingDistribution(p_index.get());
-                }
-                else
-                {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Saving posting size\n");
-                    std::string p_persistenRecord = m_opt->m_indexDirectory + FolderSep + m_opt->m_ssdInfoFile;
-                    new_postingSizes.Save(p_persistenRecord);
-                    std::string p_checksumPath = m_opt->m_indexDirectory + FolderSep + m_opt->m_checksumFile;
-                    new_checkSums.Save(p_checksumPath);
-                    db->Checkpoint(m_opt->m_indexDirectory);
-
-                    if ((finalcode = m_postingSizes.Load(p_persistenRecord, p_index->m_iDataBlockSize,
-                                                         p_index->m_iDataCapacity)) != ErrorCode::Success)
-                        return finalcode;
-                    if ((finalcode = m_checkSums.Load(p_checksumPath, p_index->m_iDataBlockSize,
-                                                      p_index->m_iDataCapacity)) != ErrorCode::Success)
-                        return finalcode;
-                    
-                    if ((finalcode = m_versionMap->Load(m_opt->m_indexDirectory + FolderSep + m_opt->m_deleteIDFile,
-                                                        p_index->m_iDataBlockSize, p_index->m_iDataCapacity)) !=
-                        ErrorCode::Success)
-                        return finalcode;
-                    if ((finalcode = m_vectorTranslateMap->Load(
-                             m_opt->m_indexDirectory + FolderSep + m_opt->m_headIDFile, p_index->m_iDataBlockSize,
-                             p_index->m_iDataCapacity)) != ErrorCode::Success)
-                        return finalcode;
-                    if ((finalcode =
-                             VectorIndex::LoadIndex(m_opt->m_indexDirectory + FolderSep + m_opt->m_headIndexFolder,
-                                                    p_index)) != ErrorCode::Success)
-                        return finalcode;
-
-                    if (mergelist.size() > 0)
+                    for (auto it = mergelist.begin(); it != mergelist.end(); ++it)
                     {
-                        for (SizeType pid : mergelist)
-                        {
-                            MergeAsync(p_index.get(), pid);
-                        }
-                        Checkpoint(m_opt->m_indexDirectory);
-                        p_index->SaveIndex(m_opt->m_indexDirectory + FolderSep + m_opt->m_headIndexFolder);
-                        m_vectorTranslateMap->Save(m_opt->m_indexDirectory + FolderSep + m_opt->m_headIDFile);
+                        MergeAsync(it->first, it->second);
                     }
                 }
-                
+                Checkpoint(m_opt->m_indexDirectory);
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPFresh: ReWriting SSD Info\n");
             }
             return ErrorCode::Success;
         }
         
-        ErrorCode Split(ExtraWorkSpace* p_exWorkSpace, VectorIndex* p_index, const SizeType headID, bool reassign = false, bool preReassign = false, bool requirelock = true)
+        ErrorCode Split(ExtraWorkSpace* p_exWorkSpace, const SizeType headID, std::shared_ptr<std::string> headVec, bool reassign = false, bool requirelock = true)
         {
             auto splitBegin = std::chrono::high_resolution_clock::now();
             std::vector<SizeType> newHeadsID;
+            std::vector<std::shared_ptr<std::string>> newHeadsVec;
             std::vector<std::string> newPostingLists;
             ErrorCode ret;
             bool theSameHead = false;
@@ -697,18 +465,16 @@ namespace SPTAG::SPANN {
 
                 int retry = 0;
              Retry:
-                if (!p_index->ContainSample(headID)) return ErrorCode::Success;
+                if (!m_headIndex->ContainSample(headID, m_layer + 1)) return ErrorCode::Success;
 
                 std::string postingList;
                 auto splitGetBegin = std::chrono::high_resolution_clock::now();
                 if ((ret=db->Get(headID, &postingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) !=
-                    ErrorCode::Success || !m_checkSum.ValidateChecksum(postingList.c_str(), (int)(postingList.size()), *m_checkSums[headID]))
+                    ErrorCode::Success)
                 {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                                 "Split fail to get oversized postings: key=%lld required size=%d read size=%d checksum "
-                                 "issue=%d\n",
-                                 (std::int64_t)headID, (int)(m_postingSizes.GetSize(headID) * m_vectorInfoSize),
-                                 (int)(postingList.size()), (int)(ret == ErrorCode::Success));
+                                 "Split fail to get oversized postings: key=%lld read size=%d\n",
+                                 (std::int64_t)headID, (int)(postingList.size()), (int)(ret == ErrorCode::Success));
                     return ret;
                 }
                 auto splitGetEnd = std::chrono::high_resolution_clock::now();
@@ -719,19 +485,21 @@ namespace SPTAG::SPANN {
                 SizeType postVectorNum = (SizeType)(postingList.size() / m_vectorInfoSize);
                
                 //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "DEBUG: db get Posting %d successfully with length %d real length:%d vectorNum:%d\n", headID, (int)(postingList.size()), m_postingSizes.GetSize(headID), postVectorNum);
-                COMMON::Dataset<ValueType> smallSample(postVectorNum, m_opt->m_dim, p_index->m_iDataBlockSize, p_index->m_iDataCapacity, (ValueType*)postingP, true, nullptr, m_metaDataSize, m_vectorInfoSize);
+                COMMON::Dataset<ValueType> smallSample(postVectorNum, m_opt->m_dim, m_headIndex->m_iDataBlockSize, m_headIndex->m_iDataCapacity, (ValueType*)postingP, true, nullptr, m_metaDataSize, m_vectorInfoSize);
                 //COMMON::Dataset<ValueType> smallSample(0, m_opt->m_dim, p_index->m_iDataBlockSize, p_index->m_iDataCapacity);  // smallSample[i] -> VID
                 //std::vector<int> localIndicesInsert(postVectorNum);  // smallSample[i] = j <-> localindices[j] = i
                 //std::vector<uint8_t> localIndicesInsertVersion(postVectorNum);
                 std::vector<SizeType> localIndices;
                 localIndices.reserve(postVectorNum);
                 uint8_t* vectorId = postingP;
+                SizeType headj = -1;
+                bool hasHead = false;
                 for (SizeType j = 0; j < postVectorNum; j++, vectorId += m_vectorInfoSize)
                 {
                     //LOG(Helper::LogLevel::LL_Info, "vector index/total:id: %d/%d:%d\n", j, m_postingSizes[headID].load(), *(reinterpret_cast<int*>(vectorId)));
                     uint8_t version = *(vectorId + sizeof(SizeType));
                     SizeType VID = *((SizeType*)(vectorId));
-                    if (VID < 0 || VID >= m_versionMap->Count())
+                    if (VID < 0 || VID >= m_versionMap.Count())
                     {
                         if (retry < 3)
                         {
@@ -745,22 +513,26 @@ namespace SPTAG::SPANN {
                             return ErrorCode::DiskIOFail;
                         }
                     }
-                        
-		    //if (VID >= m_versionMap->Count()) SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "DEBUG: vector ID:%d total size:%d\n", VID, m_versionMap->Count());
-                    if (m_versionMap->Deleted(VID) || m_versionMap->GetVersion(VID) != version) continue;
+                    
+                    if (VID == headID) headj = j;
+		            //if (VID >= m_versionMap.Count()) SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "DEBUG: vector ID:%d total size:%d\n", VID, m_versionMap.Count());
+                    if (m_versionMap.Deleted(VID) || m_versionMap.GetVersion(VID) != version) continue;
 
+                    if (VID == headID) hasHead = true;
                     //localIndicesInsert[index] = VID;
                     //localIndicesInsertVersion[index] = version;
                     //smallSample.AddBatch(1, (ValueType*)(vectorId + m_metaDataSize));
                     localIndices.push_back(j);
                 }
+                if (!hasHead && headj >= 0) {
+                    localIndices.push_back(headj);
+                }
+
                 // double gcEndTime = sw.getElapsedMs();
                 // m_splitGcCost += gcEndTime;
 		
-                if (!preReassign && localIndices.size() < m_postingSizeLimit)
+                if (localIndices.size() < m_postingSizeLimit)
                 {
-
-                    //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "DEBUG: in place or not prereassign & index < m_postingSizeLimit. GC begin...\n");
                     char* ptr = (char*)(postingList.c_str());
                     for (int j = 0; j < localIndices.size(); j++, ptr += m_vectorInfoSize)
                     {
@@ -772,21 +544,13 @@ namespace SPTAG::SPANN {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split Fail to write back posting %lld\n", (std::int64_t)(headID));
                         return ret;
                     }
-                    m_postingSizes.UpdateSize(headID, localIndices.size());
-                    *m_checkSums[headID] = m_checkSum.CalcChecksum(postingList.c_str(), (int)(postingList.size()));
-                    if (m_opt->m_consistencyCheck && (ret = db->Check(headID, m_postingSizes.GetSize(headID) * m_vectorInfoSize, nullptr)) != ErrorCode::Success)
-                    {
-                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split: Check failed after Put %lld\n", (std::int64_t)(headID));
-                        return ret;
-                    }
                     m_stat.m_garbageNum++;
                     auto GCEnd = std::chrono::high_resolution_clock::now();
                     elapsedMSeconds = std::chrono::duration_cast<std::chrono::microseconds>(GCEnd - splitBegin).count();
                     m_stat.m_garbageCost += elapsedMSeconds;
                     {
-                        std::lock_guard<std::mutex> tmplock(m_runningLock);
-                        // SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"erase: %d\n", headID);
-                        m_splitList.erase(headID);
+                        std::unique_lock<std::shared_timed_mutex> tmplock(m_splitListLock);
+                        m_splitList.unsafe_erase(headID);
                     }
                     //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "GC triggered: %d, new length: %d\n", headID, index);
                     return ErrorCode::Success;
@@ -794,7 +558,7 @@ namespace SPTAG::SPANN {
 
                 auto clusterBegin = std::chrono::high_resolution_clock::now();
                 // k = 2, maybe we can change the split number, now it is fixed
-                SPTAG::COMMON::KmeansArgs<ValueType> args(2, smallSample.C(), (SizeType)localIndices.size(), 1, p_index->GetDistCalcMethod(), p_index->m_pQuantizer);
+                SPTAG::COMMON::KmeansArgs<ValueType> args(2, smallSample.C(), (SizeType)localIndices.size(), 1, m_headIndex->GetDistCalcMethod(), m_headIndex->m_pQuantizer);
                 std::shuffle(localIndices.begin(), localIndices.end(), std::mt19937(std::random_device()()));
 
                 int numClusters = SPTAG::COMMON::KmeansClustering(smallSample, localIndices, 0, (SizeType)localIndices.size(), args, 1000, 100.0F, false, nullptr);
@@ -810,29 +574,24 @@ namespace SPTAG::SPANN {
                     std::string newpostingList(cut * m_vectorInfoSize, '\0');
                     char* ptr = (char*)(newpostingList.c_str());
                     float totaldist = 0.0f;
+                    bool hasHead = false;
                     for (int j = 0; j < cut; j++, ptr += m_vectorInfoSize)
                     {
-                        totaldist += p_index->ComputeDistance(ptr + m_metaDataSize, args.centers);
+                        totaldist += m_headIndex->ComputeDistance(ptr + m_metaDataSize, args.centers);
                         memcpy(ptr, postingList.c_str() + localIndices[j] * m_vectorInfoSize, m_vectorInfoSize);
+                        if (*((SizeType*)(ptr)) == headID) hasHead = true;
                         //Serialize(ptr, localIndicesInsert[j], localIndicesInsertVersion[j], smallSample[j]);
                     }
+                    if (!hasHead) memcpy(newpostingList.data(), postingList.c_str() + headj * m_vectorInfoSize, m_vectorInfoSize);
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Cluserting Failed (The same vector), Cluster total dist:%f Only Keep %d vectors.\n", totaldist, cut);
                    
                     if ((ret=db->Put(headID, newpostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split fail to override posting cut to limit for posting %lld\n", (std::int64_t)(headID));
                         return ret;
                     }
-                    m_postingSizes.UpdateSize(headID, cut);
-                    *m_checkSums[headID] =
-                        m_checkSum.CalcChecksum(newpostingList.c_str(), (int)(newpostingList.size()));
-                    if (m_opt->m_consistencyCheck && (ret = db->Check(headID, m_postingSizes.GetSize(headID) * m_vectorInfoSize, nullptr)) != ErrorCode::Success)
                     {
-                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split: Consolidate Check failed after Put %lld\n", (std::int64_t)(headID));
-                        return ret;
-                    }
-                    {
-                        std::lock_guard<std::mutex> tmplock(m_runningLock);
-                        m_splitList.erase(headID);
+                        std::unique_lock<std::shared_timed_mutex> tmplock(m_splitListLock);
+                        m_splitList.unsafe_erase(headID);
                     }
                     return ErrorCode::Success;
                 }
@@ -842,7 +601,7 @@ namespace SPTAG::SPANN {
                 newPostingLists.resize(2);
                 for (int k = 0; k < 2; k++) {
                     if (args.counts[k] == 0)	continue;
-                    
+
                     newPostingLists[k].resize(args.counts[k] * m_vectorInfoSize);
                     char* ptr = (char*)(newPostingLists[k].c_str());
                     for (int j = 0; j < args.counts[k]; j++, ptr += m_vectorInfoSize)
@@ -850,21 +609,14 @@ namespace SPTAG::SPANN {
                         memcpy(ptr, postingList.c_str() + localIndices[first + j] * m_vectorInfoSize, m_vectorInfoSize);
                         //Serialize(ptr, localIndicesInsert[localIndices[first + j]], localIndicesInsertVersion[localIndices[first + j]], smallSample[localIndices[first + j]]);
                     }
-                    if (!theSameHead && p_index->ComputeDistance(args.centers + k * args._D, p_index->GetSample(headID)) < Epsilon) {
+                    if (!theSameHead && m_headIndex->ComputeDistance(args.centers + k * args._D, headVec->c_str()) < Epsilon) {
                         newHeadsID.push_back(headID);
+                        newHeadsVec.push_back(headVec);
                         newHeadVID = headID;
                         theSameHead = true;
                         auto splitPutBegin = std::chrono::high_resolution_clock::now();
-                        if (!preReassign && (ret=db->Put(newHeadVID, newPostingLists[k], MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
+                        if ((ret=db->Put(newHeadVID, newPostingLists[k], MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
                             SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to override posting %lld\n", (std::int64_t)(newHeadVID));
-                            return ret;
-                        }
-                        m_postingSizes.UpdateSize(newHeadVID, args.counts[k]);
-                        *m_checkSums[newHeadVID] =
-                            m_checkSum.CalcChecksum(newPostingLists[k].c_str(), (int)(newPostingLists[k].size()));
-                        if (m_opt->m_consistencyCheck && (ret = db->Check(newHeadVID, m_postingSizes.GetSize(newHeadVID) * m_vectorInfoSize, nullptr)) != ErrorCode::Success)
-                        {
-                            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split: Cluster Write Check failed after Put %lld\n", (std::int64_t)(newHeadVID));
                             return ret;
                         }
                         auto splitPutEnd = std::chrono::high_resolution_clock::now();
@@ -873,80 +625,65 @@ namespace SPTAG::SPANN {
                         m_stat.m_theSameHeadNum++;
                     }
                     else {
-                        SizeType begin, end = 0;
-                        p_index->AddIndexId(args.centers + k * args._D, 1, m_opt->m_dim, begin, end);
-                        {
-                            std::lock_guard<std::mutex> tmplock(m_runningLock);
-                            m_vectorTranslateMap->AddBatch(1);
-                        }
-                        if (m_opt->m_excludehead)
-                        {
-                            SizeType VID = *((SizeType*)(postingP + args.clusterIdx[k] * m_vectorInfoSize));
-                            uint8_t version = *((uint8_t*)(postingP + args.clusterIdx[k] * m_vectorInfoSize + sizeof(SizeType)));
-                            *(m_vectorTranslateMap->At(begin)) = VID;
-                            m_versionMap->IncVersion(VID, &version);
-                        }
-                        else
-                        {
-                            *(m_vectorTranslateMap->At(begin)) = MaxSize;
-                        }
-                        newHeadVID = begin;
-                        newHeadsID.push_back(begin);
-                        auto splitPutBegin = std::chrono::high_resolution_clock::now();
-                        if (!preReassign && (ret=db->Put(newHeadVID, newPostingLists[k], MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
-                            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to add new posting %lld\n", (std::int64_t)(newHeadVID));
-                            return ret;
-                        }                        
-                        auto splitPutEnd = std::chrono::high_resolution_clock::now();
-                        elapsedMSeconds = std::chrono::duration_cast<std::chrono::microseconds>(splitPutEnd - splitPutBegin).count();
-                        m_stat.m_putCost += elapsedMSeconds;
+                        newHeadVID = *((SizeType*)(postingP + args.clusterIdx[k] * m_vectorInfoSize));
+                        uint8_t version = *((uint8_t*)(postingP + args.clusterIdx[k] * m_vectorInfoSize + sizeof(SizeType)));
 
-                        std::lock_guard<std::mutex> tmplock(m_dataAddLock);
-                        if (m_postingSizes.AddBatch(1) == ErrorCode::MemoryOverFlow || m_checkSums.AddBatch(1) == ErrorCode::MemoryOverFlow)
-                        {
-                            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "MemoryOverFlow: NnewHeadVID: %lld, Map Size:%llu\n",
-                                         (std::int64_t)newHeadVID, m_postingSizes.BufferSize());
-                            return ErrorCode::MemoryOverFlow;
+                        if (m_headIndex->ContainSample(newHeadVID, m_layer + 1)) {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Split: new head VID %lld already exists in head index. Do merging...\n", (std::int64_t)(newHeadVID));
+                            // TODO：merge postings
+                        } else {
+                            newHeadsID.push_back(newHeadVID);
+                            newHeadsVec.push_back(std::make_shared<std::string>((char*)(args.centers + k * args._D), m_vectorDataSize));
+                            auto splitPutBegin = std::chrono::high_resolution_clock::now();
+                            if ((ret=db->Put(newHeadVID, newPostingLists[k], MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
+                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to add new posting %lld\n", (std::int64_t)(newHeadVID));
+                                return ret;
+                            }                        
+                            auto splitPutEnd = std::chrono::high_resolution_clock::now();
+                            elapsedMSeconds = std::chrono::duration_cast<std::chrono::microseconds>(splitPutEnd - splitPutBegin).count();
+                            m_stat.m_putCost += elapsedMSeconds;
+
+                            auto updateHeadBegin = std::chrono::high_resolution_clock::now();
+                            m_headIndex->AddHeadIndex(args.centers + k * args._D, newHeadVID, version, m_opt->m_dim, m_layer + 1, p_exWorkSpace);
+                            auto updateHeadEnd = std::chrono::high_resolution_clock::now();
+                            elapsedMSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(updateHeadEnd - updateHeadBegin).count();
+                            m_stat.m_updateHeadCost += elapsedMSeconds;
+                            
+                            if (m_opt->m_excludehead) m_versionMap.IncVersion(newHeadVID, &version);
                         }
-                        m_postingSizes.UpdateSize(newHeadVID, args.counts[k]);
-                        *m_checkSums[newHeadVID] =
-                            m_checkSum.CalcChecksum(newPostingLists[k].c_str(), (int)(newPostingLists[k].size()));
-                        if (m_opt->m_consistencyCheck && (ret = db->Check(newHeadVID, m_postingSizes.GetSize(newHeadVID) * m_vectorInfoSize, nullptr)) != ErrorCode::Success)
-                        {
-                            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split: Cluster Write Check failed after Put %lld\n", (std::int64_t)newHeadVID);
-                            return ret;
-                        }
-                         
-                        auto updateHeadBegin = std::chrono::high_resolution_clock::now();
-                        p_index->AddIndexIdx(begin, end);
-                        auto updateHeadEnd = std::chrono::high_resolution_clock::now();
-                        elapsedMSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(updateHeadEnd - updateHeadBegin).count();
-                        m_stat.m_updateHeadCost += elapsedMSeconds;
                     }
                     //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Head id: %d split into : %d, length: %d\n", headID, newHeadVID, args.counts[k]);
                     first += args.counts[k];
                 }
                 if (!theSameHead) {
-                    p_index->DeleteIndex(headID);
-                    m_postingSizes.UpdateSize(headID, 0);
-                    *m_checkSums[headID] = 0;
+                    m_headIndex->DeleteIndex(headID, m_layer + 1);
                     if ((ret=db->Delete(headID)) != ErrorCode::Success)
                     {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to delete old posting in Split\n");
                         return ret;
                     }
                 }
+
+                {
+                    std::unique_lock<std::shared_timed_mutex> tmplock(m_splitListLock);
+                    //SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"erase: %d\n", headID);
+                    m_splitList.unsafe_erase(headID);
+                }
+                
+                for (int k = 0; k < 2; k++) {
+                    if (args.counts[k] > m_postingSizeLimit) {
+                        {
+                            SplitAsync(newHeadsID[k], newHeadsVec[k], args.counts[k]);
+                        }
+                    }
+                }
             }
-            {
-                std::lock_guard<std::mutex> tmplock(m_runningLock);
-                //SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"erase: %d\n", headID);
-                m_splitList.erase(headID);
-            }
+            
             m_stat.m_splitNum++;
             if (reassign) {
                 auto reassignScanBegin = std::chrono::high_resolution_clock::now();
 
-                CollectReAssign(p_exWorkSpace, p_index, headID, newPostingLists, newHeadsID, theSameHead);
+                CollectReAssign(p_exWorkSpace, headID, headVec, newPostingLists, newHeadsID, newHeadsVec, theSameHead);
 
                 auto reassignScanEnd = std::chrono::high_resolution_clock::now();
                 elapsedMSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(reassignScanEnd - reassignScanBegin).count();
@@ -959,278 +696,224 @@ namespace SPTAG::SPANN {
             return ErrorCode::Success;
         }
 
-        ErrorCode MergePostings(ExtraWorkSpace *p_exWorkSpace, VectorIndex* p_index, SizeType headID, bool reassign = false)
+        ErrorCode MergePostings(ExtraWorkSpace *p_exWorkSpace, SizeType headID, std::shared_ptr<std::string> headVec, bool reassign = false)
         {
+            std::unique_lock<std::shared_timed_mutex> lock(m_rwLocks[headID]);
+
+            if (!m_headIndex->ContainSample(headID, m_layer + 1)) {
+                std::unique_lock<std::shared_timed_mutex> lock(m_mergeListLock);
+                m_mergeList.unsafe_erase(headID);
+                return ErrorCode::Success;
+            }
+
             {
-                if (!m_mergeLock.try_lock()) {
-                    auto* curJob = new MergeAsyncJob(p_index, this, headID, reassign, nullptr);
-                    m_splitThreadPool->add(curJob);
+                std::shared_lock<std::shared_timed_mutex> lock(m_mergeListLock);
+                if (m_mergeList.find(headID) == m_mergeList.end()) {
                     return ErrorCode::Success;
                 }
-                std::unique_lock<std::shared_timed_mutex> lock(m_rwLocks[headID]);
+            }
 
-                if (!p_index->ContainSample(headID)) {
-                    m_mergeLock.unlock();
-                    return ErrorCode::Success;
-                }
+            std::string mergedPostingList;
+            std::set<SizeType> vectorIdSet;
 
-                std::string mergedPostingList;
-                std::set<SizeType> vectorIdSet;
+            std::string currentPostingList;
+            ErrorCode ret;
+            if ((ret = db->Get(headID, &currentPostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) !=
+                    ErrorCode::Success)
+            {
+                SPTAGLIB_LOG(
+                    Helper::LogLevel::LL_Error,
+                    "Fail to get original merge postings: %lld, get size:%d\n",
+                    (std::int64_t)headID, (int)(currentPostingList.size()));
+                PrintErrorInPosting(currentPostingList, headID);
+                return ret;
+            }
 
-                std::string currentPostingList;
-                ErrorCode ret;
-                if ((ret = db->Get(headID, &currentPostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) !=
-                        ErrorCode::Success ||
-                    !m_checkSum.ValidateChecksum(currentPostingList.c_str(), (int)(currentPostingList.size()), *m_checkSums[headID]))
-                {
-                    SPTAGLIB_LOG(
-                        Helper::LogLevel::LL_Error,
-                        "Fail to get original merge postings: %lld, required size:%d, get size:%d, checksum issue:%d\n",
-                        (std::int64_t)headID, (int)(m_postingSizes.GetSize(headID) * m_vectorInfoSize),
-                        (int)(currentPostingList.size()), (int)(ret == ErrorCode::Success));
-                    PrintErrorInPosting(currentPostingList, headID);
-                    m_mergeLock.unlock();
-                    return ret;
-                }
+            auto* postingP = reinterpret_cast<uint8_t*>(currentPostingList.data());
+            size_t postVectorNum = currentPostingList.size() / m_vectorInfoSize;
+            int currentLength = 0;
+            uint8_t* vectorId = postingP;
+            SizeType headj = -1;
+            for (int j = 0; j < postVectorNum; j++, vectorId += m_vectorInfoSize)
+            {
+                SizeType VID = *((SizeType*)(vectorId));
+                uint8_t version = *(vectorId + sizeof(SizeType));
+                if (VID == headID) headj = j;
+                if (m_versionMap.Deleted(VID) || m_versionMap.GetVersion(VID) != version) continue;
+                vectorIdSet.insert(VID);
+                mergedPostingList += currentPostingList.substr(j * m_vectorInfoSize, m_vectorInfoSize);
+                currentLength++;
+            }
+            if (vectorIdSet.find(headID) == vectorIdSet.end() && headj >= 0) {
+                vectorIdSet.insert(headID);
+                mergedPostingList += currentPostingList.substr(headj * m_vectorInfoSize, m_vectorInfoSize);
+                currentLength++;
+            }
 
-                auto* postingP = reinterpret_cast<uint8_t*>(currentPostingList.data());
-                size_t postVectorNum = currentPostingList.size() / m_vectorInfoSize;
-                int currentLength = 0;
-                uint8_t* vectorId = postingP;
-                for (int j = 0; j < postVectorNum; j++, vectorId += m_vectorInfoSize)
-                {
-                    SizeType VID = *((SizeType*)(vectorId));
-                    uint8_t version = *(vectorId + sizeof(SizeType));
-                    if (m_versionMap->Deleted(VID) || m_versionMap->GetVersion(VID) != version) continue;
-                    vectorIdSet.insert(VID);
-                    mergedPostingList += currentPostingList.substr(j * m_vectorInfoSize, m_vectorInfoSize);
-                    currentLength++;
-                }
-                int totalLength = currentLength;
-
-                if (currentLength > m_mergeThreshold)
-                {
-                    if ((ret=db->Put(headID, mergedPostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
-                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Merge Fail to write back posting %lld\n", (std::int64_t)headID);
-                        m_mergeLock.unlock();
-                        return ret;
-                    }
-
-                    m_postingSizes.UpdateSize(headID, currentLength);
-                    *m_checkSums[headID] =
-                        m_checkSum.CalcChecksum(mergedPostingList.c_str(), (int)(mergedPostingList.size()));
-
-                    if (m_opt->m_consistencyCheck && (ret = db->Check(headID, m_postingSizes.GetSize(headID) * m_vectorInfoSize, nullptr)) != ErrorCode::Success)
-                    {
-                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Merge: Check failed after Put %lld\n", (std::int64_t)headID);
-                        m_mergeLock.unlock();
-                        return ret;
-                    }
-                    {
-                        std::unique_lock<std::shared_timed_mutex> lock(m_mergeListLock);
-                        m_mergeList.unsafe_erase(headID);
-                    }
-                    m_mergeLock.unlock();
-                    return ErrorCode::Success;
-                }
-
-                COMMON::QueryResultSet<ValueType> queryResults((ValueType*)(p_index->GetSample(headID)), m_opt->m_internalResultNum);
-                std::shared_ptr<std::uint8_t> rec_query;
-                if (p_index->m_pQuantizer) {
-                    rec_query.reset((uint8_t*)ALIGN_ALLOC(p_index->m_pQuantizer->ReconstructSize()), [=](std::uint8_t* ptr) { ALIGN_FREE(ptr); });
-                    p_index->m_pQuantizer->ReconstructVector((const uint8_t*)queryResults.GetTarget(), rec_query.get());
-                    queryResults.SetTarget((ValueType*)(rec_query.get()), p_index->m_pQuantizer);
-                }
-                p_index->SearchIndex(queryResults);
-
-                std::string nextPostingList;
-                for (int i = 1; i < queryResults.GetResultNum(); ++i)
-                {
-                    BasicResult* queryResult = queryResults.GetResult(i);
-                    int nextLength = m_postingSizes.GetSize(queryResult->VID);
-                    bool listContains = false;
-                    {
-                        std::shared_lock<std::shared_timed_mutex> anotherLock(m_mergeListLock);
-                        listContains = (m_mergeList.find(queryResult->VID) != m_mergeList.end());
-                    }
-                    if (currentLength + nextLength < m_postingSizeLimit && !listContains)
-                    {
-                        {
-                            std::unique_lock<std::shared_timed_mutex> anotherLock(m_rwLocks[queryResult->VID], std::defer_lock);
-                            // SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"Locked: %d, to be lock: %d\n", headID, queryResult->VID);
-                            if (m_rwLocks.hash_func(queryResult->VID) != m_rwLocks.hash_func(headID)) anotherLock.lock();
-                            if (!p_index->ContainSample(queryResult->VID)) continue;
-                            if ((ret=db->Get(queryResult->VID, &nextPostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success || 
-                                !m_checkSum.ValidateChecksum(nextPostingList.c_str(), (int)(nextPostingList.size()), *m_checkSums[queryResult->VID])) {
-                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                                             "Fail to get to be merged posting: %lld, required size:%d get size:%d, "
-                                             "checksum issue:%d\n",
-                                             (std::int64_t)(queryResult->VID),
-                                             (int)(m_postingSizes.GetSize(queryResult->VID) * m_vectorInfoSize),
-                                             (int)(nextPostingList.size()), (int)(ret == ErrorCode::Success));
-                                PrintErrorInPosting(nextPostingList, queryResult->VID);
-                                m_mergeLock.unlock();
-                                return ret;
-                            }
-                            postingP = reinterpret_cast<uint8_t*>(nextPostingList.data());
-                            postVectorNum = nextPostingList.size() / m_vectorInfoSize;
-                            nextLength = 0;
-                            vectorId = postingP;
-                            for (int j = 0; j < postVectorNum; j++, vectorId += m_vectorInfoSize)
-                            {
-                                SizeType VID = *((SizeType*)(vectorId));
-                                uint8_t version = *(vectorId + sizeof(SizeType));
-                                if (m_versionMap->Deleted(VID) || m_versionMap->GetVersion(VID) != version) continue;
-                                if (vectorIdSet.find(VID) == vectorIdSet.end()) {
-                                    mergedPostingList += nextPostingList.substr(j * m_vectorInfoSize, m_vectorInfoSize);
-                                    totalLength++;
-                                }
-                                nextLength++;
-                            }
-                            if (currentLength > nextLength) 
-                            {
-                                p_index->DeleteIndex(queryResult->VID);
-                                if ((ret=db->Put(headID, mergedPostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
-                                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "MergePostings fail to override old posting %lld after merge\n", (std::int64_t)headID);
-                                    m_mergeLock.unlock();
-                                    return ret;
-                                }
-                                m_postingSizes.UpdateSize(queryResult->VID, 0);
-                                *m_checkSums[queryResult->VID] = 0;
-                                m_postingSizes.UpdateSize(headID, totalLength);
-                                *m_checkSums[headID] =
-                                    m_checkSum.CalcChecksum(mergedPostingList.c_str(), (int)(mergedPostingList.size()));
-                                if (m_opt->m_consistencyCheck && (ret = db->Check(headID, m_postingSizes.GetSize(headID) * m_vectorInfoSize, nullptr)) != ErrorCode::Success)
-                                {
-                                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                                                 "MergePostings fail to check old posting %lld in Merge\n",
-                                                 (std::int64_t)headID);
-                                    m_mergeLock.unlock();
-                                    return ret;
-                                }
-                                if ((ret=db->Delete(queryResult->VID)) != ErrorCode::Success)
-                                {
-                                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to delete old posting %lld in Merge\n", (std::int64_t)(queryResult->VID));
-                                    m_mergeLock.unlock();
-                                    return ret;
-                                }
-                            } else
-                            {
-                                p_index->DeleteIndex(headID);
-                                if ((ret=db->Put(queryResult->VID, mergedPostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
-                                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "MergePostings fail to override posting %lld after merge\n", (std::int64_t)(queryResult->VID));
-                                    m_mergeLock.unlock();
-                                    return ret;
-                                }
-                                m_postingSizes.UpdateSize(queryResult->VID, totalLength);
-                                *m_checkSums[queryResult->VID] =
-                                    m_checkSum.CalcChecksum(mergedPostingList.c_str(), (int)(mergedPostingList.size()));
-                                m_postingSizes.UpdateSize(headID, 0);
-                                *m_checkSums[headID] = 0;
-                                if (m_opt->m_consistencyCheck && (ret = db->Check(queryResult->VID, m_postingSizes.GetSize(queryResult->VID) * m_vectorInfoSize, nullptr)) != ErrorCode::Success)
-                                {
-                                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                                                 "MergePostings fail to check nearby posting %lld in Merge\n",
-                                                 (std::int64_t)(queryResult->VID));
-                                    m_mergeLock.unlock();
-                                    return ret;
-                                }
-                                if ((ret = db->Delete(headID)) != ErrorCode::Success)
-                                {
-                                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to delete old posting %lld in Merge\n", (std::int64_t)(headID));
-                                    m_mergeLock.unlock();
-                                    return ret;
-                                }
-                            }
-                            if (m_rwLocks.hash_func(queryResult->VID) != m_rwLocks.hash_func(headID)) anotherLock.unlock();
-                        }
-
-                        // SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"Release: %d, Release: %d\n", headID, queryResult->VID);
-                        lock.unlock();
-                        m_mergeLock.unlock();
-
-                        if (reassign) 
-                        {
-                            SizeType deletedHead = -1;
-                            /* ReAssign */
-                            if (currentLength > nextLength) 
-                            {
-                                /* ReAssign queryResult->VID*/
-                                postingP = reinterpret_cast<uint8_t*>(nextPostingList.data());
-                                for (int j = 0; j < nextLength; j++) {
-                                    uint8_t* vectorId = postingP + j * m_vectorInfoSize;
-                                    // SizeType vid = *(reinterpret_cast<SizeType*>(vectorId));
-                                    ValueType* vector = reinterpret_cast<ValueType*>(vectorId + m_metaDataSize);
-                                    float origin_dist = p_index->ComputeDistance(p_index->GetSample(queryResult->VID), vector);
-                                    float current_dist = p_index->ComputeDistance(p_index->GetSample(headID), vector);
-                                    if (current_dist > origin_dist)
-                                        ReassignAsync(p_index, std::make_shared<std::string>((char*)vectorId, m_vectorInfoSize), headID);
-                                }
-                                deletedHead = queryResult->VID;
-                            } else
-                            {
-                                /* ReAssign headID*/
-                                postingP = reinterpret_cast<uint8_t*>(currentPostingList.data());
-                                for (int j = 0; j < currentLength; j++) {
-                                    uint8_t* vectorId = postingP + j * m_vectorInfoSize;
-                                    // SizeType vid = *(reinterpret_cast<SizeType*>(vectorId));
-                                    ValueType* vector = reinterpret_cast<ValueType*>(vectorId + m_metaDataSize);
-                                    float origin_dist = p_index->ComputeDistance(p_index->GetSample(headID), vector);
-                                    float current_dist = p_index->ComputeDistance(p_index->GetSample(queryResult->VID), vector);
-                                    if (current_dist > origin_dist)
-                                        ReassignAsync(p_index, std::make_shared<std::string>((char*)vectorId, m_vectorInfoSize), queryResult->VID);
-                                }
-                                deletedHead = headID;
-                            }
-
-                            if (m_opt->m_excludehead)
-                            {
-                                SizeType vid = (SizeType)(*(m_vectorTranslateMap->At(deletedHead)));
-                                if (vid != MaxSize && !m_versionMap->Deleted(vid))
-                                {
-                                    std::shared_ptr<std::string> vectorinfo =
-                                        std::make_shared<std::string>(m_vectorInfoSize, ' ');
-                                    Serialize(vectorinfo->data(), vid, m_versionMap->GetVersion(vid),
-                                              p_index->GetSample(deletedHead));
-                                    ReassignAsync(p_index, vectorinfo, -1);
-                                }
-                            }
-                        }
-
-                        {
-                            std::unique_lock<std::shared_timed_mutex> lock(m_mergeListLock);
-                            m_mergeList.unsafe_erase(headID);
-                        }
-                        m_stat.m_mergeNum++;
-
-                        return ErrorCode::Success;
-                    }
-                }
-                mergedPostingList.resize(currentLength * m_vectorInfoSize);
+            if (currentLength > m_mergeThreshold)
+            {
                 if ((ret=db->Put(headID, mergedPostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Merge Fail to write back posting %lld\n", (std::int64_t)headID);
-                    return ret;
-                }
-
-                m_postingSizes.UpdateSize(headID, currentLength);
-                *m_checkSums[headID] =
-                    m_checkSum.CalcChecksum(mergedPostingList.c_str(), (int)(mergedPostingList.size()));
-
-                if (m_opt->m_consistencyCheck && (ret = db->Check(headID, m_postingSizes.GetSize(headID) * m_vectorInfoSize, nullptr)) != ErrorCode::Success)
-                {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Merge: Check failed after put original posting %lld\n", (std::int64_t)headID);
                     return ret;
                 }
                 {
                     std::unique_lock<std::shared_timed_mutex> lock(m_mergeListLock);
                     m_mergeList.unsafe_erase(headID);
                 }
-                m_mergeLock.unlock();
+                return ErrorCode::Success;
+            }
+
+            COMMON::QueryResultSet<ValueType> queryResults((ValueType*)(headVec->data()), m_opt->m_internalResultNum, false, true);
+            std::shared_ptr<std::uint8_t> rec_query;
+            if (m_headIndex->m_pQuantizer) {
+                rec_query.reset((uint8_t*)ALIGN_ALLOC(m_headIndex->m_pQuantizer->ReconstructSize()), [=](std::uint8_t* ptr) { ALIGN_FREE(ptr); });
+                m_headIndex->m_pQuantizer->ReconstructVector((const uint8_t*)queryResults.GetTarget(), rec_query.get());
+                queryResults.SetTarget((ValueType*)(rec_query.get()), m_headIndex->m_pQuantizer);
+            }
+            m_headIndex->SearchHeadIndex(queryResults, m_layer + 1, p_exWorkSpace);
+
+            std::string nextPostingList;
+            for (int i = 1; i < queryResults.GetResultNum(); ++i)
+            {
+                BasicResult* queryResult = queryResults.GetResult(i);
+  
+                int dedupLength = 0;
+                SizeType nextHeadID = -1;
+                std::shared_ptr<std::string> nextHeadVec;
+                SizeType deletedHeadID = -1;
+                std::shared_ptr<std::string> deletedHeadVec;
+                std::string * deletedPostingList = nullptr;
+                int deletedLength = 0;
+                {
+                    std::unique_lock<std::shared_timed_mutex> anotherLock(m_rwLocks[queryResult->VID], std::defer_lock);
+                    // SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"Locked: %d, to be lock: %d\n", headID, queryResult->VID);
+                    if (m_rwLocks.hash_func(queryResult->VID) != m_rwLocks.hash_func(headID)) {
+                        if (!anotherLock.try_lock()) {
+                            auto* curJob = new MergeAsyncJob(this, headID, headVec, reassign, nullptr);
+                            m_splitThreadPool->add(curJob);
+                            return ErrorCode::Success;
+                        }
+                    }
+                    if (!m_headIndex->ContainSample(queryResult->VID, m_layer + 1)) continue;
+                    if ((ret=db->Get(queryResult->VID, &nextPostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                                        "Fail to get to be merged posting: %lld, get size:%d\n",
+                                        (std::int64_t)(queryResult->VID), (int)(nextPostingList.size()));
+                        PrintErrorInPosting(nextPostingList, queryResult->VID);
+                        return ret;
+                    }
+                    postingP = reinterpret_cast<uint8_t*>(nextPostingList.data());
+                    postVectorNum = nextPostingList.size() / m_vectorInfoSize;
+                    vectorId = postingP;
+                    int nextLength = 0;
+                    for (int j = 0; j < postVectorNum; j++, vectorId += m_vectorInfoSize)
+                    {
+                        SizeType VID = *((SizeType*)(vectorId));
+                        uint8_t version = *(vectorId + sizeof(SizeType));
+                        if (m_versionMap.Deleted(VID) || m_versionMap.GetVersion(VID) != version) continue;
+                        if (vectorIdSet.find(VID) == vectorIdSet.end()) {
+                            mergedPostingList += nextPostingList.substr(j * m_vectorInfoSize, m_vectorInfoSize);
+                            dedupLength++;
+                        }
+                        nextLength++;
+                    }
+                    if (currentLength + dedupLength >= m_postingSizeLimit) continue;
+
+                    if (currentLength >= nextLength) 
+                    {                           
+                        if ((ret=db->Put(headID, mergedPostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "MergePostings fail to override old posting %lld after merge\n", (std::int64_t)headID);
+                            return ret;
+                        }
+                        m_headIndex->DeleteIndex(queryResult->VID, m_layer + 1);
+                        if ((ret=db->Delete(queryResult->VID)) != ErrorCode::Success)
+                        {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to delete old posting %lld in Merge\n", (std::int64_t)(queryResult->VID));
+                            return ret;
+                        }
+                        nextHeadID = headID;
+                        nextHeadVec = headVec;
+                        deletedHeadID = queryResult->VID;
+                        deletedHeadVec = std::make_shared<std::string>((char*)(queryResult->Vec.Data()), m_vectorDataSize);
+                        deletedPostingList = &nextPostingList;
+                        deletedLength = nextLength;
+                    } else
+                    { 
+                        if ((ret=db->Put(queryResult->VID, mergedPostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "MergePostings fail to override posting %lld after merge\n", (std::int64_t)(queryResult->VID));
+                            return ret;
+                        }
+                        m_headIndex->DeleteIndex(headID, m_layer + 1);
+                        if ((ret = db->Delete(headID)) != ErrorCode::Success)
+                        {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to delete old posting %lld in Merge\n", (std::int64_t)(headID));
+                            return ret;
+                        }
+                        nextHeadID = queryResult->VID;
+                        nextHeadVec = std::make_shared<std::string>((char*)(queryResult->Vec.Data()), m_vectorDataSize);
+                        deletedHeadID = headID;
+                        deletedHeadVec = headVec;
+                        deletedPostingList = &currentPostingList;
+                        deletedLength = currentLength;
+                    }
+                    if (m_rwLocks.hash_func(queryResult->VID) != m_rwLocks.hash_func(headID)) anotherLock.unlock();
+                }
+
+                // SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"Release: %d, Release: %d\n", headID, queryResult->VID);
+                lock.unlock();
+
+                if (reassign) 
+                {
+                    postingP = reinterpret_cast<uint8_t*>(deletedPostingList->data());
+                    for (int j = 0; j < deletedLength; j++) {
+                        uint8_t* vectorId = postingP + j * m_vectorInfoSize;
+                        // SizeType vid = *(reinterpret_cast<SizeType*>(vectorId));
+                        ValueType* vector = reinterpret_cast<ValueType*>(vectorId + m_metaDataSize);
+                        float origin_dist = m_headIndex->ComputeDistance(deletedHeadVec->data(), vector);
+                        float current_dist = m_headIndex->ComputeDistance(nextHeadVec->data(), vector);
+                        if (current_dist > origin_dist)
+                            ReassignAsync(std::make_shared<std::string>((char*)vectorId, m_vectorInfoSize), nextHeadID, nextHeadVec);
+                    }
+
+                    if (m_opt->m_excludehead)
+                    {
+                        if (!m_versionMap.Deleted(deletedHeadID))
+                        {
+                            std::shared_ptr<std::string> vectorinfo =
+                                std::make_shared<std::string>(m_vectorInfoSize, ' ');
+                            Serialize(vectorinfo->data(), deletedHeadID, m_versionMap.GetVersion(deletedHeadID),
+                                        deletedHeadVec->data());
+                            ReassignAsync(vectorinfo, -1, nextHeadVec);
+                        }
+                    }
+                }
+
+                {
+                    {
+                        std::unique_lock<std::shared_timed_mutex> lock(m_mergeListLock);
+                        m_mergeList.unsafe_erase(headID);
+                        m_mergeList.unsafe_erase(queryResult->VID);
+                    }
+                    if (currentLength + dedupLength <= m_mergeThreshold) {
+                        MergeAsync(nextHeadID, nextHeadVec);
+                    }
+                }
+                m_stat.m_mergeNum++;
+                return ErrorCode::Success;
+            }
+            mergedPostingList.resize(currentLength * m_vectorInfoSize);
+            if ((ret=db->Put(headID, mergedPostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Merge Fail to write back posting %lld\n", (std::int64_t)headID);
+                return ret;
+            }
+            {
+                std::unique_lock<std::shared_timed_mutex> lock(m_mergeListLock);
+                m_mergeList.unsafe_erase(headID);
             }
             return ErrorCode::Success;
         }
 
-        inline void SplitAsync(VectorIndex* p_index, SizeType headID, std::function<void()> p_callback = nullptr)
+        inline void SplitAsync(SizeType headID, std::shared_ptr<std::string> headVec, int postingSize, std::function<void()> p_callback = nullptr)
         {
             // SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"Into SplitAsync, current headID: %d, size: %d\n", headID, m_postingSizes.GetSize(headID));
             // tbb::concurrent_hash_map<SizeType, SizeType>::const_accessor headIDAccessor;
@@ -1240,26 +923,30 @@ namespace SPTAG::SPANN {
             // tbb::concurrent_hash_map<SizeType, SizeType>::value_type workPair(headID, headID);
             // m_splitList.insert(workPair);
             {
-                std::lock_guard<std::mutex> tmplock(m_runningLock);
-
-                if (m_splitList.find(headID) != m_splitList.end()) {
-                    // SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"Already in queue\n");
+                Helper::Concurrent::ConcurrentMap<SizeType, int>::value_type workPair(headID, postingSize);
+                std::shared_lock<std::shared_timed_mutex> tmplock(m_splitListLock);
+                auto res = m_splitList.insert(workPair);
+                if (!res.second)
+                {
+                    m_splitList[headID] = max(res.first->second, postingSize);
                     return;
                 }
-                m_splitList.insert(headID);
             }
 
-            auto* curJob = new SplitAsyncJob(p_index, this, headID, m_opt->m_disableReassign, p_callback);
+            auto* curJob = new SplitAsyncJob(this, headID, headVec, m_opt->m_disableReassign, p_callback);
             m_splitThreadPool->add(curJob);
             // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Add to thread pool\n");
         }
 
-        inline void MergeAsync(VectorIndex* p_index, SizeType headID, std::function<void()> p_callback = nullptr)
+        inline void MergeAsync(SizeType headID, std::shared_ptr<std::string> headVec, std::function<void()> p_callback = nullptr)
         {
-            Helper::Concurrent::ConcurrentMap<SizeType, SizeType>::value_type workPair(headID, headID);
+            if (headVec == nullptr) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "MergeAsync headVec is null, headID: %lld\n", (std::int64_t)headID);
+                return;
+            }
             {
                 std::shared_lock<std::shared_timed_mutex> lock(m_mergeListLock);
-                auto res = m_mergeList.insert(workPair);
+                auto res = m_mergeList.insert(headID);
                 if (!res.second)
                 {
                     // Already in queue
@@ -1267,35 +954,34 @@ namespace SPTAG::SPANN {
                 }
             }
 
-            auto* curJob = new MergeAsyncJob(p_index, this, headID, m_opt->m_disableReassign, p_callback);
+            auto* curJob = new MergeAsyncJob(this, headID, headVec, m_opt->m_disableReassign, p_callback);
             m_splitThreadPool->add(curJob);
         }
 
-        inline void ReassignAsync(VectorIndex* p_index, std::shared_ptr<std::string> vectorInfo, SizeType HeadPrev, std::function<void()> p_callback = nullptr)
+        inline void ReassignAsync(std::shared_ptr<std::string> vectorInfo, SizeType headPrev, std::shared_ptr<std::string> headVec, std::function<void()> p_callback = nullptr)
         {
-            auto* curJob = new ReassignAsyncJob(p_index, this, std::move(vectorInfo), HeadPrev, p_callback);
+            auto* curJob = new ReassignAsyncJob(this, std::move(vectorInfo), headPrev, std::move(headVec), p_callback);
             m_splitThreadPool->add(curJob);
         }
 
-        ErrorCode CollectReAssign(ExtraWorkSpace *p_exWorkSpace, VectorIndex *p_index, SizeType headID,
-                                  std::vector<std::string> &postingLists, std::vector<SizeType> &newHeadsID,
+        ErrorCode CollectReAssign(ExtraWorkSpace *p_exWorkSpace, SizeType headID, std::shared_ptr<std::string> headVec,
+                                  std::vector<std::string> &postingLists, std::vector<SizeType> &newHeadsID, std::vector<std::shared_ptr<std::string>> &newHeadsVec,
                                   bool theSameHead)
         {
-            auto headVector = reinterpret_cast<const ValueType*>(p_index->GetSample(headID));
+            auto headVector = reinterpret_cast<const ValueType*>(headVec->data());
             if (m_opt->m_excludehead && !theSameHead)
             {
-                SizeType vid = (SizeType)(*(m_vectorTranslateMap->At(headID)));
-                if (vid != MaxSize && !m_versionMap->Deleted(vid))
+                if (!m_versionMap.Deleted(headID))
                 {
                     std::shared_ptr<std::string> vectorinfo = std::make_shared<std::string>(m_vectorInfoSize, ' ');
-                    Serialize(vectorinfo->data(), vid, m_versionMap->GetVersion(vid), headVector);
-                    ReassignAsync(p_index, vectorinfo, -1);
+                    Serialize(vectorinfo->data(), headID, m_versionMap.GetVersion(headID), headVector);
+                    ReassignAsync(vectorinfo, -1, headVec);
                 }
             }
             std::vector<float> newHeadsDist;
             std::set<SizeType> reAssignVectorsTopK;
-            newHeadsDist.push_back(p_index->ComputeDistance(p_index->GetSample(headID), p_index->GetSample(newHeadsID[0])));
-            newHeadsDist.push_back(p_index->ComputeDistance(p_index->GetSample(headID), p_index->GetSample(newHeadsID[1])));
+            newHeadsDist.push_back(m_headIndex->ComputeDistance(headVec->data(), newHeadsVec[0]->data()));
+            newHeadsDist.push_back(m_headIndex->ComputeDistance(headVec->data(), newHeadsVec[1]->data()));
             for (int i = 0; i < postingLists.size(); i++) {
                 auto& postingList = postingLists[i];
                 size_t postVectorNum = postingList.size() / m_vectorInfoSize;
@@ -1306,11 +992,11 @@ namespace SPTAG::SPANN {
                     // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "VID: %d, Head: %d\n", vid, newHeadsID[i]);
                     uint8_t version = *(reinterpret_cast<uint8_t*>(vectorId + sizeof(SizeType)));
                     ValueType* vector = reinterpret_cast<ValueType*>(vectorId + m_metaDataSize);
-                    if (reAssignVectorsTopK.find(vid) == reAssignVectorsTopK.end() && !m_versionMap->Deleted(vid) && m_versionMap->GetVersion(vid) == version) {
+                    if (reAssignVectorsTopK.find(vid) == reAssignVectorsTopK.end() && !m_versionMap.Deleted(vid) && m_versionMap.GetVersion(vid) == version) {
                         m_stat.m_reAssignScanNum++;
-                        float dist = p_index->ComputeDistance(p_index->GetSample(newHeadsID[i]), vector);
-                        if (CheckIsNeedReassign(p_index, newHeadsID, vector, headID, newHeadsDist[i], dist, true, newHeadsID[i])) {
-                            ReassignAsync(p_index, std::make_shared<std::string>((char*)vectorId, m_vectorInfoSize), newHeadsID[i]);
+                        float dist = m_headIndex->ComputeDistance(newHeadsVec[i]->data(), vector);
+                        if (CheckIsNeedReassign(newHeadsVec, vector, headVec, newHeadsDist[i], dist, true)) {
+                            ReassignAsync(std::make_shared<std::string>((char*)vectorId, m_vectorInfoSize), newHeadsID[i], newHeadsVec[i]);
                             reAssignVectorsTopK.insert(vid);
                         }
                     }
@@ -1318,23 +1004,26 @@ namespace SPTAG::SPANN {
             }
             if (m_opt->m_reassignK > 0) {
                 std::vector<SizeType> HeadPrevTopK;
+                std::vector<std::shared_ptr<std::string>> HeadPrevTopKVec;
                 newHeadsDist.clear();
                 newHeadsDist.resize(0);
-                COMMON::QueryResultSet<ValueType> nearbyHeads((ValueType*)headVector, m_opt->m_reassignK);
+                COMMON::QueryResultSet<ValueType> nearbyHeads((ValueType*)headVector, m_opt->m_reassignK, false, true);
                 std::shared_ptr<std::uint8_t> rec_query;
-                if (p_index->m_pQuantizer) {
-                    rec_query.reset((uint8_t*)ALIGN_ALLOC(p_index->m_pQuantizer->ReconstructSize()), [=](std::uint8_t* ptr) { ALIGN_FREE(ptr); });
-                    p_index->m_pQuantizer->ReconstructVector((const uint8_t*)nearbyHeads.GetTarget(), rec_query.get());
-                    nearbyHeads.SetTarget((ValueType*)(rec_query.get()), p_index->m_pQuantizer);
+                if (m_headIndex->m_pQuantizer) {
+                    rec_query.reset((uint8_t*)ALIGN_ALLOC(m_headIndex->m_pQuantizer->ReconstructSize()), [=](std::uint8_t* ptr) { ALIGN_FREE(ptr); });
+                    m_headIndex->m_pQuantizer->ReconstructVector((const uint8_t*)nearbyHeads.GetTarget(), rec_query.get());
+                    nearbyHeads.SetTarget((ValueType*)(rec_query.get()), m_headIndex->m_pQuantizer);
                 }
-                p_index->SearchIndex(nearbyHeads);
+                m_headIndex->SearchHeadIndex(nearbyHeads, m_layer + 1, p_exWorkSpace);
                 BasicResult* queryResults = nearbyHeads.GetResults();
                 for (int i = 0; i < nearbyHeads.GetResultNum(); i++) {
                     auto vid = queryResults[i].VID;
                     if (vid == -1) break;
 
                     if (find(newHeadsID.begin(), newHeadsID.end(), vid) == newHeadsID.end()) {
+                        auto vec = std::make_shared<std::string>((char*)(queryResults[i].Vec.Data()), m_vectorDataSize);
                         HeadPrevTopK.push_back(vid);
+                        HeadPrevTopKVec.push_back(vec);
                         newHeadsID.push_back(vid);
                         newHeadsDist.push_back(queryResults[i].Dist);
                     }
@@ -1342,8 +1031,7 @@ namespace SPTAG::SPANN {
                 auto reassignScanIOBegin = std::chrono::high_resolution_clock::now();
                 ErrorCode ret;
                 if ((ret = db->MultiGet(HeadPrevTopK, p_exWorkSpace->m_pageBuffers, m_hardLatencyLimit,
-                                        &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success ||
-                    !ValidatePostings(HeadPrevTopK, p_exWorkSpace->m_pageBuffers))
+                                        &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success)
                 {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "ReAssign can't get all the near postings\n");
                     return ret;
@@ -1364,11 +1052,11 @@ namespace SPTAG::SPANN {
                         // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "%d: VID: %d, Head: %d, size:%d/%d\n", i, vid, HeadPrevTopK[i], postingLists.size(), HeadPrevTopK.size());
                         uint8_t version = *(reinterpret_cast<uint8_t*>(vectorId + sizeof(SizeType)));
                         ValueType* vector = reinterpret_cast<ValueType*>(vectorId + m_metaDataSize);
-                        if (reAssignVectorsTopK.find(vid) == reAssignVectorsTopK.end() && !m_versionMap->Deleted(vid) && m_versionMap->GetVersion(vid) == version) {
+                        if (reAssignVectorsTopK.find(vid) == reAssignVectorsTopK.end() && !m_versionMap.Deleted(vid) && m_versionMap.GetVersion(vid) == version) {
                             m_stat.m_reAssignScanNum++;
-                            float dist = p_index->ComputeDistance(p_index->GetSample(HeadPrevTopK[i]), vector);
-                            if (CheckIsNeedReassign(p_index, newHeadsID, vector, headID, newHeadsDist[i], dist, false, HeadPrevTopK[i])) {
-                                ReassignAsync(p_index, std::make_shared<std::string>((char*)vectorId, m_vectorInfoSize), HeadPrevTopK[i]);
+                            float dist = m_headIndex->ComputeDistance(HeadPrevTopKVec[i]->data(), vector);
+                            if (CheckIsNeedReassign(newHeadsVec, vector, headVec, newHeadsDist[i], dist, false)) {
+                                ReassignAsync(std::make_shared<std::string>((char*)vectorId, m_vectorInfoSize), HeadPrevTopK[i], HeadPrevTopKVec[i]);
                                 reAssignVectorsTopK.insert(vid);
                             }
                         }
@@ -1378,16 +1066,16 @@ namespace SPTAG::SPANN {
             return ErrorCode::Success;
         }
 
-        bool RNGSelection(std::vector<Edge>& selections, ValueType* queryVector, VectorIndex* p_index, SizeType p_fullID, int& replicaCount, SizeType checkHeadID = -1)
+        bool RNGSelection(ExtraWorkSpace* p_exWorkSpace, std::vector<BasicResult>& selections, ValueType* queryVector, int& replicaCount, SizeType checkHeadID = -1)
         {
-            COMMON::QueryResultSet<ValueType> queryResults(queryVector, m_opt->m_internalResultNum);
+            COMMON::QueryResultSet<ValueType> queryResults(queryVector, m_opt->m_internalResultNum, false, true);
             std::shared_ptr<std::uint8_t> rec_query;
-            if (p_index->m_pQuantizer) {
-                rec_query.reset((uint8_t*)ALIGN_ALLOC(p_index->m_pQuantizer->ReconstructSize()), [=](std::uint8_t* ptr) { ALIGN_FREE(ptr); });
-                p_index->m_pQuantizer->ReconstructVector((const uint8_t*)queryResults.GetTarget(), rec_query.get());
-                queryResults.SetTarget((ValueType*)(rec_query.get()), p_index->m_pQuantizer);
+            if (m_headIndex->m_pQuantizer) {
+                rec_query.reset((uint8_t*)ALIGN_ALLOC(m_headIndex->m_pQuantizer->ReconstructSize()), [=](std::uint8_t* ptr) { ALIGN_FREE(ptr); });
+                m_headIndex->m_pQuantizer->ReconstructVector((const uint8_t*)queryResults.GetTarget(), rec_query.get());
+                queryResults.SetTarget((ValueType*)(rec_query.get()), m_headIndex->m_pQuantizer);
             }
-            p_index->SearchIndex(queryResults);
+            m_headIndex->SearchHeadIndex(queryResults, m_layer + 1, p_exWorkSpace);
 
             replicaCount = 0;
             for (int i = 0; i < queryResults.GetResultNum() && replicaCount < m_opt->m_replicaCount; ++i)
@@ -1400,8 +1088,7 @@ namespace SPTAG::SPANN {
                 bool rngAccpeted = true;
                 for (int j = 0; j < replicaCount; ++j)
                 {
-                    float nnDist = p_index->ComputeDistance(p_index->GetSample(queryResult->VID),
-                        p_index->GetSample(selections[j].node));
+                    float nnDist = m_headIndex->ComputeDistance((queryResult->Vec).Data(), selections[j].Vec.Data());
                     if (m_opt->m_rngFactor * nnDist <= queryResult->Dist)
                     {
                         rngAccpeted = false;
@@ -1409,10 +1096,9 @@ namespace SPTAG::SPANN {
                     }
                 }
                 if (!rngAccpeted) continue;
-                selections[replicaCount].node = queryResult->VID;
-                selections[replicaCount].tonode = p_fullID;
-                selections[replicaCount].distance = queryResult->Dist;
-                if (selections[replicaCount].node == checkHeadID) {
+                selections[replicaCount] = *queryResult;
+
+                if (queryResult->VID == checkHeadID) {
                     return false;
                 }
                 ++replicaCount;
@@ -1441,30 +1127,30 @@ namespace SPTAG::SPANN {
             }
         }
 
-        ErrorCode AsyncAppend(ExtraWorkSpace* p_exWorkSpace, VectorIndex* p_index, SizeType headID, int appendNum, std::string& appendPosting, int reassignThreshold = 0)
+        ErrorCode AsyncAppend(ExtraWorkSpace* p_exWorkSpace, SizeType headID, std::shared_ptr<std::string> headVec, int appendNum, std::string& appendPosting, int reassignThreshold = 0)
         {
             if (m_asyncAppendQueue.size() >= m_opt->m_asyncAppendQueueSize) {
                 std::lock_guard<std::mutex> lock(m_asyncAppendLock);
                 if (m_asyncAppendQueue.size() < m_opt->m_asyncAppendQueueSize) {
-                    m_asyncAppendQueue.push(AppendPair(p_index->GetPriorityID(headID), headID, appendPosting));
+                    m_asyncAppendQueue.push(AppendPair(m_headIndex->GetPriorityID(headID, headVec, m_layer + 1), headID, headVec, appendPosting));
                     return ErrorCode::Success;
                 }
 
                 AppendPair workPair;
                 ErrorCode ret;
                 while (m_asyncAppendQueue.try_pop(workPair)) {
-                    if ((ret = Append(p_exWorkSpace, p_index, workPair.headID, 1, workPair.posting, reassignThreshold)) != ErrorCode::Success) {
+                    if ((ret = Append(p_exWorkSpace, workPair.headID, workPair.headVec, 1, workPair.posting, reassignThreshold)) != ErrorCode::Success) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "AsyncAppend: Append failed in async queue processing, headID: %d\n", workPair.headID);
                         return ret;
                     }
                 }
             } else {
-                m_asyncAppendQueue.push(AppendPair(p_index->GetPriorityID(headID), headID, appendPosting));
+                m_asyncAppendQueue.push(AppendPair(m_headIndex->GetPriorityID(headID, headVec, m_layer + 1), headID, headVec, appendPosting));
             }
             return ErrorCode::Success;
         }
 
-        ErrorCode Append(ExtraWorkSpace* p_exWorkSpace, VectorIndex* p_index, SizeType headID, int appendNum, std::string& appendPosting, int reassignThreshold = 0)
+        ErrorCode Append(ExtraWorkSpace* p_exWorkSpace, SizeType headID, std::shared_ptr<std::string> headVec, int appendNum, std::string& appendPosting, int reassignThreshold = 0)
         {
             auto appendBegin = std::chrono::high_resolution_clock::now();
             if (appendPosting.empty()) {
@@ -1476,34 +1162,42 @@ namespace SPTAG::SPANN {
             }
 
         checkDeleted:
-            if (!p_index->ContainSample(headID)) {
+            if (!m_headIndex->ContainSample(headID, m_layer + 1)) {
                 for (int i = 0; i < appendNum; i++)
                 {
                     uint32_t idx = i * m_vectorInfoSize;
                     SizeType VID = *(SizeType*)(&appendPosting[idx]);
                     uint8_t version = *(uint8_t*)(&appendPosting[idx + sizeof(SizeType)]);
                     auto vectorInfo = std::make_shared<std::string>(appendPosting.c_str() + idx, m_vectorInfoSize);
-                    if (m_versionMap->GetVersion(VID) == version) {
+                    if (m_versionMap.GetVersion(VID) == version) {
                         // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Head Miss To ReAssign: VID: %d, current version: %d\n", *(int*)(&appendPosting[idx]), version);
                         m_stat.m_headMiss++;
-                        ReassignAsync(p_index, vectorInfo, headID);
+                        ReassignAsync(vectorInfo, headID, headVec);
                     }
-                    // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Head Miss Do Not To ReAssign: VID: %d, version: %d, current version: %d\n", *(int*)(&appendPosting[idx]), m_versionMap->GetVersion(*(int*)(&appendPosting[idx])), version);
+                    // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Head Miss Do Not To ReAssign: VID: %d, version: %d, current version: %d\n", *(int*)(&appendPosting[idx]), m_versionMap.GetVersion(*(int*)(&appendPosting[idx])), version);
                 }
                 return ErrorCode::Success;
             }
             double appendIOSeconds = 0;
+            int postingSize = 0;
             {
                 //std::shared_lock<std::shared_timed_mutex> lock(m_rwLocks[headID]); //ROCKSDB
                 std::unique_lock<std::shared_timed_mutex> lock(m_rwLocks[headID]); //SPDK
                 ErrorCode ret;
-                if (!p_index->ContainSample(headID)) {
+                if (!m_headIndex->ContainSample(headID, m_layer + 1)) {
                     lock.unlock();
                     goto checkDeleted;
                 }
-                if (m_postingSizes.GetSize(headID) + appendNum > (m_postingSizeLimit + m_bufferSizeLimit)) {
+                {
+                    std::shared_lock<std::shared_timed_mutex> lock(m_splitListLock);
+                    auto it = m_splitList.find(headID);
+                    if (it != m_splitList.end()) {
+                        postingSize = it->second;
+                    }
+                }
+                if (postingSize + appendNum > (m_postingSizeLimit + m_bufferSizeLimit)) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "After appending, the number of vectors in %lld exceeds the postingsize + buffersize (%d + %d)! Do split now...\n", (std::int64_t)headID, m_postingSizeLimit, m_bufferSizeLimit);
-                    ret = Split(p_exWorkSpace, p_index, headID, !m_opt->m_disableReassign, false, false);
+                    ret = Split(p_exWorkSpace, headID, headVec, !m_opt->m_disableReassign, false);
                     if (ret != ErrorCode::Success)
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split %lld failed!\n", (std::int64_t)headID);
                     lock.unlock();
@@ -1512,36 +1206,26 @@ namespace SPTAG::SPANN {
 
                 auto appendIOBegin = std::chrono::high_resolution_clock::now();
                 if ((ret = db->Merge(
-                         headID, appendPosting, MaxTimeout, &(p_exWorkSpace->m_diskRequests),
-                         [this, prefixChecksum = *m_checkSums[headID]](const void *val, const int size) -> bool {
-                    return this->m_checkSum.ValidateChecksum((const char*)val, size, prefixChecksum);
-                })) != ErrorCode::Success)
+                         headID, appendPosting, MaxTimeout, &(p_exWorkSpace->m_diskRequests), postingSize)) != ErrorCode::Success)
                 {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Merge failed for %lld! Posting Size:%d, limit: %d\n", (std::int64_t)headID, m_postingSizes.GetSize(headID), m_postingSizeLimit);
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Merge failed for %lld! Posting Size:%d, limit: %d\n", (std::int64_t)headID, postingSize, m_postingSizeLimit);
                     GetDBStats();
                     return ret;
                 }
                 auto appendIOEnd = std::chrono::high_resolution_clock::now();
                 appendIOSeconds = std::chrono::duration_cast<std::chrono::microseconds>(appendIOEnd - appendIOBegin).count();
-                *m_checkSums[headID] =
-                    m_checkSum.AppendChecksum(*m_checkSums[headID], appendPosting.c_str(), (int)(appendPosting.size()));
-                m_postingSizes.IncSize(headID, appendNum);
-                if (m_opt->m_consistencyCheck && (ret = db->Check(headID, m_postingSizes.GetSize(headID) * m_vectorInfoSize, nullptr)) != ErrorCode::Success)
-                {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Append: Check failed after Merge %lld, append %d vectors with size %d\n", (std::int64_t)headID, appendNum, (int)(appendPosting.size()));
-                    return ret;
-                }
+
+                postingSize /= m_vectorInfoSize;
             }
-            if (m_postingSizes.GetSize(headID) > (m_postingSizeLimit + reassignThreshold)) {
+            if (postingSize > (m_postingSizeLimit + reassignThreshold)) {
                 // SizeType VID = *(int*)(&appendPosting[0]);
                 // SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split Triggered by inserting VID: %d, reAssign: %d\n", VID, reassignThreshold);
                 // GetDBStats();
                 // if (m_postingSizes.GetSize(headID) > 120) {
                 //     GetDBStats();
                 // }
-                if (!reassignThreshold) SplitAsync(p_index, headID);
-                else Split(p_exWorkSpace, p_index, headID, !m_opt->m_disableReassign);
-                // SplitAsync(p_index, headID);
+                if (!reassignThreshold) SplitAsync(headID, headVec, postingSize);
+                else Split(p_exWorkSpace, headID, headVec, !m_opt->m_disableReassign);
             }
             auto appendEnd = std::chrono::high_resolution_clock::now();
             double elapsedMSeconds = std::chrono::duration_cast<std::chrono::microseconds>(appendEnd - appendBegin).count();
@@ -1556,13 +1240,13 @@ namespace SPTAG::SPANN {
             return ErrorCode::Success;
         }
         
-        ErrorCode Reassign(ExtraWorkSpace* p_exWorkSpace, VectorIndex* p_index, std::shared_ptr<std::string> vectorInfo, SizeType HeadPrev)
+        ErrorCode Reassign(ExtraWorkSpace* p_exWorkSpace, std::shared_ptr<std::string> vectorInfo, SizeType headPrev, std::shared_ptr<std::string> headVector)
         {
             SizeType VID = *((SizeType*)vectorInfo->c_str());
             uint8_t version = *((uint8_t*)(vectorInfo->c_str() + sizeof(VID)));
             // return;
-            // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ReassignID: %d, version: %d, current version: %d, HeadPrev: %d\n", VID, version, m_versionMap->GetVersion(VID), HeadPrev);
-            if (m_versionMap->Deleted(VID) || m_versionMap->GetVersion(VID) != version) {
+            // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ReassignID: %d, version: %d, current version: %d, headPrev: %d\n", VID, version, m_versionMap.GetVersion(VID), headPrev);
+            if (m_versionMap.Deleted(VID) || m_versionMap.GetVersion(VID) != version) {
                 return ErrorCode::Success;
             }
             auto reassignBegin = std::chrono::high_resolution_clock::now();
@@ -1570,24 +1254,24 @@ namespace SPTAG::SPANN {
             m_stat.m_reAssignNum++;
 
             auto selectBegin = std::chrono::high_resolution_clock::now();
-            std::vector<Edge> selections(static_cast<size_t>(m_opt->m_replicaCount));
+            std::vector<BasicResult> selections(static_cast<size_t>(m_opt->m_replicaCount));
             int replicaCount;
-            bool isNeedReassign = RNGSelection(selections, (ValueType*)(vectorInfo->c_str() + m_metaDataSize), p_index, VID, replicaCount, HeadPrev);
+            bool isNeedReassign = RNGSelection(p_exWorkSpace, selections, (ValueType*)(vectorInfo->c_str() + m_metaDataSize), replicaCount, headPrev);
             auto selectEnd = std::chrono::high_resolution_clock::now();
             auto elapsedMSeconds = std::chrono::duration_cast<std::chrono::microseconds>(selectEnd - selectBegin).count();
             m_stat.m_selectCost += elapsedMSeconds;
 
             auto reassignAppendBegin = std::chrono::high_resolution_clock::now();
             // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Need ReAssign\n");
-            if (isNeedReassign && m_versionMap->GetVersion(VID) == version) {
+            if (isNeedReassign && m_versionMap.GetVersion(VID) == version) {
                 // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Update Version: VID: %d, version: %d, current version: %d\n", VID, version, m_versionMap.GetVersion(VID));
-                m_versionMap->IncVersion(VID, &version);
+                m_versionMap.IncVersion(VID, &version);
                 (*vectorInfo)[sizeof(VID)] = version;
 
                 //LOG(Helper::LogLevel::LL_Info, "Reassign: oldVID:%d, replicaCount:%d, candidateNum:%d, dist0:%f\n", oldVID, replicaCount, i, selections[0].distance);
-                for (int i = 0; i < replicaCount && m_versionMap->GetVersion(VID) == version; i++) {
+                for (int i = 0; i < replicaCount && m_versionMap.GetVersion(VID) == version; i++) {
                     //LOG(Helper::LogLevel::LL_Info, "Reassign: headID :%d, oldVID:%d, newVID:%d, posting length: %d, dist: %f, string size: %d\n", headID, oldVID, VID, m_postingSizes[headID].load(), selections[i].distance, newPart.size());
-                    ErrorCode tmp = Append(p_exWorkSpace, p_index, selections[i].node, 1, *vectorInfo, 3);
+                    ErrorCode tmp = Append(p_exWorkSpace, selections[i].VID, std::make_shared<std::string>((char*)(selections[i].Vec.Data()), m_vectorDataSize), 1, *vectorInfo, 3);
                     if (ErrorCode::Success != tmp) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Head Miss: VID: %d, current version: %d, another re-assign\n", VID, version);
                         return tmp;
@@ -1604,49 +1288,33 @@ namespace SPTAG::SPANN {
             return ErrorCode::Success;
         }
 
-        bool LoadIndex(Options& p_opt, COMMON::VersionLabel& p_versionMap, COMMON::Dataset<std::uint64_t>& p_vectorTranslateMap,  std::shared_ptr<VectorIndex> m_index) override {
-            m_versionMap = &p_versionMap;
+        bool LoadIndex(Options& p_opt) override {
             m_opt = &p_opt;
-	        m_vectorTranslateMap = &p_vectorTranslateMap;
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "DataBlockSize: %d, Capacity: %d\n", m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
-            std::string versionmapPath = m_opt->m_indexDirectory + FolderSep + m_opt->m_deleteIDFile;
-            std::string postingSizePath = m_opt->m_indexDirectory + FolderSep + m_opt->m_ssdInfoFile;
-            std::string checksumPath = m_opt->m_indexDirectory + FolderSep + m_opt->m_checksumFile;
+            std::string versionmapPath = m_opt->m_indexDirectory + FolderSep + m_opt->m_deleteIDFile + "_" + std::to_string(m_layer);
             if (m_opt->m_recovery) {
-                versionmapPath = m_opt->m_persistentBufferPath + FolderSep + m_opt->m_deleteIDFile;
-                postingSizePath = m_opt->m_persistentBufferPath + FolderSep + m_opt->m_ssdInfoFile;
-                checksumPath = m_opt->m_persistentBufferPath + FolderSep + m_opt->m_checksumFile;
+                versionmapPath = m_opt->m_persistentBufferPath + FolderSep + m_opt->m_deleteIDFile + "_" + std::to_string(m_layer);
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Recovery: Loading version map\n");
-                m_versionMap->Load(versionmapPath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Recovery: Loading posting size\n");
-                m_postingSizes.Load(postingSizePath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Recovery: Loading posting checksum\n");
-                m_checkSums.Load(checksumPath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
-
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Recovery: Current vector num: %d.\n", m_versionMap->Count());
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Recovery:Current posting num: %d.\n", m_postingSizes.GetPostingNum());
+                m_versionMap.Load(versionmapPath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Recovery: Current vector num: %d.\n", m_versionMap.Count());
             }
             else if (m_opt->m_storage == Storage::ROCKSDBIO) {
-                m_versionMap->Load(versionmapPath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
-                m_postingSizes.Load(postingSizePath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
-                m_checkSums.Load(checksumPath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Current vector num: %d.\n", m_versionMap->Count());
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Current posting num: %d.\n", m_postingSizes.GetPostingNum());
+                m_versionMap.Load(versionmapPath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Current vector num: %d.\n", m_versionMap.Count());
             } else if (m_opt->m_storage == Storage::SPDKIO || m_opt->m_storage == Storage::FILEIO) {
-		        if (fileexists((m_opt->m_indexDirectory + FolderSep + m_opt->m_ssdIndex).c_str())) {
-                	m_versionMap->Initialize(m_opt->m_vectorSize, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
+		        if (fileexists((m_opt->m_indexDirectory + FolderSep + m_opt->m_ssdIndex + "_" + std::to_string(m_layer)).c_str())) {
+                	m_versionMap.Initialize(m_opt->m_vectorSize, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
+                    m_versionMap.DeleteAll();
 			        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Copying data from static to SPDK\n");
 			        std::shared_ptr<IExtraSearcher> storeExtraSearcher;
-			        storeExtraSearcher.reset(new ExtraStaticSearcher<ValueType>());
-			        if (!storeExtraSearcher->LoadIndex(*m_opt, *m_versionMap, p_vectorTranslateMap, m_index)) {
+			        storeExtraSearcher.reset(new ExtraStaticSearcher<ValueType>(m_layer, m_headIndex));
+			        if (!storeExtraSearcher->LoadIndex(*m_opt)) {
 			            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Load Static Index Initialize Error\n");
 			            return false;
 			        }
-			        int totalPostingNum = m_index->GetNumSamples();
-
-			        m_postingSizes.Initialize((SizeType)(totalPostingNum), m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
-                    m_checkSums.Initialize((SizeType)(totalPostingNum), 1, m_opt->m_datasetRowsInBlock,
-                                           m_opt->m_datasetCapacity);
+                    std::vector<SizeType> allPostingIDs;
+                    m_headIndex->GetHeadIndexMapping(m_layer + 1, allPostingIDs);
+			        int totalPostingNum = allPostingIDs.size();
 
 			        std::vector<std::thread> threads;
 			        std::atomic_size_t vectorsSent(0);
@@ -1667,7 +1335,7 @@ namespace SPTAG::SPANN {
                                                  index * 100.0 / totalPostingNum);
                                 }
                                 std::string tempPosting;
-                                if (storeExtraSearcher->GetWritePosting(&workSpace, index, tempPosting) !=
+                                if (storeExtraSearcher->GetWritePosting(&workSpace, allPostingIDs[index], tempPosting) !=
                                     ErrorCode::Success)
                                 {
                                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Static Index Read Posting fail\n");
@@ -1676,8 +1344,7 @@ namespace SPTAG::SPANN {
                                 }
                                 int vectorNum = (int)(tempPosting.size() / (m_vectorInfoSize - sizeof(uint8_t)));
 
-                                if (vectorNum > m_postingSizeLimit)
-                                    vectorNum = m_postingSizeLimit;
+                                if (vectorNum > m_postingSizeLimit) vectorNum = m_postingSizeLimit;
                                 auto *postingP = reinterpret_cast<char *>(tempPosting.data());
                                 std::string newPosting(m_vectorInfoSize * vectorNum, '\0');
                                 char *ptr = (char *)(newPosting.c_str());
@@ -1685,13 +1352,10 @@ namespace SPTAG::SPANN {
                                 {
                                     char *vectorInfo = postingP + j * (m_vectorInfoSize - sizeof(uint8_t));
                                     SizeType VID = *(reinterpret_cast<SizeType *>(vectorInfo));
-                                    uint8_t version = m_versionMap->GetVersion(VID);
-                                    memcpy(ptr, &VID, sizeof(SizeType));
-                                    memcpy(ptr + sizeof(SizeType), &version, sizeof(uint8_t));
-                                    memcpy(ptr + m_metaDataSize, vectorInfo + sizeof(SizeType),
-                                           m_vectorInfoSize - m_metaDataSize);
+                                    m_versionMap.SetVersion(VID, -1);
+                                    Serialize(ptr, VID, -1, vectorInfo + sizeof(SizeType));
                                 }
-                                if (GetWritePosting(&workSpace, index, newPosting, true) != ErrorCode::Success)
+                                if (GetWritePosting(&workSpace, allPostingIDs[index], newPosting, true) != ErrorCode::Success)
                                 {
                                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Index Write Posting fail\n");                                  
                                     ret = ErrorCode::Fail;
@@ -1709,10 +1373,8 @@ namespace SPTAG::SPANN {
                 if (ret != ErrorCode::Success)
                     return false;
 		    } else {
-                        m_versionMap->Load(versionmapPath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
-                        m_postingSizes.Load(postingSizePath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
-                        m_checkSums.Load(checksumPath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
-		    } 
+                m_versionMap.Load(versionmapPath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
+            } 
 	    }
             if (m_opt->m_update) {
                 if (m_splitThreadPool == nullptr) {
@@ -1755,18 +1417,18 @@ namespace SPTAG::SPANN {
                     char* ptr = (char*)(assignment.c_str());
                     SizeType VID = *(reinterpret_cast<SizeType*>(ptr));
                     if (assignment.size() == m_vectorInfoSize) {
-                        if (VID >= m_versionMap->GetVectorNum()) {
-                            if (m_versionMap->AddBatch(VID - m_versionMap->GetVectorNum() + 1) != ErrorCode::Success) {
-                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "MemoryOverFlow: VID: %lld, Map Size:%d\n", (std::int64_t)VID, m_versionMap->BufferSize());
+                        if (VID >= m_versionMap.Count()) {
+                            if (m_versionMap.AddBatch(VID - m_versionMap.GetVectorNum() + 1) != ErrorCode::Success) {
+                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "MemoryOverFlow: VID: %lld, Map Size:%d\n", (std::int64_t)VID, m_versionMap.BufferSize());
                                 return false;
                             }
                         }
                         std::shared_ptr<VectorSet> vectorSet;
-                        vectorSet.reset(new BasicVectorSet(ByteArray((std::uint8_t*)ptr + m_metaDataSize, sizeof(ValueType) * 1 * m_opt->m_dim, false),
+                        vectorSet.reset(new BasicVectorSet(ByteArray((std::uint8_t*)ptr + m_metaDataSize, m_vectorDataSize, false),
                             GetEnumValueType<ValueType>(), m_opt->m_dim, 1));
-                        AddIndex(&workSpace, vectorSet, m_index, VID);
+                        AddIndex(&workSpace, vectorSet, VID);
                     } else {
-                        m_versionMap->Delete(VID);
+                        m_versionMap.Delete(VID);
                     }
                 } while (m_wal->NextToScan(assignment));
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Recovery: No more to repeat, wait for rebalance\n");
@@ -1777,81 +1439,14 @@ namespace SPTAG::SPANN {
             }
             return true;
         }
-        bool ValidatePostings(
-            std::vector<SizeType> &pids, std::vector<Helper::PageBuffer<std::uint8_t>> &postings)
-        {
-            if (!m_opt->m_checksumInRead) return true;
-
-            for (int i = 0; i < pids.size(); i++)
-            {
-                if (!m_checkSum.ValidateChecksum((const char *)(postings[i].GetBuffer()),
-                                                 postings[i].GetAvailableSize(), *m_checkSums[pids[i]]))
-                {
-                    SPTAGLIB_LOG(
-                        Helper::LogLevel::LL_Error,
-                        "ValidatePostings fail: posting id:%lld, required size:%d, buffer size:%d, checksum:%d\n",
-                        (std::int64_t)(pids[i]), (int)(m_postingSizes.GetSize(pids[i]) * m_vectorInfoSize), (int)(postings[i].GetAvailableSize()), (int)(*m_checkSums[pids[i]]));
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        bool ValidatePostings(std::vector<SizeType> &pids, std::vector<std::string> &postings)
-        {
-            if (!m_opt->m_checksumInRead) return true;
-
-            ErrorCode ret;
-            for (int i = 0; i < pids.size(); i++)
-            {
-                if (!m_checkSum.ValidateChecksum(postings[i].c_str(),
-                                                 postings[i].size(), *m_checkSums[pids[i]]))
-                {
-                    SPTAGLIB_LOG(
-                        Helper::LogLevel::LL_Error,
-                        "ValidatePostings fail: posting id:%lld, required size:%d, buffer size:%d, checksum:%d\n",
-                        (std::int64_t)(pids[i]), (int)(m_postingSizes.GetSize(pids[i]) * m_vectorInfoSize),
-                        (int)(postings[i].size()), (int)(*m_checkSums[pids[i]]));
-                    PrintErrorInPosting(postings[i], pids[i]);
-                    return false;
-                }
-            }
-            return true;
-        }
 
         virtual ErrorCode SearchIndex(ExtraWorkSpace* p_exWorkSpace,
             QueryResult& p_queryResults,
-            std::shared_ptr<VectorIndex> p_index,
             SearchStats* p_stats, std::set<SizeType>* truth, std::map<SizeType, std::set<SizeType>>* found) override
         {
             if (p_stats) p_stats->m_exSetUpLatency = 0;
 
             COMMON::QueryResultSet<ValueType>& queryResults = *((COMMON::QueryResultSet<ValueType>*) & p_queryResults);
-            if (queryResults.GetResult(0)->VID != -1)
-            {
-                int head = 0;
-                for (int i = 0; i < queryResults.GetResultNum(); ++i)
-                {
-                    SPTAG::BasicResult* ri = queryResults.GetResult(i);
-                    if (ri->VID != -1 && !m_versionMap->Deleted(ri->VID) && !p_exWorkSpace->m_deduper.CheckAndSet(ri->VID))
-                    {
-                        if (head != i)
-                        {
-                            SPTAG::BasicResult* rhead = queryResults.GetResult(head);
-                            *rhead = *ri;
-                            ri->VID = -1;
-                            ri->Dist = MaxDist;
-                        }
- 
-                        ++head;
-                    }
-                    else
-                    {
-                        ri->VID = -1;
-                        ri->Dist = MaxDist;
-                    }
-                }
-            }
 
             int diskRead = 0;
             int diskIO = 0;
@@ -1864,8 +1459,7 @@ namespace SPTAG::SPANN {
             else remainLimit = m_hardLatencyLimit;
 
             auto readStart = std::chrono::high_resolution_clock::now();
-            if (db->MultiGet(p_exWorkSpace->m_postingIDs, p_exWorkSpace->m_pageBuffers, remainLimit, &(p_exWorkSpace->m_diskRequests)) != ErrorCode::Success ||
-                !ValidatePostings(p_exWorkSpace->m_postingIDs, p_exWorkSpace->m_pageBuffers))
+            if (db->MultiGet(p_exWorkSpace->m_postingIDs, p_exWorkSpace->m_pageBuffers, remainLimit, &(p_exWorkSpace->m_diskRequests)) != ErrorCode::Success)
             {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[SearchIndex] read postings fail!\n");
                 return ErrorCode::DiskIOFail;
@@ -1886,13 +1480,15 @@ namespace SPTAG::SPANN {
                 //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "DEBUG: postingList %d size:%d m_vectorInfoSize:%d vectorNum:%d\n", pi, (int)(postingList.size()), m_vectorInfoSize, vectorNum);
                 int realNum = vectorNum;
                 listElements += vectorNum;
+                std::shared_ptr<std::string> headVec;
                 auto compStart = std::chrono::high_resolution_clock::now();
                 for (int i = 0; i < vectorNum; i++) {
                     char* vectorInfo = p_postingListFullData + i * m_vectorInfoSize;
                     SizeType vectorID = *(reinterpret_cast<SizeType*>(vectorInfo));
 
+                    if (vectorID == curPostingID) headVec = std::make_shared<std::string>(vectorInfo + m_metaDataSize, m_vectorDataSize);
 		            //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "DEBUG: vectorID:%d\n", vectorID);
-                    if (m_versionMap->Deleted(vectorID)) {
+                    if (m_versionMap.Deleted(vectorID)) {
                         realNum--;
                         listElements--;
                         continue;
@@ -1901,11 +1497,11 @@ namespace SPTAG::SPANN {
                         listElements--;
                         continue;
                     }
-                    auto distance2leaf = p_index->ComputeDistance(queryResults.GetQuantizedTarget(), vectorInfo + m_metaDataSize);
-                    queryResults.AddPoint(vectorID, distance2leaf);
+                    auto distance2leaf = m_headIndex->ComputeDistance(queryResults.GetQuantizedTarget(), vectorInfo + m_metaDataSize);
+                    queryResults.AddPoint(vectorID, distance2leaf, queryResults.WithVec()? ByteArray::Alloc((std::uint8_t*)(vectorInfo + m_metaDataSize), m_vectorDataSize) : ByteArray::c_empty);
                 }
                 auto compEnd = std::chrono::high_resolution_clock::now();
-                if (m_opt->m_asyncMergeInSearch && realNum <= m_mergeThreshold) MergeAsync(p_index.get(), curPostingID); // TODO: Control merge
+                if (m_opt->m_asyncMergeInSearch && realNum <= m_mergeThreshold) MergeAsync(curPostingID, headVec); // TODO: Control merge
 
                 compLatency += ((double)std::chrono::duration_cast<std::chrono::microseconds>(compEnd - compStart).count());
 
@@ -1941,25 +1537,20 @@ namespace SPTAG::SPANN {
                                    &(p_exWorkSpace->m_diskRequests));
                 retry++;
             }
-            if (ret == ErrorCode::Success &&
-                !ValidatePostings(p_exWorkSpace->m_postingIDs, p_exWorkSpace->m_pageBuffers))
-            {
-                return ErrorCode::DiskIOFail;
-            }
             return ret;
         }
 
         virtual ErrorCode SearchNextInPosting(ExtraWorkSpace* p_exWorkSpace, QueryResult& p_headResults,
-            QueryResult& p_queryResults,
-            std::shared_ptr<VectorIndex>& p_index, const VectorIndex* p_spann)
+            QueryResult& p_queryResults)
         {
+            /*
             COMMON::QueryResultSet<ValueType>& headResults = *((COMMON::QueryResultSet<ValueType>*) & p_headResults);
             COMMON::QueryResultSet<ValueType>& queryResults = *((COMMON::QueryResultSet<ValueType>*) & p_queryResults);
             bool foundResult = false;
             BasicResult* head = headResults.GetResult(p_exWorkSpace->m_ri);
             while (!foundResult && p_exWorkSpace->m_pi < p_exWorkSpace->m_postingIDs.size()) {
                 if (head && head->VID != -1 && p_exWorkSpace->m_ri <= p_exWorkSpace->m_pi) {
-                    if (!m_versionMap->Deleted(head->VID) && !p_exWorkSpace->m_deduper.CheckAndSet(head->VID) &&
+                    if (!m_versionMap.Deleted(head->VID) && !p_exWorkSpace->m_deduper.CheckAndSet(head->VID) &&
                     (p_exWorkSpace->m_filterFunc == nullptr || p_exWorkSpace->m_filterFunc(p_spann->GetMetadata(head->VID)))) {
                         queryResults.AddPoint(head->VID, head->Dist);
                         foundResult = true;
@@ -1975,8 +1566,8 @@ namespace SPTAG::SPANN {
                     p_exWorkSpace->m_offset++;
 
                     SizeType vectorID = *(reinterpret_cast<SizeType*>(vectorInfo));
-                    if (vectorID >= m_versionMap->Count()) return ErrorCode::Key_OverFlow;
-                    if (m_versionMap->Deleted(vectorID)) continue;
+                    if (vectorID >= m_versionMap.Count()) return ErrorCode::Key_OverFlow;
+                    if (m_versionMap.Deleted(vectorID)) continue;
                     if (p_exWorkSpace->m_deduper.CheckAndSet(vectorID)) continue;
                     if (p_exWorkSpace->m_filterFunc != nullptr && !p_exWorkSpace->m_filterFunc(p_spann->GetMetadata(vectorID))) continue;
 
@@ -1991,7 +1582,7 @@ namespace SPTAG::SPANN {
                 }
             }
             while (!foundResult && head && head->VID != -1) {
-                if (!m_versionMap->Deleted(head->VID) && !p_exWorkSpace->m_deduper.CheckAndSet(head->VID) &&
+                if (!m_versionMap.Deleted(head->VID) && !p_exWorkSpace->m_deduper.CheckAndSet(head->VID) &&
                 (p_exWorkSpace->m_filterFunc == nullptr || p_exWorkSpace->m_filterFunc(p_spann->GetMetadata(head->VID)))) {
                     queryResults.AddPoint(head->VID, head->Dist);
                     foundResult = true;
@@ -2000,12 +1591,14 @@ namespace SPTAG::SPANN {
             }
             if (foundResult) p_queryResults.SetScanned(p_queryResults.GetScanned() + 1);
             return (foundResult) ? ErrorCode::Success : ErrorCode::VectorNotFound;
+            */
+            return ErrorCode::Undefined;
         }
 
         virtual ErrorCode SearchIterativeNext(ExtraWorkSpace* p_exWorkSpace, QueryResult& p_headResults,
-            QueryResult& p_query,
-            std::shared_ptr<VectorIndex> p_index, const VectorIndex* p_spann)
+            QueryResult& p_query)
         {
+            /*
             if (p_exWorkSpace->m_loadPosting) {
                 ErrorCode ret = SearchIndexWithoutParsing(p_exWorkSpace);
                 if (ret != ErrorCode::Success) return ret;
@@ -2016,71 +1609,11 @@ namespace SPTAG::SPANN {
             }
 
             return SearchNextInPosting(p_exWorkSpace, p_headResults, p_query, p_index, p_spann);
+            */
+           return ErrorCode::Undefined;
         }
 
-        std::string GetPostingListFullData(
-            int postingListId,
-            size_t p_postingListSize,
-            Selection& p_selections,
-            std::shared_ptr<VectorSet> p_fullVectors,
-            bool p_enableDeltaEncoding = false,
-            bool p_enablePostingListRearrange = false,
-            const ValueType* headVector = nullptr)
-        {
-            std::string postingListFullData("");
-            std::string vectors("");
-            std::string vectorIDs("");
-            size_t selectIdx = p_selections.lower_bound(postingListId);
-            // iterate over all the vectors in the posting list
-            for (int i = 0; i < p_postingListSize; ++i)
-            {
-                if (p_selections[selectIdx].node != postingListId)
-                {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Selection ID NOT MATCH! node:%d offset:%zu\n", postingListId, selectIdx);
-                    throw std::runtime_error("Selection ID mismatch");
-                }
-                std::string vectorID("");
-                std::string vector("");
-
-                SizeType vid = p_selections[selectIdx++].tonode;
-                vectorID.append(reinterpret_cast<char*>(&vid), sizeof(SizeType));
-
-                ValueType* p_vector = reinterpret_cast<ValueType*>(p_fullVectors->GetVector(vid));
-                if (p_enableDeltaEncoding)
-                {
-                    DimensionType n = p_fullVectors->Dimension();
-                    std::vector<ValueType> p_vector_delta(n);
-                    for (auto j = 0; j < n; j++)
-                    {
-                        p_vector_delta[j] = p_vector[j] - headVector[j];
-                    }
-                    vector.append(reinterpret_cast<char*>(&p_vector_delta[0]), p_fullVectors->PerVectorDataSize());
-                }
-                else
-                {
-                    vector.append(reinterpret_cast<char*>(p_vector), p_fullVectors->PerVectorDataSize());
-                }
-
-                if (p_enablePostingListRearrange)
-                {
-                    vectorIDs += vectorID;
-                    vectors += vector;
-                }
-                else
-                {
-                    postingListFullData += (vectorID + vector);
-                }
-            }
-            if (p_enablePostingListRearrange)
-            {
-                return vectors + vectorIDs;
-            }
-            return postingListFullData;
-        }
-
-        bool BuildIndex(std::shared_ptr<Helper::VectorSetReader>& p_reader, std::shared_ptr<VectorIndex> p_headIndex, Options& p_opt, COMMON::VersionLabel& p_versionMap, COMMON::Dataset<std::uint64_t>& p_vectorTranslateMap, SizeType upperBound = -1) override {
-            m_versionMap = &p_versionMap;
-            m_vectorTranslateMap = &p_vectorTranslateMap;
+        bool BuildIndex(std::shared_ptr<Helper::VectorSetReader>& p_reader, std::shared_ptr<VectorIndex> p_headIndex, Options& p_opt, COMMON::Dataset<SizeType>& p_headToLocal, Helper::Concurrent::ConcurrentMap<SizeType, SizeType>& p_headGlobaltoLocal, COMMON::Dataset<SizeType>& p_localToGlobal, SizeType upperBound = -1) override {
             m_opt = &p_opt;
 
             int numThreads = m_opt->m_iSSDNumberOfThreads;
@@ -2091,9 +1624,14 @@ namespace SPTAG::SPANN {
                 return false;
             }
 
-            for (SizeType i = 0; i < p_vectorTranslateMap.R(); i++)
+            if (m_layer > 0 && p_localToGlobal.R() == 0) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Empty localToGlobal for non-leaf layer!\n");
+                return false;
+            }
+
+            for (SizeType i = 0; i < p_headToLocal.R(); i++)
             {
-                headVectorIDS[static_cast<SizeType>(*(p_vectorTranslateMap[i]))] = i;
+                headVectorIDS[*(p_headToLocal[i])] = i;
             }
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Loaded %llu Vector IDs\n", static_cast<uint64_t>(headVectorIDS.size()));
 
@@ -2101,12 +1639,11 @@ namespace SPTAG::SPANN {
             {
                 auto fullVectors = p_reader->GetVectorSet();
                 fullCount = fullVectors->Count();
-                m_vectorInfoSize = fullVectors->PerVectorDataSize() + m_metaDataSize;
+                m_metaDataSize = sizeof(SizeType) + sizeof(uint8_t);
+                m_vectorDataSize = fullVectors->PerVectorDataSize();
+                m_vectorInfoSize = m_vectorDataSize + m_metaDataSize;
             }
             if (upperBound > 0) fullCount = upperBound;
-
-            // m_metaDataSize = sizeof(int) + sizeof(uint8_t) + sizeof(float);
-            m_metaDataSize = sizeof(SizeType) + sizeof(uint8_t);
 
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Build SSD Index.\n");
 
@@ -2339,21 +1876,18 @@ namespace SPTAG::SPANN {
             if (m_opt->m_distCalcMethod == DistCalcMethod::Cosine && !p_reader->IsNormalized() && !p_headIndex->m_pQuantizer) fullVectors->Normalize(m_opt->m_iSSDNumberOfThreads);
 
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPFresh: initialize versionMap\n");
-            m_versionMap->Initialize(fullCount, p_headIndex->m_iDataBlockSize, p_headIndex->m_iDataCapacity);
+            m_versionMap.Initialize(m_opt->m_vectorSize, p_headIndex->m_iDataBlockSize, p_headIndex->m_iDataCapacity, &p_localToGlobal);
 
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPFresh: Writing values to DB\n");
 
-            m_postingSizes.Initialize((SizeType)(postingListSize.size()), p_headIndex->m_iDataBlockSize,
-                                      p_headIndex->m_iDataCapacity);
-            for (int i = 0; i < postingListSize.size(); i++)
-            {
-                m_postingSizes.UpdateSize(i, postingListSize[i].load());
+            if (p_localToGlobal.R() > 0) {
+                p_headGlobaltoLocal.clear();
+                for (int i = 0; i < p_headToLocal.R(); i++) {
+                    *(p_headToLocal[i]) = *(p_localToGlobal[*(p_headToLocal[i])]);
+                    p_headGlobaltoLocal[*(p_headToLocal[i])] = i;
+                } 
             }
-
-            m_checkSums.Initialize((SizeType)(postingListSize.size()), 1, p_headIndex->m_iDataBlockSize,
-                                   p_headIndex->m_iDataCapacity);
-
-            if (ErrorCode::Success != WriteDownAllPostingToDB(selections, fullVectors)) return false;
+            if (ErrorCode::Success != WriteDownAllPostingToDB(selections, fullVectors, postingListSize, p_headToLocal, p_localToGlobal)) return false;
 
             if (m_opt->m_update && !m_opt->m_allowZeroReplica && zeroReplicaSet.size() > 0)
             {
@@ -2366,9 +1900,9 @@ namespace SPTAG::SPANN {
                 InitWorkSpace(&workSpace);
                 for (SizeType it : zeroReplicaSet)
                 {
-                    std::shared_ptr<VectorSet> vectorSet(new BasicVectorSet(ByteArray((std::uint8_t*)fullVectors->GetVector(it), sizeof(ValueType) * m_opt->m_dim, false),
+                    std::shared_ptr<VectorSet> vectorSet(new BasicVectorSet(ByteArray((std::uint8_t*)fullVectors->GetVector(it), m_vectorDataSize, false),
                         GetEnumValueType<ValueType>(), m_opt->m_dim, 1));
-                    if (AddIndex(&workSpace, vectorSet, p_headIndex, it) != ErrorCode::Success) {
+                    if (AddIndex(&workSpace, vectorSet, it) != ErrorCode::Success) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to add index for zero replica ID: %d\n", it);
                         return false;
                     }
@@ -2382,19 +1916,12 @@ namespace SPTAG::SPANN {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to save head index!\n");
                     return false;
                 }
-
-                if (m_vectorTranslateMap->Save(m_opt->m_indexDirectory + FolderSep + m_opt->m_headIDFile) != ErrorCode::Success) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to save vector ID translate map!\n");
-                    return false;
-                }
+                
+                p_headToLocal.Save(m_opt->m_indexDirectory + FolderSep + m_opt->m_headIDFile);
             }
 
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPFresh: Writing SSD Info and checkSum\n");
-            m_postingSizes.Save(m_opt->m_indexDirectory + FolderSep + m_opt->m_ssdInfoFile);
-            m_checkSums.Save(m_opt->m_indexDirectory + FolderSep + m_opt->m_checksumFile);
-
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPFresh: save versionMap\n");
-            m_versionMap->Save(m_opt->m_indexDirectory + FolderSep + m_opt->m_deleteIDFile);
+            m_versionMap.Save(m_opt->m_indexDirectory + FolderSep + m_opt->m_deleteIDFile + "_" + std::to_string(m_layer));
 
             auto t5 = std::chrono::high_resolution_clock::now();
             double elapsedSeconds = std::chrono::duration_cast<std::chrono::seconds>(t5 - t1).count();
@@ -2402,7 +1929,7 @@ namespace SPTAG::SPANN {
             return true;
         }
 
-        ErrorCode WriteDownAllPostingToDB(Selection& p_postingSelections, std::shared_ptr<VectorSet> p_fullVectors) {
+        ErrorCode WriteDownAllPostingToDB(Selection& p_postingSelections, std::shared_ptr<VectorSet> p_fullVectors, std::vector<std::atomic_int>& postingSizes, COMMON::Dataset<SizeType>& p_headToGlobal, COMMON::Dataset<SizeType>& p_localToGlobal) {
 
             std::vector<std::thread> threads;
             std::atomic<SizeType> vectorsSent(0);
@@ -2415,37 +1942,31 @@ namespace SPTAG::SPANN {
                 while (true)
                 {
                     index = vectorsSent.fetch_add(1);
-                    if (index < m_postingSizes.GetPostingNum()) {
-                        std::string postinglist(m_vectorInfoSize * m_postingSizes.GetSize(index), '\0');
+                    if (index < postingSizes.size()) {
+                        std::string postinglist(m_vectorInfoSize * postingSizes[index].load(), '\0');
                         char* ptr = (char*)postinglist.c_str();
-			            std::size_t selectIdx = p_postingSelections.lower_bound((int)index);
-                        for (int j = 0; j < m_postingSizes.GetSize(index); ++j)
+			            std::size_t selectIdx = p_postingSelections.lower_bound(index);
+                        for (int j = 0; j < postingSizes[index].load(); ++j)
                         {
                             if (p_postingSelections[selectIdx].node != index) {
                                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Selection ID NOT MATCH\n");
                                 ret = ErrorCode::Fail;
                                 return;
                             }
-                            SizeType fullID = p_postingSelections[selectIdx++].tonode;
+                            SizeType localID = p_postingSelections[selectIdx++].tonode;
+                            SizeType fullID = (p_localToGlobal.R() > 0) ? *(p_localToGlobal[localID]) : localID;
                             // if (id == 0) SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ID: %d\n", fullID);
-                            uint8_t version = m_versionMap->GetVersion(fullID);
+                            uint8_t version = m_versionMap.GetVersion(fullID);
                             // First Vector ID, then version, then Vector
-                            Serialize(ptr, fullID, version, p_fullVectors->GetVector(fullID));
+                            Serialize(ptr, fullID, version, p_fullVectors->GetVector(localID));
                             ptr += m_vectorInfoSize;
                         }
                         ErrorCode tmp;
-                        if ((tmp = db->Put(index, postinglist, MaxTimeout, &(workSpace.m_diskRequests))) !=
+                        SizeType postingID = *(p_headToGlobal[index]);
+                        if ((tmp = db->Put(postingID, postinglist, MaxTimeout, &(workSpace.m_diskRequests))) !=
                             ErrorCode::Success)
                         {
                             SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[WriteDB] Put %lld fail!\n", (std::int64_t)index);
-                            ret = tmp;
-                            return;
-                        }
-                        *m_checkSums[index] = m_checkSum.CalcChecksum(postinglist.c_str(), (int)(postinglist.size()));
-                        if (m_opt->m_consistencyCheck && (tmp = db->Check(index, m_postingSizes.GetSize(index) * m_vectorInfoSize, nullptr)) !=
-                            ErrorCode::Success)
-                        {
-                            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "WriteDB: Check failed after Put %lld\n", (std::int64_t)index);
                             ret = tmp;
                             return;
                         }
@@ -2463,15 +1984,16 @@ namespace SPTAG::SPANN {
         }
 
         ErrorCode AddIndex(ExtraWorkSpace* p_exWorkSpace, std::shared_ptr<VectorSet>& p_vectorSet,
-            std::shared_ptr<VectorIndex> p_index, SizeType begin) override {
+            SizeType begin) override {
 
             for (int v = 0; v < p_vectorSet->Count(); v++) {
                 SizeType VID = begin + v;
-                std::vector<Edge> selections(static_cast<size_t>(m_opt->m_replicaCount));
-                int replicaCount;
-                RNGSelection(selections, (ValueType*)(p_vectorSet->GetVector(v)), p_index.get(), VID, replicaCount);
+                if (m_versionMap.Deleted(VID)) m_versionMap.SetVersion(VID, -1);
+                std::vector<BasicResult> selections(static_cast<size_t>(m_opt->m_replicaCount));
+                int replicaCount = 1;
+                RNGSelection(p_exWorkSpace, selections, (ValueType*)(p_vectorSet->GetVector(v)), replicaCount);
 
-                uint8_t version = m_versionMap->GetVersion(VID);
+                uint8_t version = m_versionMap.GetVersion(VID);
                 std::string appendPosting(m_vectorInfoSize, '\0');
                 Serialize((char*)(appendPosting.c_str()), VID, version, p_vectorSet->GetVector(v));
                 if (m_opt->m_enableWAL && m_wal) {
@@ -2481,11 +2003,12 @@ namespace SPTAG::SPANN {
                 {
                     // AppendAsync(selections[i].node, 1, appendPosting_ptr);
                     ErrorCode ret;
+                    std::shared_ptr<std::string> headVec = std::make_shared<std::string>((char*)(selections[i].Vec.Data()), m_vectorDataSize);
                     if (m_opt->m_asyncAppendQueueSize > 0) {
-                        if ((ret = AsyncAppend(p_exWorkSpace, p_index.get(), selections[i].node, 1, appendPosting)) != ErrorCode::Success)
+                        if ((ret = AsyncAppend(p_exWorkSpace, selections[i].VID, headVec, 1, appendPosting)) != ErrorCode::Success)
                             return ret;
                     } else {
-                        if ((ret = Append(p_exWorkSpace, p_index.get(), selections[i].node, 1, appendPosting)) !=
+                        if ((ret = Append(p_exWorkSpace, selections[i].VID, headVec, 1, appendPosting)) !=
                             ErrorCode::Success)
                             return ret;
                     }
@@ -2500,48 +2023,8 @@ namespace SPTAG::SPANN {
                 memcpy((char*)assignment.c_str(), &p_id, sizeof(SizeType));
                 m_wal->PutAssignment(assignment);
             }
-            if (m_versionMap->Delete(p_id)) return ErrorCode::Success;
+            if (m_versionMap.Delete(p_id)) return ErrorCode::Success;
             return ErrorCode::VectorNotFound;
-        }
-
-        SizeType SearchVector(ExtraWorkSpace* p_exWorkSpace, std::shared_ptr<VectorSet>& p_vectorSet,
-            std::shared_ptr<VectorIndex> p_index, int testNum = 64, SizeType VID = -1) override {
-            
-            QueryResult queryResults(p_vectorSet->GetVector(0), testNum, false);
-            p_index->SearchIndex(queryResults);
-            
-            std::set<SizeType> checked;
-            std::string postingList;
-            for (int i = 0; i < queryResults.GetResultNum(); ++i)
-            {
-                if (db->Get(queryResults.GetResult(i)->VID, &postingList, MaxTimeout,
-                            &(p_exWorkSpace->m_diskRequests)) != ErrorCode::Success ||
-                    !m_checkSum.ValidateChecksum(postingList.c_str(), (int)(postingList.size()), *m_checkSums[queryResults.GetResult(i)->VID]))
-                {
-                    continue;
-                }
-                int vectorNum = (int)(postingList.size() / m_vectorInfoSize);
-
-                for (int j = 0; j < vectorNum; j++) {
-                    char* vectorInfo = (char* )postingList.data() + j * m_vectorInfoSize;
-                    SizeType vectorID = *(reinterpret_cast<SizeType*>(vectorInfo));
-                    if(checked.find(vectorID) != checked.end() || m_versionMap->Deleted(vectorID)) {
-                        continue;
-                    }
-                    checked.insert(vectorID);
-                    if (VID != -1 && VID == vectorID) SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Find %d in %dth posting\n", VID, i);
-                    auto distance2leaf = p_index->ComputeDistance(queryResults.GetQuantizedTarget(), vectorInfo + m_metaDataSize);
-                    if (distance2leaf < 1e-6) return vectorID;
-                }
-            }
-            return -1;
-        }
-
-        void ForceGC(ExtraWorkSpace* p_exWorkSpace, VectorIndex* p_index) override {
-            for (SizeType i = 0; i < p_index->GetNumSamples(); i++) {
-                if (!p_index->ContainSample(i)) continue;
-                Split(p_exWorkSpace, p_index, i, false);
-            }
         }
 
         bool AllFinished() { return m_splitThreadPool->allClear(); } // && m_reassignThreadPool->allClear(); }
@@ -2558,47 +2041,21 @@ namespace SPTAG::SPANN {
 
         void GetIndexStats(int finishedInsert, bool cost, bool reset) override { m_stat.PrintStat(finishedInsert, cost, reset); }
 
-        bool CheckValidPosting(SizeType postingID) override {
-            return (postingID < m_postingSizes.GetPostingNum()) && (m_postingSizes.GetSize(postingID) > 0);
-        }
-
         virtual ErrorCode CheckPosting(SizeType postingID, std::vector<std::uint8_t> *visited = nullptr,
                                        ExtraWorkSpace *p_exWorkSpace = nullptr) override
         {
-            if (postingID < 0 || postingID >= m_postingSizes.GetPostingNum())
+            if (postingID < 0)
             {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[CheckPosting]: Error postingID %lld (should be 0 ~ %d)\n",
-                             (std::int64_t)postingID, m_postingSizes.GetPostingNum());
+                             (std::int64_t)postingID, MaxSize);
                 return ErrorCode::Key_OverFlow;
             }
-            if (m_postingSizes.GetSize(postingID) < 0)
-            {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[CheckPosting]: postingID %lld has wrong size:%d\n",
-                             (std::int64_t)postingID,
-                             m_postingSizes.GetSize(postingID));
-                return ErrorCode::Posting_SizeError;
-            }
-            ErrorCode ret = db->Check(postingID, m_postingSizes.GetSize(postingID) * m_vectorInfoSize, visited);
+            ErrorCode ret = db->Check(postingID, visited);
             if (ret != ErrorCode::Success)
             {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[CheckPosting]: postingID %lld has wrong meta data\n",
                              (std::int64_t)postingID);
                 return ret;
-            }
-
-                        
-            if (m_opt->m_checksumInRead && p_exWorkSpace != nullptr)
-            {
-                std::string posting;
-                if ((ret = db->Get(postingID, &posting, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) !=
-                        ErrorCode::Success ||
-                    !m_checkSum.ValidateChecksum(posting.c_str(), (int)(posting.size()), *m_checkSums[postingID]))
-                {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[CheckPosting] Get checksum fail %lld!\n",
-                                 (std::int64_t)postingID);
-                    PrintErrorInPosting(posting, postingID);
-                    return ret;
-                }
             }
             return ErrorCode::Success;
         }
@@ -2610,19 +2067,10 @@ namespace SPTAG::SPANN {
                 {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[GetWritePosting] Put fail!\n");
                     return ret;
-                }
-                    
-                m_postingSizes.UpdateSize(pid, (int)(posting.size() / m_vectorInfoSize));
-                *m_checkSums[pid] = m_checkSum.CalcChecksum(posting.c_str(), (int)(posting.size()));
-                if (m_opt->m_consistencyCheck && (ret = db->Check(pid, m_postingSizes.GetSize(pid) * m_vectorInfoSize, nullptr)) != ErrorCode::Success)
-                {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[GetWritePosting] Check fail!\n");
-                    return ret;
-                }
+                }                   
                 // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "PostingSize: %d\n", m_postingSizes.GetSize(pid));
             } else {
-                if ((ret = db->Get(pid, &posting, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success ||
-                    !m_checkSum.ValidateChecksum(posting.c_str(), (int)(posting.size()), *m_checkSums[pid])) 
+                if ((ret = db->Get(pid, &posting, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) 
                 {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[GetWritePosting] Get fail!\n");
                     return ret;
@@ -2642,21 +2090,11 @@ namespace SPTAG::SPANN {
             if (m_asyncStatus != ErrorCode::Success)
                 return m_asyncStatus;
 
-            std::string p_persistenMap = prefix + FolderSep + m_opt->m_deleteIDFile;
+            std::string p_persistenMap = prefix + FolderSep + m_opt->m_deleteIDFile + "_" + std::to_string(m_layer);
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Saving version map\n");
             
             ErrorCode ret;
-            if ((ret = m_versionMap->Save(p_persistenMap)) != ErrorCode::Success)
-                return ret;
-
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Saving posting size\n");
-            std::string p_persistenRecord = prefix + FolderSep + m_opt->m_ssdInfoFile;
-            if ((ret = m_postingSizes.Save(p_persistenRecord)) != ErrorCode::Success)
-                return ret;
-
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Saving posting checksum\n");
-            std::string p_checksumPath = prefix + FolderSep + m_opt->m_checksumFile;
-            if ((ret = m_checkSums.Save(p_checksumPath)) != ErrorCode::Success)
+            if ((ret = m_versionMap.Save(p_persistenMap)) != ErrorCode::Success)
                 return ret;
 
             if ((ret = db->Checkpoint(prefix)) != ErrorCode::Success)
@@ -2669,43 +2107,12 @@ namespace SPTAG::SPANN {
             return ErrorCode::Success;
         }
 
-        ErrorCode GetPostingDebug(ExtraWorkSpace* p_exWorkSpace, std::shared_ptr<VectorIndex> p_index, SizeType vid, std::vector<SizeType>& VIDs, std::shared_ptr<VectorSet>& vecs) {
-            std::string posting;
-            db->Get(vid, &posting, MaxTimeout, &(p_exWorkSpace->m_diskRequests));
-            int vectorNum = (int)(posting.size() / m_vectorInfoSize);
-            int vectorNum_real = vectorNum;
-            for (int j = 0; j < vectorNum; j++) {
-                char* vectorInfo = (char*)posting.data() + j * m_vectorInfoSize;
-                SizeType vectorID = *(reinterpret_cast<SizeType*>(vectorInfo));
-                uint8_t version = *(reinterpret_cast<uint8_t*>(vectorInfo + sizeof(SizeType)));
-                if(m_versionMap->GetVersion(vectorID) != version) {
-                    vectorNum_real--;
-                }
-                
-            }
-            VIDs.resize(vectorNum_real);
-            ByteArray vector_array = ByteArray::Alloc(sizeof(ValueType) * vectorNum_real * m_opt->m_dim);
-            vecs.reset(new BasicVectorSet(vector_array, GetEnumValueType<ValueType>(), m_opt->m_dim, vectorNum_real));
-
-            for (int j = 0, i = 0; j < vectorNum; j++) {
-                char* vectorInfo = (char*)posting.data() + j * m_vectorInfoSize;
-                SizeType vectorID = *(reinterpret_cast<SizeType*>(vectorInfo));
-                uint8_t version = *(reinterpret_cast<uint8_t*>(vectorInfo + sizeof(SizeType)));
-                if(m_versionMap->GetVersion(vectorID) != version) {
-                    continue;
-                }
-                VIDs[i] = vectorID;
-                auto outVec = vecs->GetVector(i);
-                memcpy(outVec, (void*)(vectorInfo + m_metaDataSize), sizeof(ValueType) * m_opt->m_dim);
-                i++;
-            }
-            return ErrorCode::Success;
-        }
-
     private:
 
         int m_metaDataSize = 0;
-        
+
+        int m_vectorDataSize = 0;
+
         int m_vectorInfoSize = 0;
 
         int m_postingSizeLimit = INT_MAX;
@@ -2716,8 +2123,6 @@ namespace SPTAG::SPANN {
 
         int m_mergeThreshold = 10;
         ErrorCode m_asyncStatus = ErrorCode::Success;
-
-	    COMMON::Dataset<std::uint64_t>* m_vectorTranslateMap;
 
         std::shared_ptr<SPDKThreadPool> m_splitThreadPool;
         std::shared_ptr<SPDKThreadPool> m_reassignThreadPool;
