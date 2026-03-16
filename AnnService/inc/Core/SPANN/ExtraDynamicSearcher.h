@@ -628,12 +628,104 @@ namespace SPTAG::SPANN {
                         newHeadVID = *((SizeType*)(postingP + args.clusterIdx[k] * m_vectorInfoSize));
                         uint8_t version = *((uint8_t*)(postingP + args.clusterIdx[k] * m_vectorInfoSize + sizeof(SizeType)));
 
+                        newHeadsID.push_back(newHeadVID);
+                        newHeadsVec.push_back(std::make_shared<std::string>((char *)(args.centers + k * args._D), m_vectorDataSize));
+
+                        std::unique_lock<std::shared_timed_mutex> anotherLock(m_rwLocks[newHeadVID], std::defer_lock);
+                        if (m_rwLocks.hash_func(newHeadVID) != m_rwLocks.hash_func(headID))
+                        {
+                            int retry = 0;
+                            while (!anotherLock.try_lock() && retry < 3)
+                            {
+                                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                             "Split: new head VID %lld is being locked. Wait for lock and do "
+                                             "merging after getting lock...\n",
+                                             (std::int64_t)(newHeadVID));
+                                retry++;
+                                std::this_thread::sleep_for(std::chrono::milliseconds(3));
+                            }
+                            if (!anotherLock.owns_lock())
+                            {
+                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                                             "Split: new head VID %lld is being locked after 3 retries. Skip merging and return split failed...\n",
+                                             (std::int64_t)(newHeadVID));
+                                return ErrorCode::Fail;
+                            }
+                        }
+
                         if (m_headIndex->ContainSample(newHeadVID, m_layer + 1)) {
                             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Split: new head VID %lld already exists in head index. Do merging...\n", (std::int64_t)(newHeadVID));
-                            // TODO：merge postings
+
+                            std::string mergedPostingList;
+                            std::set<SizeType> vectorIdSet;
+                            std::string currentPostingList;
+                            if ((ret = db->Get(newHeadVID, &currentPostingList, MaxTimeout,
+                                               &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success)
+                            {
+                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to get posting %lld\n",
+                                             (std::int64_t)(newHeadVID));
+                                return ret;
+                            }
+
+                            auto *postingP = reinterpret_cast<uint8_t *>(currentPostingList.data());
+                            size_t postVectorNum = currentPostingList.size() / m_vectorInfoSize;
+                            int currentLength = 0;
+                            for (int j = 0; j < postVectorNum; j++, postingP += m_vectorInfoSize)
+                            {
+                                SizeType VID = *((SizeType *)(postingP));
+                                uint8_t version = *(postingP + sizeof(SizeType));
+                                if (m_versionMap.Deleted(VID) || m_versionMap.GetVersion(VID) != version)
+                                    continue;
+
+                                vectorIdSet.insert(VID);
+                                mergedPostingList += currentPostingList.substr(j * m_vectorInfoSize, m_vectorInfoSize);
+                                currentLength++;
+                            }
+
+                            auto *postingK = reinterpret_cast<uint8_t *>(newPostingLists[k].data());
+                            size_t newPostVectorNum = newPostingLists[k].size() / m_vectorInfoSize;
+                            for (int j = 0; j < newPostVectorNum; j++, postingK += m_vectorInfoSize)
+                            {
+                                SizeType VID = *((SizeType *)(postingK));
+                                uint8_t version = *(postingK + sizeof(SizeType));
+                                ValueType *vector = reinterpret_cast<ValueType *>(postingK + m_metaDataSize);
+
+                                if (vectorIdSet.find(VID) != vectorIdSet.end())
+                                    continue;
+                                mergedPostingList += newPostingLists[k].substr(j * m_vectorInfoSize, m_vectorInfoSize);
+                                currentLength++;
+                            }
+
+                            if (currentLength > (m_postingSizeLimit + m_bufferSizeLimit))
+                            {
+                                SPTAGLIB_LOG(
+                                    Helper::LogLevel::LL_Warning,
+                                    "Split: merged posting list length %d exceeds hard limit %d after merging head "
+                                    "VID %lld. Cut to limit and put back to db.\n",
+                                    currentLength, m_postingSizeLimit + m_bufferSizeLimit, (std::int64_t)(newHeadVID));
+                                mergedPostingList.resize((m_postingSizeLimit + m_bufferSizeLimit) * m_vectorInfoSize);
+                                currentLength = m_postingSizeLimit + m_bufferSizeLimit;
+                            }
+
+                            auto splitPutBegin = std::chrono::high_resolution_clock::now();
+                            if ((ret = db->Put(newHeadVID, mergedPostingList, MaxTimeout,
+                                               &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success)
+                            {
+                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to put posting %lld\n",
+                                             (std::int64_t)(newHeadVID));
+                                return ret;
+                            }
+                            auto splitPutEnd = std::chrono::high_resolution_clock::now();
+                            elapsedMSeconds =
+                                std::chrono::duration_cast<std::chrono::microseconds>(splitPutEnd - splitPutBegin)
+                                    .count();
+                            m_stat.m_putCost += elapsedMSeconds;
+
+                            if (currentLength > m_postingSizeLimit)
+                            {
+                                SplitAsync(newHeadsID.back(), newHeadsVec.back(), currentLength);
+                            }
                         } else {
-                            newHeadsID.push_back(newHeadVID);
-                            newHeadsVec.push_back(std::make_shared<std::string>((char*)(args.centers + k * args._D), m_vectorDataSize));
                             auto splitPutBegin = std::chrono::high_resolution_clock::now();
                             if ((ret=db->Put(newHeadVID, newPostingLists[k], MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
                                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to add new posting %lld\n", (std::int64_t)(newHeadVID));
@@ -875,16 +967,13 @@ namespace SPTAG::SPANN {
                             ReassignAsync(std::make_shared<std::string>((char*)vectorId, m_vectorInfoSize), nextHeadID, nextHeadVec);
                     }
 
-                    if (m_opt->m_excludehead)
+                    if (!m_versionMap.Deleted(deletedHeadID))
                     {
-                        if (!m_versionMap.Deleted(deletedHeadID))
-                        {
-                            std::shared_ptr<std::string> vectorinfo =
-                                std::make_shared<std::string>(m_vectorInfoSize, ' ');
-                            Serialize(vectorinfo->data(), deletedHeadID, m_versionMap.GetVersion(deletedHeadID),
-                                        deletedHeadVec->data());
-                            ReassignAsync(vectorinfo, -1, nextHeadVec);
-                        }
+                        std::shared_ptr<std::string> vectorinfo =
+                            std::make_shared<std::string>(m_vectorInfoSize, ' ');
+                        Serialize(vectorinfo->data(), deletedHeadID, m_versionMap.GetVersion(deletedHeadID),
+                                    deletedHeadVec->data());
+                        ReassignAsync(vectorinfo, -1, nextHeadVec);
                     }
                 }
 
