@@ -1171,14 +1171,6 @@ template <typename T> ErrorCode Index<T>::BuildIndexInternal(std::shared_ptr<Hel
             }
         }
     }
-    if (fileexists((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str())) 
-    {
-        if (remove((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str()) != 0)
-        {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to delete head vector file: %s\n",
-                         (m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str());
-        }
-    }
     auto t4 = std::chrono::high_resolution_clock::now();
     double buildSSDTime = std::chrono::duration_cast<std::chrono::seconds>(t4 - t3).count();
     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "select head time: %.2lfs build head time: %.2lfs build ssd time: %.2lfs\n",
@@ -1215,8 +1207,12 @@ template <typename T> ErrorCode Index<T>::BuildIndex(bool p_normalized)
     }
     for (int layer = 1; layer < m_options.m_layers; layer++)
     {
+        std::string vectorPath = m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile;
+        if (rename(vectorPath.c_str(), (vectorPath + "_tmp").c_str()) != 0) {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to rename vector file to %s\n", (vectorPath + "_tmp").c_str());
+        }
         vectorReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
-        if (ErrorCode::Success != vectorReader->LoadFile(m_options.m_indexDirectory + FolderSep + m_options.m_headIndexFolder + FolderSep + m_topIndex->GetParameter("VectorFilePath", "Index")))
+        if (ErrorCode::Success != vectorReader->LoadFile(vectorPath + "_tmp"))
         {
             SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to read headvector file for layer %d.\n", layer);
             return ErrorCode::Fail;
@@ -1226,6 +1222,17 @@ template <typename T> ErrorCode Index<T>::BuildIndex(bool p_normalized)
         {
             SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to build index layer %d.\n", layer);
             return ret; 
+        }
+        if (remove((vectorPath + "_tmp").c_str()) != 0) {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to delete vector file: %s\n", (vectorPath + "_tmp").c_str());
+        }
+    }
+    if (fileexists((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str())) 
+    {
+        if (remove((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str()) != 0)
+        {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to delete head vector file: %s\n",
+                         (m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str());
         }
     }
     m_bReady = true;
@@ -1277,8 +1284,12 @@ ErrorCode Index<T>::BuildIndex(const void *p_data, SizeType p_vectorNum, Dimensi
     }
     for (int layer = 1; layer < m_options.m_layers; layer++)
     {
+        std::string vectorPath = m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile;
+        if (rename(vectorPath.c_str(), (vectorPath + "_tmp").c_str()) != 0) {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to rename vector file to %s\n", (vectorPath + "_tmp").c_str());
+        }
         vectorReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
-        if (ErrorCode::Success != vectorReader->LoadFile(m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile))
+        if (ErrorCode::Success != vectorReader->LoadFile(vectorPath + "_tmp"))
         {
             SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to read headvector file for layer %d.\n", layer);
             return ErrorCode::Fail;
@@ -1288,6 +1299,17 @@ ErrorCode Index<T>::BuildIndex(const void *p_data, SizeType p_vectorNum, Dimensi
         {
             SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to build index layer %d.\n", layer);
             return ret; 
+        }
+        if (remove((vectorPath + "_tmp").c_str()) != 0) {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to delete vector file: %s\n", (vectorPath + "_tmp").c_str());
+        }
+    }
+    if (fileexists((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str())) 
+    {
+        if (remove((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str()) != 0)
+        {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to delete head vector file: %s\n",
+                         (m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str());
         }
     }
     m_bReady = true;

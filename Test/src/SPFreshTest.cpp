@@ -291,6 +291,7 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
             DeletePercentageForRefine=0.4
             AsyncAppendQueueSize=0
             AllowZeroReplica=false
+	        Layers=2
         )";
 
     std::shared_ptr<Helper::DiskIO> buffer(new Helper::SimpleBufferIO());

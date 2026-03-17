@@ -687,8 +687,6 @@ namespace SPTAG::SPANN {
                             for (int j = 0; j < newPostVectorNum; j++, postingK += m_vectorInfoSize)
                             {
                                 SizeType VID = *((SizeType *)(postingK));
-                                uint8_t version = *(postingK + sizeof(SizeType));
-                                ValueType *vector = reinterpret_cast<ValueType *>(postingK + m_metaDataSize);
 
                                 if (vectorIdSet.find(VID) != vectorIdSet.end())
                                     continue;
@@ -2004,11 +2002,10 @@ namespace SPTAG::SPANN {
                 if (p_headIndex->SaveIndex(m_opt->m_indexDirectory + FolderSep + m_opt->m_headIndexFolder) != ErrorCode::Success) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to save head index!\n");
                     return false;
-                }
-                
-                p_headToLocal.Save(m_opt->m_indexDirectory + FolderSep + m_opt->m_headIDFile);
+                } 
             }
 
+            p_headToLocal.Save(m_opt->m_indexDirectory + FolderSep + m_opt->m_headIDFile);
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPFresh: save versionMap\n");
             m_versionMap.Save(m_opt->m_indexDirectory + FolderSep + m_opt->m_deleteIDFile + "_" + std::to_string(m_layer));
 
