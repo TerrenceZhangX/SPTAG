@@ -100,6 +100,8 @@ namespace SPTAG {
             std::string m_fullDeletedIDFile;
             Storage m_storage;
             std::string m_KVFile;
+            std::string m_tikvPDAddresses;
+            std::string m_tikvKeyPrefix;
             std::string m_ssdMappingFile;
             std::string m_ssdInfoFile;
             std::string m_checksumFile;

@@ -37,6 +37,10 @@
 extern "C" bool RocksDbIOUringEnable() { return true; }
 #endif
 
+#ifdef TIKV
+#include "ExtraTiKVController.h"
+#endif
+
 namespace SPTAG::SPANN {
     template <typename ValueType>
     class ExtraDynamicSearcher : public IExtraSearcher
@@ -234,6 +238,17 @@ namespace SPTAG::SPANN {
                 db.reset(new RocksDBIO((indexDir + p_opt.m_KVFile).c_str(), p_opt.m_useDirectIO, p_opt.m_enableWAL, p_opt.m_recovery));
 #else
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "ExtraDynamicSearcher:RocksDB unsupport! Use -DROCKSDB to enable RocksDB when doing cmake.\n");
+                return;
+#endif
+            }
+            else if (p_opt.m_storage == Storage::TIKVIO) {
+#ifdef TIKV
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ExtraDynamicSearcher:UseTiKV\n");
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ExtraDynamicSearcher:PD addresses:%s, prefix:%s\n",
+                             p_opt.m_tikvPDAddresses.c_str(), p_opt.m_tikvKeyPrefix.c_str());
+                db.reset(new TiKVIO(p_opt.m_tikvPDAddresses, p_opt.m_tikvKeyPrefix));
+#else
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "ExtraDynamicSearcher:TiKV unsupport! Use -DTIKV to enable TiKV when doing cmake.\n");
                 return;
 #endif
             }
@@ -1623,6 +1638,12 @@ namespace SPTAG::SPANN {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Recovery:Current posting num: %d.\n", m_postingSizes.GetPostingNum());
             }
             else if (m_opt->m_storage == Storage::ROCKSDBIO) {
+                m_versionMap->Load(versionmapPath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
+                m_postingSizes.Load(postingSizePath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
+                m_checkSums.Load(checksumPath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Current vector num: %d.\n", m_versionMap->Count());
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Current posting num: %d.\n", m_postingSizes.GetPostingNum());
+            } else if (m_opt->m_storage == Storage::TIKVIO) {
                 m_versionMap->Load(versionmapPath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
                 m_postingSizes.Load(postingSizePath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
                 m_checkSums.Load(checksumPath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);

@@ -1,0 +1,22 @@
+// Extracted from https://github.com/pingcap/kvproto
+// Minimal definitions for SPANN TiKV integration - TiKV gRPC service.
+
+syntax = "proto3";
+package tikvpb;
+
+import "kvrpcpb.proto";
+
+option java_package = "org.tikv.kvproto";
+
+// The TiKV service definition - only RawKV-related RPCs.
+service Tikv {
+    // RawKV commands
+    rpc RawGet(kvrpcpb.RawGetRequest) returns (kvrpcpb.RawGetResponse) {}
+    rpc RawBatchGet(kvrpcpb.RawBatchGetRequest) returns (kvrpcpb.RawBatchGetResponse) {}
+    rpc RawPut(kvrpcpb.RawPutRequest) returns (kvrpcpb.RawPutResponse) {}
+    rpc RawBatchPut(kvrpcpb.RawBatchPutRequest) returns (kvrpcpb.RawBatchPutResponse) {}
+    rpc RawDelete(kvrpcpb.RawDeleteRequest) returns (kvrpcpb.RawDeleteResponse) {}
+    rpc RawBatchDelete(kvrpcpb.RawBatchDeleteRequest) returns (kvrpcpb.RawBatchDeleteResponse) {}
+    rpc RawDeleteRange(kvrpcpb.RawDeleteRangeRequest) returns (kvrpcpb.RawDeleteRangeResponse) {}
+    rpc RawScan(kvrpcpb.RawScanRequest) returns (kvrpcpb.RawScanResponse) {}
+}
