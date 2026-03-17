@@ -1,0 +1,159 @@
+// Extracted from https://github.com/pingcap/kvproto
+// Minimal definitions for SPANN TiKV integration - KV RPC messages.
+
+syntax = "proto3";
+package kvrpcpb;
+
+import "metapb.proto";
+import "errorpb.proto";
+
+option java_package = "org.tikv.kvproto";
+
+// Context carries region and peer information for TiKV requests.
+message Context {
+    uint64 region_id = 1;
+    metapb.RegionEpoch region_epoch = 2;
+    metapb.Peer peer = 3;
+    bool read_quorum = 4;
+    uint64 term = 5;
+    CommandPri priority = 6;
+    IsolationLevel isolation_level = 7;
+    bool not_fill_cache = 8;
+    bool sync_log = 9;
+    bool stale_read = 10;
+    uint64 resource_group_tag = 11;
+    bool replica_read = 12;
+    repeated uint64 resolved_locks = 13;
+    uint64 max_execution_duration_ms = 14;
+    string resource_group_name = 15;
+    bytes source_stmt = 16;
+    uint64 request_source = 17;
+}
+
+enum CommandPri {
+    Normal = 0;
+    Low = 1;
+    High = 2;
+}
+
+enum IsolationLevel {
+    SI = 0;
+    RC = 1;
+    RCCheckTS = 2;
+}
+
+// KvPair is used in batch responses.
+message KvPair {
+    errorpb.Error error = 1;
+    bytes key = 2;
+    bytes value = 3;
+}
+
+// ---- RawGet ----
+message RawGetRequest {
+    Context context = 1;
+    bytes key = 2;
+    string cf = 3;
+}
+
+message RawGetResponse {
+    errorpb.Error region_error = 1;
+    string error = 2;
+    bytes value = 3;
+    bool not_found = 4;
+}
+
+// ---- RawBatchGet ----
+message RawBatchGetRequest {
+    Context context = 1;
+    repeated bytes keys = 2;
+    string cf = 3;
+}
+
+message RawBatchGetResponse {
+    errorpb.Error region_error = 1;
+    repeated KvPair pairs = 2;
+}
+
+// ---- RawPut ----
+message RawPutRequest {
+    Context context = 1;
+    bytes key = 2;
+    bytes value = 3;
+    string cf = 4;
+    uint64 ttl = 5;
+    bool for_cas = 6;
+}
+
+message RawPutResponse {
+    errorpb.Error region_error = 1;
+    string error = 2;
+}
+
+// ---- RawBatchPut ----
+message RawBatchPutRequest {
+    Context context = 1;
+    repeated KvPair pairs = 2;
+    string cf = 3;
+    uint64 ttl = 4;
+    bool for_cas = 5;
+}
+
+message RawBatchPutResponse {
+    errorpb.Error region_error = 1;
+    string error = 2;
+}
+
+// ---- RawDelete ----
+message RawDeleteRequest {
+    Context context = 1;
+    bytes key = 2;
+    string cf = 3;
+    bool for_cas = 4;
+}
+
+message RawDeleteResponse {
+    errorpb.Error region_error = 1;
+    string error = 2;
+}
+
+// ---- RawBatchDelete ----
+message RawBatchDeleteRequest {
+    Context context = 1;
+    repeated bytes keys = 2;
+    string cf = 3;
+}
+
+message RawBatchDeleteResponse {
+    errorpb.Error region_error = 1;
+    string error = 2;
+}
+
+// ---- RawDeleteRange ----
+message RawDeleteRangeRequest {
+    Context context = 1;
+    bytes start_key = 2;
+    bytes end_key = 3;
+    string cf = 4;
+}
+
+message RawDeleteRangeResponse {
+    errorpb.Error region_error = 1;
+    string error = 2;
+}
+
+// ---- RawScan ----
+message RawScanRequest {
+    Context context = 1;
+    bytes start_key = 2;
+    uint32 limit = 3;
+    bool key_only = 4;
+    string cf = 5;
+    bool reverse = 6;
+    bytes end_key = 7;
+}
+
+message RawScanResponse {
+    errorpb.Error region_error = 1;
+    repeated KvPair kvs = 2;
+}

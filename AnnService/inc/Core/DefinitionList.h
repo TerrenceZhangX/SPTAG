@@ -154,5 +154,6 @@ DefineStorage(STATIC)
 DefineStorage(FILEIO)
 DefineStorage(SPDKIO)
 DefineStorage(ROCKSDBIO)
+DefineStorage(TIKVIO)
 
 #endif // DefineStorage

@@ -97,6 +97,8 @@ DefineSSDParameter(m_fullDeletedIDFile, std::string, std::string("fulldeleted"),
 DefineSSDParameter(m_storage, SPTAG::Storage, SPTAG::Storage::STATIC, "Storage")
 DefineSSDParameter(m_spdkBatchSize, int, 64, "SpdkBatchSize")
 DefineSSDParameter(m_KVFile, std::string, std::string("rocksdb"), "KVFile")
+DefineSSDParameter(m_tikvPDAddresses, std::string, std::string("127.0.0.1:2379"), "TiKVPDAddresses")
+DefineSSDParameter(m_tikvKeyPrefix, std::string, std::string("spann"), "TiKVKeyPrefix")
 DefineSSDParameter(m_ssdMappingFile, std::string, std::string("ssdmapping"), "SsdMappingFile")
 DefineSSDParameter(m_ssdInfoFile, std::string, std::string("ssdinfo"), "SsdInfoFile")
 DefineSSDParameter(m_checksumFile, std::string, std::string("checksum"), "ChecksumFile")

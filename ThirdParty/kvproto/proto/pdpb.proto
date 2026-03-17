@@ -1,0 +1,85 @@
+// Extracted from https://github.com/pingcap/kvproto
+// Minimal definitions for SPANN TiKV integration - PD (Placement Driver) service.
+
+syntax = "proto3";
+package pdpb;
+
+import "metapb.proto";
+
+option java_package = "org.tikv.kvproto";
+
+message RequestHeader {
+    uint64 cluster_id = 1;
+    uint64 sender_id = 2;
+}
+
+message ResponseHeader {
+    uint64 cluster_id = 1;
+    Error error = 2;
+}
+
+message Error {
+    ErrorType type = 1;
+    string message = 2;
+}
+
+enum ErrorType {
+    OK = 0;
+    UNKNOWN = 1;
+    NOT_BOOTSTRAPPED = 2;
+    STORE_TOMBSTONE = 3;
+    ALREADY_BOOTSTRAPPED = 4;
+    INCOMPATIBLE_VERSION = 5;
+    REGION_NOT_FOUND = 6;
+}
+
+message GetRegionRequest {
+    RequestHeader header = 1;
+    bytes region_key = 2;
+}
+
+message GetRegionResponse {
+    ResponseHeader header = 1;
+    metapb.Region region = 2;
+    metapb.Peer leader = 3;
+    repeated metapb.Peer down_peers = 4;
+    repeated metapb.Peer pending_peers = 5;
+}
+
+message GetStoreRequest {
+    RequestHeader header = 1;
+    uint64 store_id = 2;
+}
+
+message GetStoreResponse {
+    ResponseHeader header = 1;
+    metapb.Store store = 2;
+}
+
+message GetMembersRequest {
+    RequestHeader header = 1;
+}
+
+message Member {
+    string name = 1;
+    uint64 member_id = 2;
+    repeated string peer_urls = 3;
+    repeated string client_urls = 4;
+    string leader_name = 5;
+    uint64 leader_id = 6;
+}
+
+message GetMembersResponse {
+    ResponseHeader header = 1;
+    repeated Member members = 2;
+    Member leader = 3;
+    Member etcd_leader = 4;
+}
+
+// PD service - only the RPCs needed for region/store discovery.
+service PD {
+    rpc GetMembers(GetMembersRequest) returns (GetMembersResponse) {}
+    rpc GetRegion(GetRegionRequest) returns (GetRegionResponse) {}
+    rpc GetRegionByID(GetRegionRequest) returns (GetRegionResponse) {}
+    rpc GetStore(GetStoreRequest) returns (GetStoreResponse) {}
+}

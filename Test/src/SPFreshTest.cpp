@@ -21,6 +21,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iomanip>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -222,7 +223,8 @@ std::shared_ptr<VectorIndex> BuildIndex(const std::string &outDirectory, std::sh
 template <typename T>
 std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, std::string &pvecset,
                                         std::string& pmetaset, std::string& pmetaidx, const std::string &distMethod = "L2",
-                                        int searchthread = 2, int insertthread = 2, std::shared_ptr<COMMON::IQuantizer> quantizer = nullptr, std::string quantizerFilePath = "quantizer.bin")
+                                        int searchthread = 2, int insertthread = 2, std::shared_ptr<COMMON::IQuantizer> quantizer = nullptr, std::string quantizerFilePath = "quantizer.bin",
+                                        const std::map<std::string, std::string>& ssdOverrides = {})
 {
     auto vecIndex = VectorIndex::CreateInstance(IndexAlgoType::SPANN, GetEnumValueType<T>());
     int maxthreads = std::thread::hardware_concurrency();
@@ -309,6 +311,12 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
         {
             vecIndex->SetParameter(key.c_str(), val.c_str(), sec.c_str());
         }
+    }
+
+    // Apply BuildSSDIndex overrides (e.g., Storage, TiKV settings)
+    for (const auto &[key, val] : ssdOverrides)
+    {
+        vecIndex->SetParameter(key.c_str(), val.c_str(), "BuildSSDIndex");
     }
 
     if (quantizer)
@@ -565,7 +573,8 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                   DistCalcMethod distMethod, const std::string &indexPath, int dimension, int baseVectorCount,
                   int insertVectorCount, int deleteVectorCount, int batches, int topK, int numThreads, int numQueries,
                   const std::string &outputFile = "output.json", const bool rebuild = true, const int resume = -1,
-                  const std::string &quantizerFilePath = std::string(""), int quantizedDim = 0)
+                  const std::string &quantizerFilePath = std::string(""), int quantizedDim = 0,
+                  const std::map<std::string, std::string>& ssdOverrides = {})
 {
     int oldM = M, oldK = K, oldN = N, oldQueries = queries;
     N = baseVectorCount;
@@ -658,13 +667,13 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                 quantizedBase->Save(pquanvecset);
             }
 
-            index = BuildLargeIndex<uint8_t>(indexPath, pquanvecset, pmeta, pmetaidx, dist, numThreads, numThreads, quantizer);
+            index = BuildLargeIndex<uint8_t>(indexPath, pquanvecset, pmeta, pmetaidx, dist, numThreads, numThreads, quantizer, "quantizer.bin", ssdOverrides);
             BOOST_REQUIRE(index != nullptr);
             index->SetQuantizerADC(true);
         }
         else
         {
-            index = BuildLargeIndex<T>(indexPath, pvecset, pmeta, pmetaidx, dist, numThreads, numThreads);
+            index = BuildLargeIndex<T>(indexPath, pvecset, pmeta, pmetaidx, dist, numThreads, numThreads, nullptr, "quantizer.bin", ssdOverrides);
             BOOST_REQUIRE(index != nullptr);
         }
 
@@ -1916,6 +1925,21 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     bool rebuild = iniReader.GetParameter("Benchmark", "Rebuild", true);
     int resume = iniReader.GetParameter("Benchmark", "Resume", -1);
 
+    // Read storage backend overrides for BuildSSDIndex
+    std::map<std::string, std::string> ssdOverrides;
+    std::string storage = iniReader.GetParameter("Benchmark", "Storage", std::string(""));
+    if (!storage.empty()) {
+        ssdOverrides["Storage"] = storage;
+    }
+    std::string tikvPDAddresses = iniReader.GetParameter("Benchmark", "TiKVPDAddresses", std::string(""));
+    if (!tikvPDAddresses.empty()) {
+        ssdOverrides["TiKVPDAddresses"] = tikvPDAddresses;
+    }
+    std::string tikvKeyPrefix = iniReader.GetParameter("Benchmark", "TiKVKeyPrefix", std::string(""));
+    if (!tikvKeyPrefix.empty()) {
+        ssdOverrides["TiKVKeyPrefix"] = tikvKeyPrefix;
+    }
+
     BOOST_TEST_MESSAGE("=== Benchmark Configuration ===");
     BOOST_TEST_MESSAGE("Vector Path: " << vectorPath);
     BOOST_TEST_MESSAGE("Query Path: " << queryPath);
@@ -1943,19 +1967,19 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     {
         RunBenchmark<float>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                     insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries, outputFile, 
-                    rebuild, resume, quantizerFilePath, quantizedDim);
+                    rebuild, resume, quantizerFilePath, quantizedDim, ssdOverrides);
     }
     else if (valueType == VectorValueType::Int8)
     {
         RunBenchmark<std::int8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                       insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries,
-                      outputFile, rebuild, resume, quantizerFilePath, quantizedDim);
+                      outputFile, rebuild, resume, quantizerFilePath, quantizedDim, ssdOverrides);
     }
     else if (valueType == VectorValueType::UInt8)
     {
         RunBenchmark<std::uint8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                        insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries,
-                       outputFile, rebuild, resume, quantizerFilePath, quantizedDim);
+                       outputFile, rebuild, resume, quantizerFilePath, quantizedDim, ssdOverrides);
     }
 
     //std::filesystem::remove_all(indexPath);
