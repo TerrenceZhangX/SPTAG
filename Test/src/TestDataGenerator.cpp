@@ -133,55 +133,125 @@ void TestDataGenerator<T>::GenerateBatchTruth(const std::string &filename, std::
     int start = 0;
     int end = base;
     int maxthreads = std::thread::hardware_concurrency();
+
+    size_t totalVecSize = (size_t)m_m * sizeof(T) * (vecset->Count() + addset->Count());
+    const size_t sizeThreshold = (size_t)100 * 1024 * 1024 * 1024; // 100GB
+    bool needSplitRounds = totalVecSize > sizeThreshold;
+    SizeType vecsPerRound = needSplitRounds ? (SizeType)(sizeThreshold / ((size_t)m_m * sizeof(T))) : 0;
+
     for (int iter = 0; iter < batches + 1; iter++)
     {
         SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Generating groundtruth for batch %d\n", iter);
-        std::vector<std::thread> mythreads;
-        mythreads.reserve(maxthreads);
-        std::atomic_size_t sent(0);
-        for (int tid = 0; tid < maxthreads; tid++)
-        {
-            mythreads.emplace_back([&, tid]() {
-                size_t i = 0;
-                while (true)
-                {
-                    i = sent.fetch_add(1);
-                    if (i < queryset->Count())
-                    {
-                        SizeType *neighbors = ((SizeType *)tru.Data()) + iter * (queryset->Count() * m_k) + i * m_k;
-                        float *dists = ((float *)(tru.Data() + distbase)) + iter * (queryset->Count() * m_k) + i * m_k;
-                        COMMON::QueryResultSet<T> res((const T *)queryset->GetVector(i), m_k);
-                        for (SizeType j = start; j < end; ++j)
-                        {
-                            float dist = MaxDist;
-                            if (j < vecset->Count())
-                                dist = COMMON::DistanceUtils::ComputeDistance(res.GetTarget(), 
-                                    reinterpret_cast<T *>(vecset->GetVector(j)), m_m, distMethod);
-                            else
-                                dist = COMMON::DistanceUtils::ComputeDistance(res.GetTarget(), 
-                                    reinterpret_cast<T *>(addset->GetVector(j - vecset->Count())), m_m, distMethod);
 
-                            res.AddPoint(j, dist);
+        if (needSplitRounds) {
+            SizeType rangeSize = end - start;
+            SizeType numRounds = (rangeSize + vecsPerRound - 1) / vecsPerRound;
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Large vecset detected (%zu bytes), splitting into %d rounds\n",
+                         totalVecSize, (int)numRounds);
+
+            // Initialize per-query result sets that accumulate across rounds
+            std::vector<COMMON::QueryResultSet<T>> results;
+            results.reserve(queryset->Count());
+            for (SizeType i = 0; i < queryset->Count(); i++) {
+                results.emplace_back((const T *)queryset->GetVector(i), m_k);
+            }
+
+            for (SizeType round = 0; round < numRounds; round++) {
+                SizeType roundStart = start + round * vecsPerRound;
+                SizeType roundEnd = std::min(roundStart + vecsPerRound, (SizeType)end);
+
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "  Round %d/%d: vectors [%d, %d)\n",
+                             (int)(round + 1), (int)numRounds, (int)roundStart, (int)roundEnd);
+
+                std::vector<std::thread> mythreads;
+                mythreads.reserve(maxthreads);
+                std::atomic_size_t sent(0);
+                for (int tid = 0; tid < maxthreads; tid++) {
+                    mythreads.emplace_back([&]() {
+                        size_t i = 0;
+                        while (true) {
+                            i = sent.fetch_add(1);
+                            if (i < (size_t)queryset->Count()) {
+                                for (SizeType j = roundStart; j < roundEnd; ++j) {
+                                    float dist = MaxDist;
+                                    if (j < vecset->Count())
+                                        dist = COMMON::DistanceUtils::ComputeDistance(results[i].GetTarget(),
+                                            reinterpret_cast<T *>(vecset->GetVector(j)), m_m, distMethod);
+                                    else
+                                        dist = COMMON::DistanceUtils::ComputeDistance(results[i].GetTarget(),
+                                            reinterpret_cast<T *>(addset->GetVector(j - vecset->Count())), m_m, distMethod);
+                                    results[i].AddPoint(j, dist);
+                                }
+                            } else {
+                                return;
+                            }
                         }
-                        res.SortResult();
-                        for (int j = 0; j < m_k; ++j)
-                        {
-                            neighbors[j] = res.GetResult(j)->VID;
-                            dists[j] = res.GetResult(j)->Dist;
-                        }
-                    }
-                    else
-                    {
-                        return;
-                    }
+                    });
                 }
-            });
+                for (auto &t : mythreads) {
+                    t.join();
+                }
+            }
+
+            // Sort and extract merged results for this batch
+            for (SizeType i = 0; i < queryset->Count(); i++) {
+                results[i].SortResult();
+                SizeType *neighbors = ((SizeType *)tru.Data()) + iter * (queryset->Count() * m_k) + i * m_k;
+                float *dists = ((float *)(tru.Data() + distbase)) + iter * (queryset->Count() * m_k) + i * m_k;
+                for (int j = 0; j < m_k; ++j) {
+                    neighbors[j] = results[i].GetResult(j)->VID;
+                    dists[j] = results[i].GetResult(j)->Dist;
+                }
+            }
+        } else {
+            std::vector<std::thread> mythreads;
+            mythreads.reserve(maxthreads);
+            std::atomic_size_t sent(0);
+            for (int tid = 0; tid < maxthreads; tid++)
+            {
+                mythreads.emplace_back([&, tid]() {
+                    size_t i = 0;
+                    while (true)
+                    {
+                        i = sent.fetch_add(1);
+                        if (i < queryset->Count())
+                        {
+                            SizeType *neighbors = ((SizeType *)tru.Data()) + iter * (queryset->Count() * m_k) + i * m_k;
+                            float *dists = ((float *)(tru.Data() + distbase)) + iter * (queryset->Count() * m_k) + i * m_k;
+                            COMMON::QueryResultSet<T> res((const T *)queryset->GetVector(i), m_k);
+                            for (SizeType j = start; j < end; ++j)
+                            {
+                                float dist = MaxDist;
+                                if (j < vecset->Count())
+                                    dist = COMMON::DistanceUtils::ComputeDistance(res.GetTarget(), 
+                                        reinterpret_cast<T *>(vecset->GetVector(j)), m_m, distMethod);
+                                else
+                                    dist = COMMON::DistanceUtils::ComputeDistance(res.GetTarget(), 
+                                        reinterpret_cast<T *>(addset->GetVector(j - vecset->Count())), m_m, distMethod);
+
+                                res.AddPoint(j, dist);
+                            }
+                            res.SortResult();
+                            for (int j = 0; j < m_k; ++j)
+                            {
+                                neighbors[j] = res.GetResult(j)->VID;
+                                dists[j] = res.GetResult(j)->Dist;
+                            }
+                        }
+                        else
+                        {
+                            return;
+                        }
+                    }
+                });
+            }
+            for (auto &t : mythreads)
+            {
+                t.join();
+            }
+            mythreads.clear();
         }
-        for (auto &t : mythreads)
-        {
-            t.join();
-        }
-        mythreads.clear();
         start += batchdelete;
         end += batchinsert;
     }
