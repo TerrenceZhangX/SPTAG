@@ -347,6 +347,10 @@ namespace SPTAG::SPANN
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::MultiGet key not found: %d\n", keys[i]);
                     return ErrorCode::Fail;
                 }
+                // Resize buffer if the value is larger than pre-allocated capacity
+                if (val.size() > values[i].GetPageSize()) {
+                    values[i].ReservePageBuffer(val.size());
+                }
                 memcpy(values[i].GetBuffer(), val.data(), val.size());
                 values[i].SetAvailableSize(static_cast<int>(val.size()));
             }

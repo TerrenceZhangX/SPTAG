@@ -1352,18 +1352,20 @@ namespace SPTAG::SPANN {
                 }
                 auto reassignScanIOBegin = std::chrono::high_resolution_clock::now();
                 ErrorCode ret;
+                bool reassignReadOk = true;
                 if ((ret = db->MultiGet(HeadPrevTopK, p_exWorkSpace->m_pageBuffers, m_hardLatencyLimit,
                                         &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success ||
                     !ValidatePostings(HeadPrevTopK, p_exWorkSpace->m_pageBuffers))
                 {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "ReAssign can't get all the near postings\n");
-                    return ret;
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "ReAssign skipped: couldn't read nearby postings (non-fatal)\n");
+                    reassignReadOk = false;
                 }
 
                 auto reassignScanIOEnd = std::chrono::high_resolution_clock::now();
                 auto elapsedMSeconds = std::chrono::duration_cast<std::chrono::microseconds>(reassignScanIOEnd - reassignScanIOBegin).count();
                 m_stat.m_reassignScanIOCost += elapsedMSeconds;
 
+                if (reassignReadOk) {
                 for (int i = 0; i < HeadPrevTopK.size(); i++)
                 {
                     auto &buffer = (p_exWorkSpace->m_pageBuffers[i]);
@@ -1385,6 +1387,7 @@ namespace SPTAG::SPANN {
                         }
                     }
                 }
+                } // reassignReadOk
             }
             return ErrorCode::Success;
         }
