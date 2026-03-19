@@ -313,7 +313,7 @@ namespace SPTAG::SPANN
         ErrorCode Merge(const SizeType key, const std::string& value,
                         const std::chrono::microseconds& timeout,
                         std::vector<Helper::AsyncReadRequest>* reqs,
-                        std::function<bool(const void* val, const int size)> checksum) override
+                        int& size) override
         {
             if (value.empty()) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::Merge: empty append posting!\n");
@@ -324,11 +324,13 @@ namespace SPTAG::SPANN
             auto ret = Get(key, &existingValue, timeout, reqs);
             if (ret != ErrorCode::Success) {
                 // Key doesn't exist yet, just put the new value.
+                size = static_cast<int>(value.size());
                 return Put(key, value, timeout, reqs);
             }
 
             // Append the new value to existing
             existingValue.append(value);
+            size = static_cast<int>(existingValue.size());
             return Put(key, existingValue, timeout, reqs);
         }
 
@@ -453,7 +455,7 @@ namespace SPTAG::SPANN
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "TiKVIO: ForceCompaction is a no-op (TiKV manages compaction internally)\n");
         }
 
-        ErrorCode Check(const SizeType key, int size, std::vector<std::uint8_t> *visited) override {
+        ErrorCode Check(const SizeType key, std::vector<std::uint8_t> *visited) override {
             // TiKV guarantees data integrity internally via Raft consensus.
             // Posting size checks are skipped since TiKV is shared mutable storage
             // and concurrent inserts/splits may update postings between size recording
