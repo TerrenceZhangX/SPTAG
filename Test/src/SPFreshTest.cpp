@@ -1940,6 +1940,12 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
         ssdOverrides["TiKVKeyPrefix"] = tikvKeyPrefix;
     }
 
+    // Pass through any [BuildSSDIndex] section params from the ini as overrides
+    auto buildSSDParams = iniReader.GetParameters("BuildSSDIndex");
+    for (const auto &[key, val] : buildSSDParams) {
+        ssdOverrides[key] = val;
+    }
+
     BOOST_TEST_MESSAGE("=== Benchmark Configuration ===");
     BOOST_TEST_MESSAGE("Vector Path: " << vectorPath);
     BOOST_TEST_MESSAGE("Query Path: " << queryPath);
