@@ -829,7 +829,10 @@ namespace SPTAG::SPANN {
                             return ErrorCode::DiskIOFail;
                         }
                     }
-                    *postingSize = ((int64_t)(value.size()) | checksum);
+                    int64_t oldSize = *postingSize, newValue = ((int64_t)(value.size()) | checksum);
+                    while (InterlockedCompareExchange(postingSize, newValue, oldSize) != oldSize) {
+                        oldSize = *postingSize;
+                    }
                     lock->unlock();
                     return ErrorCode::Success;
                 }
@@ -1013,7 +1016,10 @@ namespace SPTAG::SPANN {
                     if (lock) lock->unlock();
                     return ErrorCode::DiskIOFail;
                 }
-                *postingSize = (newSize | (((int64_t)checksum) << 32));
+                int64_t oldSize = *postingSize, newValue = (newSize | (((int64_t)checksum) << 32));
+                while (InterlockedCompareExchange(postingSize, newValue, oldSize) != oldSize) {
+                    oldSize = *postingSize;
+                }
                 if (lock) lock->unlock();
                 size = (int)newSize;
                 return ErrorCode::Success;
@@ -1082,7 +1088,12 @@ namespace SPTAG::SPANN {
                     if (lock) lock->unlock();
                     return ErrorCode::DiskIOFail;
                 }
-                *postingSize = (newSize | (((int64_t)checksum)<< 32));
+                
+                //*postingSize = (newSize | (((int64_t)checksum)<< 32));
+                int64_t oldSize = *postingSize, newValue = (newSize | (((int64_t)checksum)<< 32));
+                while (InterlockedCompareExchange(postingSize, newValue, oldSize) != oldSize) {
+                    oldSize = *postingSize;
+                }
             }
             if (lock) lock->unlock();
             size = (int)newSize;

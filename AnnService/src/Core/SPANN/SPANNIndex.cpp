@@ -12,6 +12,16 @@
 #include "inc/Core/ResultIterator.h"
 #include "inc/Core/SPANN/SPANNResultIterator.h"
 
+#ifdef SPDK
+#include "ExtraSPDKController.h"
+#endif
+
+#ifdef ROCKSDB
+#include "ExtraRocksDBController.h"
+// enable rocksdb io_uring
+extern "C" bool RocksDbIOUringEnable() { return true; }
+#endif
+
 namespace SPTAG
 {
 template <typename T> thread_local std::unique_ptr<T> COMMON::ThreadLocalWorkSpaceFactory<T>::m_workspace;
@@ -110,6 +120,7 @@ template <typename T> ErrorCode Index<T>::LoadIndexDataFromMemory(const std::vec
         m_topGlobalToLocalID[globalID] = i;
     }
 
+    PrepareDB(m_db);
     m_extraSearchers.resize(m_options.m_layers);
     for (int i = m_options.m_layers - 1; i >= 0; i--) {
         if (m_options.m_storage == Storage::STATIC)
@@ -118,7 +129,7 @@ template <typename T> ErrorCode Index<T>::LoadIndexDataFromMemory(const std::vec
         }
         else
         {
-            m_extraSearchers[i] = std::make_shared<ExtraDynamicSearcher<T>>(m_options, i, this);
+            m_extraSearchers[i] = std::make_shared<ExtraDynamicSearcher<T>>(m_options, i, this, m_db);
         }
 
         if (!m_extraSearchers[i]->LoadIndex(m_options))
@@ -177,6 +188,7 @@ ErrorCode Index<T>::LoadIndexData(const std::vector<std::shared_ptr<Helper::Disk
         SizeType globalID = *(m_topLocalToGlobalID[i]);
         m_topGlobalToLocalID[globalID] = i;
     }
+    PrepareDB(m_db);
     m_extraSearchers.resize(m_options.m_layers);
     for (int i = m_options.m_layers - 1; i >= 0; i--) {
         if (m_options.m_storage == Storage::STATIC)
@@ -185,7 +197,7 @@ ErrorCode Index<T>::LoadIndexData(const std::vector<std::shared_ptr<Helper::Disk
         }
         else
         {
-            m_extraSearchers[i] = std::make_shared<ExtraDynamicSearcher<T>>(m_options, i, this);
+            m_extraSearchers[i] = std::make_shared<ExtraDynamicSearcher<T>>(m_options, i, this, m_db);
         }
 
         if (m_options.m_storage != Storage::STATIC && !m_extraSearchers[i]->Available())
@@ -996,7 +1008,7 @@ bool Index<T>::SelectHeadInternal(std::shared_ptr<Helper::VectorSetReader> &p_re
     return true;
 }
 
-template <typename T> ErrorCode Index<T>::BuildIndexInternal(std::shared_ptr<Helper::VectorSetReader> &p_reader)
+template <typename T> ErrorCode Index<T>::BuildIndexInternalLayer(std::shared_ptr<Helper::VectorSetReader> &p_reader)
 {
     COMMON::Dataset<SizeType> localToGlobalID;
     {
@@ -1012,14 +1024,7 @@ template <typename T> ErrorCode Index<T>::BuildIndexInternal(std::shared_ptr<Hel
             localToGlobalID.Load(ptr, m_topIndex->m_iDataBlockSize, m_topIndex->m_iDataCapacity);
         }
     }
-    if (!(m_options.m_indexDirectory.empty()) && !(direxists(m_options.m_indexDirectory.c_str())))
-    {
-        mkdir(m_options.m_indexDirectory.c_str());
-    }
-    if (!(m_options.m_persistentBufferPath.empty()) && !(direxists(m_options.m_persistentBufferPath.c_str())))
-    {
-        mkdir(m_options.m_persistentBufferPath.c_str());
-    }
+
     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Begin Select Head...\n");
     auto t1 = std::chrono::high_resolution_clock::now();
     if (m_options.m_selectHead)
@@ -1122,7 +1127,7 @@ template <typename T> ErrorCode Index<T>::BuildIndexInternal(std::shared_ptr<Hel
         }
         else
         {
-            m_extraSearchers.emplace_back(std::make_shared<ExtraDynamicSearcher<T>>(m_options, m_extraSearchers.size(), this));
+            m_extraSearchers.emplace_back(std::make_shared<ExtraDynamicSearcher<T>>(m_options, m_extraSearchers.size(), this, m_db));
         }
 
         {
@@ -1178,6 +1183,60 @@ template <typename T> ErrorCode Index<T>::BuildIndexInternal(std::shared_ptr<Hel
 
     return ErrorCode::Success;
 }
+
+template <typename T> ErrorCode Index<T>::BuildIndexInternal(std::shared_ptr<Helper::VectorSetReader> &vectorReader, std::shared_ptr<Helper::ReaderOptions> &vectorOptions)
+{
+    if (!(m_options.m_indexDirectory.empty()) && !(direxists(m_options.m_indexDirectory.c_str())))
+    {
+        mkdir(m_options.m_indexDirectory.c_str());
+    }
+    if (!(m_options.m_persistentBufferPath.empty()) && !(direxists(m_options.m_persistentBufferPath.c_str())))
+    {
+        mkdir(m_options.m_persistentBufferPath.c_str());
+    }
+
+    if (m_db == nullptr) PrepareDB(m_db);
+
+    auto ret = BuildIndexInternalLayer(vectorReader);
+    if (ret != ErrorCode::Success)
+    {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to build index layer 0.\n");
+        return ret;
+    }
+    for (int layer = 1; layer < m_options.m_layers; layer++)
+    {
+        std::string vectorPath = m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile;
+        if (rename(vectorPath.c_str(), (vectorPath + "_tmp").c_str()) != 0) {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to rename vector file to %s\n", (vectorPath + "_tmp").c_str());
+        }
+        vectorReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
+        if (ErrorCode::Success != vectorReader->LoadFile(vectorPath + "_tmp"))
+        {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to read headvector file for layer %d.\n", layer);
+            return ErrorCode::Fail;
+        }
+        auto ret = BuildIndexInternalLayer(vectorReader);
+        if (ret != ErrorCode::Success)
+        {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to build index layer %d.\n", layer);
+            return ret; 
+        }
+        if (remove((vectorPath + "_tmp").c_str()) != 0) {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to delete vector file: %s\n", (vectorPath + "_tmp").c_str());
+        }
+    }
+    if (fileexists((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str())) 
+    {
+        if (remove((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str()) != 0)
+        {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to delete head vector file: %s\n",
+                         (m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str());
+        }
+    }
+    m_bReady = true;
+    return ErrorCode::Success;
+}
+
 template <typename T> ErrorCode Index<T>::BuildIndex(bool p_normalized)
 {
     SPTAG::VectorValueType valueType = m_pQuantizer ? SPTAG::VectorValueType::UInt8 : m_options.m_valueType;
@@ -1199,44 +1258,8 @@ template <typename T> ErrorCode Index<T>::BuildIndex(bool p_normalized)
         }
         m_options.m_vectorSize = vectorReader->GetVectorSet()->Count();
     }
-    auto ret = BuildIndexInternal(vectorReader);
-    if (ret != ErrorCode::Success)
-    {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to build index layer 0.\n");
-        return ret;
-    }
-    for (int layer = 1; layer < m_options.m_layers; layer++)
-    {
-        std::string vectorPath = m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile;
-        if (rename(vectorPath.c_str(), (vectorPath + "_tmp").c_str()) != 0) {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to rename vector file to %s\n", (vectorPath + "_tmp").c_str());
-        }
-        vectorReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
-        if (ErrorCode::Success != vectorReader->LoadFile(vectorPath + "_tmp"))
-        {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to read headvector file for layer %d.\n", layer);
-            return ErrorCode::Fail;
-        }
-        auto ret = BuildIndexInternal(vectorReader);
-        if (ret != ErrorCode::Success)
-        {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to build index layer %d.\n", layer);
-            return ret; 
-        }
-        if (remove((vectorPath + "_tmp").c_str()) != 0) {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to delete vector file: %s\n", (vectorPath + "_tmp").c_str());
-        }
-    }
-    if (fileexists((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str())) 
-    {
-        if (remove((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str()) != 0)
-        {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to delete head vector file: %s\n",
-                         (m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str());
-        }
-    }
-    m_bReady = true;
-    return ret;
+
+    return BuildIndexInternal(vectorReader, vectorOptions);
 }
 
 template <typename T>
@@ -1276,44 +1299,8 @@ ErrorCode Index<T>::BuildIndex(const void *p_data, SizeType p_vectorNum, Dimensi
     m_options.m_valueType = GetEnumValueType<T>();
     m_options.m_dim = p_dimension;
     m_options.m_vectorSize = p_vectorNum;
-    auto ret = BuildIndexInternal(vectorReader);
-    if (ret != ErrorCode::Success)
-    {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to build index layer 0.\n");
-        return ret;
-    }
-    for (int layer = 1; layer < m_options.m_layers; layer++)
-    {
-        std::string vectorPath = m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile;
-        if (rename(vectorPath.c_str(), (vectorPath + "_tmp").c_str()) != 0) {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to rename vector file to %s\n", (vectorPath + "_tmp").c_str());
-        }
-        vectorReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
-        if (ErrorCode::Success != vectorReader->LoadFile(vectorPath + "_tmp"))
-        {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to read headvector file for layer %d.\n", layer);
-            return ErrorCode::Fail;
-        }
-        auto ret = BuildIndexInternal(vectorReader);
-        if (ret != ErrorCode::Success)
-        {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to build index layer %d.\n", layer);
-            return ret; 
-        }
-        if (remove((vectorPath + "_tmp").c_str()) != 0) {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to delete vector file: %s\n", (vectorPath + "_tmp").c_str());
-        }
-    }
-    if (fileexists((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str())) 
-    {
-        if (remove((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str()) != 0)
-        {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to delete head vector file: %s\n",
-                         (m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str());
-        }
-    }
-    m_bReady = true;
-    return ret;
+
+    return BuildIndexInternal(vectorReader, vectorOptions);
 }
 
 template <typename T> ErrorCode Index<T>::UpdateIndex()
@@ -1656,6 +1643,36 @@ template <typename T> ErrorCode Index<T>::DeleteIndex(const void *p_vectors, Siz
         }
     }
     return ErrorCode::Success;
+}
+
+template <typename T> void Index<T>::PrepareDB(std::shared_ptr<Helper::KeyValueIO>& db, int layer)
+{
+    if (!m_options.m_shareDB) return;
+
+    if(m_options.m_storage == Storage::FILEIO) {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPANNIndex:UseFileIO\n");
+        db.reset(new FileIO(m_options, layer));
+    }
+    else if (m_options.m_storage == Storage::SPDKIO) {
+#ifdef SPDK
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPANNIndex:UseSPDK\n");
+        db.reset(new SPDKIO(m_options));
+#else
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "SPANNIndex:SPDK unsupport! Use -DSPDK to enable SPDK when doing cmake.\n");
+        return;
+#endif
+    } 
+    else if (m_options.m_storage == Storage::ROCKSDBIO) {
+#ifdef ROCKSDB
+        std::string indexDir = (m_options.m_recovery)? m_options.m_persistentBufferPath + FolderSep: m_options.m_indexDirectory + FolderSep;
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPANNIndex:UseKV\n");
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPANNIndex:dbPath:%s\n", (indexDir + m_options.m_KVFile + "_" + std::to_string(layer)).c_str());
+        db.reset(new RocksDBIO((indexDir + m_options.m_KVFile + "_" + std::to_string(layer)).c_str(), m_options.m_useDirectIO, m_options.m_enableWAL, m_options.m_recovery));
+#else
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "SPANNIndex:RocksDB unsupport! Use -DROCKSDB to enable RocksDB when doing cmake.\n");
+        return;
+#endif
+    }
 }
 } // namespace SPANN
 } // namespace SPTAG

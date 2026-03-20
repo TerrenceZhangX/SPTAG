@@ -18,6 +18,7 @@
 #include "inc/Core/Common/PostingSizeRecord.h"
 
 #include "inc/Core/Common/LabelSet.h"
+#include "inc/Helper/KeyValueIO.h"
 #include "inc/Helper/SimpleIniReader.h"
 #include "inc/Helper/StringConvert.h"
 #include "inc/Helper/ThreadPool.h"
@@ -58,6 +59,7 @@ namespace SPTAG
             std::shared_timed_mutex m_topLocalToGlobalIDLock;
             std::unordered_map<std::string, std::string> m_topParameters;
 
+            std::shared_ptr<Helper::KeyValueIO> m_db;
             std::vector<std::shared_ptr<IExtraSearcher>> m_extraSearchers;
             std::unique_ptr<SPTAG::COMMON::IWorkSpaceFactory<ExtraWorkSpace>> m_workSpaceFactory;
 
@@ -275,9 +277,13 @@ namespace SPTAG
             template <typename InternalDataType>
             bool SelectHeadInternal(std::shared_ptr<Helper::VectorSetReader>& p_reader);
 
-            ErrorCode BuildIndexInternal(std::shared_ptr<Helper::VectorSetReader>& p_reader);
+            ErrorCode BuildIndexInternalLayer(std::shared_ptr<Helper::VectorSetReader>& p_reader);
+
+            ErrorCode BuildIndexInternal(std::shared_ptr<Helper::VectorSetReader>& p_reader, std::shared_ptr<Helper::ReaderOptions> &vectorOptions);
 
         public:
+            void PrepareDB(std::shared_ptr<Helper::KeyValueIO>& db, int layer = 0);
+            
             bool AllFinished() { 
                 if (m_options.m_storage != Storage::STATIC) {
                     for (auto& searcher : m_extraSearchers) {
