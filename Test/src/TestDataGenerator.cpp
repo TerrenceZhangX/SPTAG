@@ -1,5 +1,7 @@
 #include "inc/TestDataGenerator.h"
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 
@@ -82,18 +84,27 @@ std::shared_ptr<SPTAG::MetadataSet> TestDataGenerator<T>::LoadMetadataSet(const 
 template<typename T>
 void TestDataGenerator<T>::GenerateVectorSet(std::string & pvecset, std::string & pmetaset, std::string & pmetaidx, std::string& pvecPath, SPTAG::SizeType start, int count)
 {
+    const char *batchEnv = std::getenv("VECTOR_BATCH_THRESHOLD");
+    SizeType batchSize = min((SizeType)count, (SizeType)(batchEnv ? std::atoi(batchEnv) : 100 * 1000 * 1000));
+
     if (!fileexists(pvecset.c_str()))
     {
         std::shared_ptr<SPTAG::VectorSet> vecset;
         if (m_isRandom)
         {
             vecset = GenerateRandomVectorSet(count, m_m);
+            vecset->Save(pvecset);
         }
         else
         {
-            vecset = GenerateLoadVectorSet(count, m_m, pvecPath, start);
+            for (SizeType offset = 0; offset < count; offset += batchSize)
+            {
+                SizeType batchCount = min(batchSize, (SizeType)count - offset);
+                vecset = GenerateLoadVectorSet(batchCount, m_m, pvecPath, start + offset);
+                offset == 0 ? vecset->Save(pvecset) : vecset->AppendSave(pvecset);
+            }
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Load %d vectors start from %d\n", count, start);
         }
-        vecset->Save(pvecset);
     }
 
     if (pmetaset.empty() || pmetaidx.empty())
@@ -101,8 +112,29 @@ void TestDataGenerator<T>::GenerateVectorSet(std::string & pvecset, std::string 
 
     if (!fileexists(pmetaset.c_str()) || !fileexists(pmetaidx.c_str()))
     {
-        auto metaset = GenerateMetadataSet(count, start);
-        metaset->SaveMetadata(pmetaset, pmetaidx);
+        std::ofstream metaOut(pmetaset, std::ios::binary);
+        std::ofstream idxOut(pmetaidx, std::ios::binary);
+        SizeType totalCount = count;
+        idxOut.write(reinterpret_cast<const char *>(&totalCount), sizeof(SizeType));
+
+        std::uint64_t runningOffset = 0;
+        for (SizeType batchStart = 0; batchStart < count; batchStart += batchSize)
+        {
+            SizeType batchCount = min(batchSize, (SizeType)count - batchStart);
+            std::string metaBuf;
+            std::vector<std::uint64_t> offsetBuf;
+            offsetBuf.reserve(batchCount);
+            for (SizeType i = 0; i < batchCount; i++)
+            {
+                offsetBuf.push_back(runningOffset);
+                std::string id = std::to_string(batchStart + i + start);
+                metaBuf.append(id);
+                runningOffset += id.length();
+            }
+            idxOut.write(reinterpret_cast<const char *>(offsetBuf.data()), offsetBuf.size() * sizeof(std::uint64_t));
+            metaOut.write(metaBuf.data(), metaBuf.size());
+        }
+        idxOut.write(reinterpret_cast<const char *>(&runningOffset), sizeof(std::uint64_t));
     }
 }
 
@@ -113,20 +145,27 @@ void TestDataGenerator<T>::GenerateBatchTruth(const std::string &filename, std::
     if (fileexists(filename.c_str()))
         return;
 
-    auto vecset = LoadVectorSet(pvecset, m_m);
     auto queryset = LoadVectorSet(pqueryset, m_m);
-    auto addset = LoadVectorSet(paddset, m_m);
 
+    // Read vecset and addset counts from file headers without loading data
+    SizeType vecsetCount = 0, addsetCount = 0;
+    {
+        std::ifstream f(pvecset, std::ios::binary);
+        f.read(reinterpret_cast<char *>(&vecsetCount), sizeof(SizeType));
+    }
+    {
+        std::ifstream f(paddset, std::ios::binary);
+        f.read(reinterpret_cast<char *>(&addsetCount), sizeof(SizeType));
+    }
 
     DistCalcMethod distMethod;
     Helper::Convert::ConvertStringTo(m_distMethod.c_str(), distMethod);
-    if (normalize && distMethod == DistCalcMethod::Cosine)
-    {
-        COMMON::Utils::BatchNormalize((T *)vecset->GetData(), vecset->Count(), vecset->Dimension(),
-                                      COMMON::Utils::GetBase<T>(), 5);
-        COMMON::Utils::BatchNormalize((T *)addset->GetData(), addset->Count(), addset->Dimension(),
-                                      COMMON::Utils::GetBase<T>(), 5);
-    }
+    bool needNormalize = normalize && distMethod == DistCalcMethod::Cosine;
+
+    // Determine round size from env or default 100GB
+    const char *threshEnv = std::getenv("CAL_TRUTH_MEM_LIMIT");
+    size_t sizeThreshold = threshEnv ? (size_t)std::atoll(threshEnv) : (size_t)100 * 1024 * 1024 * 1024;
+    SizeType vecsPerRound = (SizeType)(sizeThreshold / ((size_t)m_m * sizeof(T)));
 
     ByteArray tru = ByteArray::Alloc((sizeof(float) + sizeof(SizeType)) * (batches + 1) * queryset->Count() * m_k);
     int distbase = sizeof(SizeType) * (batches + 1) * queryset->Count() * m_k;
@@ -134,109 +173,73 @@ void TestDataGenerator<T>::GenerateBatchTruth(const std::string &filename, std::
     int end = base;
     int maxthreads = std::thread::hardware_concurrency();
 
-    size_t totalVecSize = (size_t)m_m * sizeof(T) * (vecset->Count() + addset->Count());
-    const size_t sizeThreshold = (size_t)100 * 1024 * 1024 * 1024; // 100GB
-    bool needSplitRounds = totalVecSize > sizeThreshold;
-    SizeType vecsPerRound = needSplitRounds ? (SizeType)(sizeThreshold / ((size_t)m_m * sizeof(T))) : 0;
-
     for (int iter = 0; iter < batches + 1; iter++)
     {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Generating groundtruth for batch %d\n", iter);
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Generating groundtruth for batch %d, range [%d, %d)\n", iter, start, end);
 
-        if (needSplitRounds) {
-            SizeType rangeSize = end - start;
-            SizeType numRounds = (rangeSize + vecsPerRound - 1) / vecsPerRound;
+        SizeType rangeSize = end - start;
+        SizeType numRounds = (rangeSize + vecsPerRound - 1) / vecsPerRound;
 
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Large vecset detected (%zu bytes), splitting into %d rounds\n",
-                         totalVecSize, (int)numRounds);
+        // Initialize per-query result sets that accumulate across rounds
+        std::vector<COMMON::QueryResultSet<T>> results;
+        results.reserve(queryset->Count());
+        for (SizeType i = 0; i < queryset->Count(); i++)
+            results.emplace_back((const T *)queryset->GetVector(i), m_k);
 
-            // Initialize per-query result sets that accumulate across rounds
-            std::vector<COMMON::QueryResultSet<T>> results;
-            results.reserve(queryset->Count());
-            for (SizeType i = 0; i < queryset->Count(); i++) {
-                results.emplace_back((const T *)queryset->GetVector(i), m_k);
+        for (SizeType round = 0; round < numRounds; round++)
+        {
+            SizeType roundStart = start + round * vecsPerRound;
+            SizeType roundEnd = min(roundStart + vecsPerRound, (SizeType)end);
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "  Round %d/%d: vectors [%d, %d)\n",
+                         (int)(round + 1), (int)numRounds, (int)roundStart, (int)roundEnd);
+
+            // Load only the chunk needed for this round
+            // Determine overlap with vecset [0, vecsetCount) and addset [vecsetCount, totalCount)
+            std::shared_ptr<VectorSet> roundVecset, roundAddset;
+            SizeType vecStart = 0, vecEnd = 0, addStart = 0, addEnd = 0;
+
+            if (roundStart < vecsetCount)
+            {
+                vecStart = roundStart;
+                vecEnd = min((SizeType)roundEnd, vecsetCount);
+                roundVecset = LoadVectorSet(pvecset, m_m, vecStart, vecEnd - vecStart);
+                if (needNormalize)
+                    COMMON::Utils::BatchNormalize((T *)roundVecset->GetData(), roundVecset->Count(),
+                                                  roundVecset->Dimension(), COMMON::Utils::GetBase<T>(), 5);
+            }
+            if (roundEnd > vecsetCount)
+            {
+                addStart = (roundStart > vecsetCount) ? roundStart - vecsetCount : 0;
+                addEnd = roundEnd - vecsetCount;
+                roundAddset = LoadVectorSet(paddset, m_m, addStart, addEnd - addStart);
+                if (needNormalize)
+                    COMMON::Utils::BatchNormalize((T *)roundAddset->GetData(), roundAddset->Count(),
+                                                  roundAddset->Dimension(), COMMON::Utils::GetBase<T>(), 5);
             }
 
-            for (SizeType round = 0; round < numRounds; round++) {
-                SizeType roundStart = start + round * vecsPerRound;
-                SizeType roundEnd = std::min(roundStart + vecsPerRound, (SizeType)end);
-
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "  Round %d/%d: vectors [%d, %d)\n",
-                             (int)(round + 1), (int)numRounds, (int)roundStart, (int)roundEnd);
-
-                std::vector<std::thread> mythreads;
-                mythreads.reserve(maxthreads);
-                std::atomic_size_t sent(0);
-                for (int tid = 0; tid < maxthreads; tid++) {
-                    mythreads.emplace_back([&]() {
-                        size_t i = 0;
-                        while (true) {
-                            i = sent.fetch_add(1);
-                            if (i < (size_t)queryset->Count()) {
-                                for (SizeType j = roundStart; j < roundEnd; ++j) {
-                                    float dist = MaxDist;
-                                    if (j < vecset->Count())
-                                        dist = COMMON::DistanceUtils::ComputeDistance(results[i].GetTarget(),
-                                            reinterpret_cast<T *>(vecset->GetVector(j)), m_m, distMethod);
-                                    else
-                                        dist = COMMON::DistanceUtils::ComputeDistance(results[i].GetTarget(),
-                                            reinterpret_cast<T *>(addset->GetVector(j - vecset->Count())), m_m, distMethod);
-                                    results[i].AddPoint(j, dist);
-                                }
-                            } else {
-                                return;
-                            }
-                        }
-                    });
-                }
-                for (auto &t : mythreads) {
-                    t.join();
-                }
-            }
-
-            // Sort and extract merged results for this batch
-            for (SizeType i = 0; i < queryset->Count(); i++) {
-                results[i].SortResult();
-                SizeType *neighbors = ((SizeType *)tru.Data()) + iter * (queryset->Count() * m_k) + i * m_k;
-                float *dists = ((float *)(tru.Data() + distbase)) + iter * (queryset->Count() * m_k) + i * m_k;
-                for (int j = 0; j < m_k; ++j) {
-                    neighbors[j] = results[i].GetResult(j)->VID;
-                    dists[j] = results[i].GetResult(j)->Dist;
-                }
-            }
-        } else {
             std::vector<std::thread> mythreads;
             mythreads.reserve(maxthreads);
             std::atomic_size_t sent(0);
             for (int tid = 0; tid < maxthreads; tid++)
             {
-                mythreads.emplace_back([&, tid]() {
+                mythreads.emplace_back([&]() {
                     size_t i = 0;
                     while (true)
                     {
                         i = sent.fetch_add(1);
-                        if (i < queryset->Count())
+                        if (i < (size_t)queryset->Count())
                         {
-                            SizeType *neighbors = ((SizeType *)tru.Data()) + iter * (queryset->Count() * m_k) + i * m_k;
-                            float *dists = ((float *)(tru.Data() + distbase)) + iter * (queryset->Count() * m_k) + i * m_k;
-                            COMMON::QueryResultSet<T> res((const T *)queryset->GetVector(i), m_k);
-                            for (SizeType j = start; j < end; ++j)
+                            for (SizeType j = roundStart; j < roundEnd; ++j)
                             {
                                 float dist = MaxDist;
-                                if (j < vecset->Count())
-                                    dist = COMMON::DistanceUtils::ComputeDistance(res.GetTarget(), 
-                                        reinterpret_cast<T *>(vecset->GetVector(j)), m_m, distMethod);
+                                if (j < vecsetCount)
+                                    dist = COMMON::DistanceUtils::ComputeDistance(results[i].GetTarget(),
+                                        reinterpret_cast<T *>(roundVecset->GetVector(j - vecStart)), m_m, distMethod);
                                 else
-                                    dist = COMMON::DistanceUtils::ComputeDistance(res.GetTarget(), 
-                                        reinterpret_cast<T *>(addset->GetVector(j - vecset->Count())), m_m, distMethod);
-
-                                res.AddPoint(j, dist);
-                            }
-                            res.SortResult();
-                            for (int j = 0; j < m_k; ++j)
-                            {
-                                neighbors[j] = res.GetResult(j)->VID;
-                                dists[j] = res.GetResult(j)->Dist;
+                                    dist = COMMON::DistanceUtils::ComputeDistance(results[i].GetTarget(),
+                                        reinterpret_cast<T *>(roundAddset->GetVector(j - vecsetCount - addStart)), m_m, distMethod);
+                                results[i].AddPoint(j, dist);
                             }
                         }
                         else
@@ -247,11 +250,22 @@ void TestDataGenerator<T>::GenerateBatchTruth(const std::string &filename, std::
                 });
             }
             for (auto &t : mythreads)
-            {
                 t.join();
-            }
-            mythreads.clear();
         }
+
+        // Sort and extract merged results for this batch
+        for (SizeType i = 0; i < queryset->Count(); i++)
+        {
+            results[i].SortResult();
+            SizeType *neighbors = ((SizeType *)tru.Data()) + iter * (queryset->Count() * m_k) + i * m_k;
+            float *dists = ((float *)(tru.Data() + distbase)) + iter * (queryset->Count() * m_k) + i * m_k;
+            for (int j = 0; j < m_k; ++j)
+            {
+                neighbors[j] = results[i].GetResult(j)->VID;
+                dists[j] = results[i].GetResult(j)->Dist;
+            }
+        }
+
         start += batchdelete;
         end += batchinsert;
     }
@@ -363,7 +377,6 @@ std::shared_ptr<SPTAG::VectorSet> TestDataGenerator<T>::GenerateLoadVectorSet(SP
         return GenerateRandomVectorSet(count, dim);
     }
 
-    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Load %d vectors start from %d\n", count, start);
     return allVectors;
 }
 
