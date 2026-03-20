@@ -151,7 +151,7 @@ namespace SPTAG::SPANN
         {
             std::string prefixedKey = MakePrefixedKey(key);
 
-            for (int attempt = 0; attempt < 3; attempt++) {
+            for (int attempt = 0; attempt < 10; attempt++) {
                 auto stub = GetStubForKey(prefixedKey);
                 if (!stub) return ErrorCode::Fail;
 
@@ -168,10 +168,12 @@ namespace SPTAG::SPANN
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::Get gRPC error (attempt %d): %s\n",
                                  attempt, status.error_message().c_str());
                     InvalidateRegionCache(prefixedKey);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
                     continue;
                 }
                 if (response.has_region_error()) {
                     InvalidateRegionCache(prefixedKey);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
                     continue;
                 }
                 if (!response.error().empty()) {
@@ -204,7 +206,7 @@ namespace SPTAG::SPANN
         {
             std::string prefixedKey = MakePrefixedKey(key);
 
-            for (int attempt = 0; attempt < 3; attempt++) {
+            for (int attempt = 0; attempt < 10; attempt++) {
                 auto stub = GetStubForKey(prefixedKey);
                 if (!stub) return ErrorCode::Fail;
 
@@ -222,10 +224,12 @@ namespace SPTAG::SPANN
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::Put gRPC error (attempt %d): %s\n",
                                  attempt, status.error_message().c_str());
                     InvalidateRegionCache(prefixedKey);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
                     continue;
                 }
                 if (response.has_region_error()) {
                     InvalidateRegionCache(prefixedKey);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
                     continue;
                 }
                 if (!response.error().empty()) {
@@ -690,7 +694,10 @@ namespace SPTAG::SPANN
                 return it->second.get();
             }
 
-            auto channel = grpc::CreateChannel(address, grpc::InsecureChannelCredentials());
+            grpc::ChannelArguments args;
+            args.SetMaxReceiveMessageSize(64 * 1024 * 1024); // 64MB
+            args.SetMaxSendMessageSize(64 * 1024 * 1024);    // 64MB
+            auto channel = grpc::CreateCustomChannel(address, grpc::InsecureChannelCredentials(), args);
             auto stub = tikvpb::Tikv::NewStub(channel);
             if (!stub) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO: Failed to create stub for %s\n", address.c_str());

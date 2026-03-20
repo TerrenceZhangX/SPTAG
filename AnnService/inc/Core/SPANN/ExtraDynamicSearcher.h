@@ -650,20 +650,20 @@ namespace SPTAG::SPANN {
                         if (m_rwLocks.hash_func(newHeadVID) != m_rwLocks.hash_func(headID))
                         {
                             int retry = 0;
-                            while (!anotherLock.try_lock() && retry < 3)
+                            while (!anotherLock.try_lock() && retry < 20)
                             {
                                 SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
                                              "Split: new head VID %lld is being locked. Wait for lock and do "
-                                             "merging after getting lock...\n",
-                                             (std::int64_t)(newHeadVID));
+                                             "merging after getting lock... (attempt %d)\n",
+                                             (std::int64_t)(newHeadVID), retry + 1);
                                 retry++;
-                                std::this_thread::sleep_for(std::chrono::milliseconds(3));
+                                std::this_thread::sleep_for(std::chrono::milliseconds(3 * retry));
                             }
                             if (!anotherLock.owns_lock())
                             {
                                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                                             "Split: new head VID %lld is being locked after 3 retries. Skip merging and return split failed...\n",
-                                             (std::int64_t)(newHeadVID));
+                                             "Split: new head VID %lld is being locked after %d retries. Skip merging and return split failed...\n",
+                                             (std::int64_t)(newHeadVID), retry);
                                 return ErrorCode::Fail;
                             }
                         }
@@ -2194,8 +2194,11 @@ namespace SPTAG::SPANN {
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
-            if (m_asyncStatus != ErrorCode::Success)
-                return m_asyncStatus;
+            if (m_asyncStatus != ErrorCode::Success) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "Checkpoint: resetting transient async error (code=%d) for layer %d\n",
+                             (int)m_asyncStatus, m_layer);
+                m_asyncStatus = ErrorCode::Success;
+            }
 
             std::string p_persistenMap = prefix + FolderSep + m_opt->m_deleteIDFile + "_" + std::to_string(m_layer);
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Saving version map\n");
