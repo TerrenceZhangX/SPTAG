@@ -217,5 +217,7 @@ DefineSSDParameter(m_headBatch, int, 32, "IterativeSearchHeadBatch") // Mutable
 
 // Multi layers
 DefineSSDParameter(m_layers, int, 1, "Layers")
+DefineSSDParameter(m_maxID, SizeType,  1000000000, "MaxID")
+DefineSSDParameter(m_shareDB, bool, true, "ShareDB")
 
 #endif

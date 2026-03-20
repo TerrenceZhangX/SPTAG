@@ -199,7 +199,9 @@ namespace SPTAG {
 
             // Multi layers
             int m_layers;
-            
+            SizeType m_maxID;
+            bool m_shareDB;
+
             Options() {
 #define DefineBasicParameter(VarName, VarType, DefaultValue, RepresentStr) \
                 VarName = DefaultValue; \
