@@ -23,7 +23,7 @@ extern "C" bool RocksDbIOUringEnable() { return true; }
 #endif
 
 #ifdef TIKV
-#include "ExtraTiKVController.h"
+#include "inc/Core/SPANN/ExtraTiKVController.h"
 #endif
 
 namespace SPTAG
@@ -1622,4 +1622,77 @@ template <typename T> ErrorCode Index<T>::DeleteIndex(const void *p_vectors, Siz
     {
         ByteArray arr = ByteArray::Alloc(sizeof(T) * p_vectorNum * p_dimension);
         memcpy(arr.Data(), p_vectors, sizeof(T) * p_vectorNum * p_dimension);
-   
+        vectorSet.reset(new BasicVectorSet(arr, GetEnumValueType<T>(), p_dimension, p_vectorNum));
+        int base = COMMON::Utils::GetBase<T>();
+        for (SizeType i = 0; i < p_vectorNum; i++)
+        {
+            COMMON::Utils::Normalize((T *)(vectorSet->GetVector(i)), p_dimension, base);
+        }
+    }
+    else
+    {
+        vectorSet.reset(new BasicVectorSet(ByteArray((std::uint8_t *)p_vectors, sizeof(T) * p_vectorNum * p_dimension, false),
+                                           GetEnumValueType<T>(), p_dimension, p_vectorNum));
+    }
+
+    for (int i = 0; i < p_vectorNum; i++) {
+        QueryResult queryResults(vectorSet->GetVector(i), 1, false);
+        SearchHeadIndex(queryResults, 0);
+        if (queryResults.GetResult(0)->Dist < Epsilon)
+        {
+            DeleteIndex(queryResults.GetResult(0)->VID);
+        }
+        else {
+            return ErrorCode::VectorNotFound;
+        }
+    }
+    return ErrorCode::Success;
+}
+
+template <typename T> void Index<T>::PrepareDB(std::shared_ptr<Helper::KeyValueIO>& db, int layer)
+{
+    if (!m_options.m_shareDB) return;
+
+    if(m_options.m_storage == Storage::FILEIO) {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPANNIndex:UseFileIO\n");
+        db.reset(new FileIO(m_options, layer));
+    }
+    else if (m_options.m_storage == Storage::SPDKIO) {
+#ifdef SPDK
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPANNIndex:UseSPDK\n");
+        db.reset(new SPDKIO(m_options));
+#else
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "SPANNIndex:SPDK unsupport! Use -DSPDK to enable SPDK when doing cmake.\n");
+        return;
+#endif
+    } 
+    else if (m_options.m_storage == Storage::ROCKSDBIO) {
+#ifdef ROCKSDB
+        std::string indexDir = (m_options.m_recovery)? m_options.m_persistentBufferPath + FolderSep: m_options.m_indexDirectory + FolderSep;
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPANNIndex:UseKV\n");
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPANNIndex:dbPath:%s\n", (indexDir + m_options.m_KVFile + "_" + std::to_string(layer)).c_str());
+        db.reset(new RocksDBIO((indexDir + m_options.m_KVFile + "_" + std::to_string(layer)).c_str(), m_options.m_useDirectIO, m_options.m_enableWAL, m_options.m_recovery));
+#else
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "SPANNIndex:RocksDB unsupport! Use -DROCKSDB to enable RocksDB when doing cmake.\n");
+        return;
+#endif
+    }
+    else if (m_options.m_storage == Storage::TIKVIO) {
+#ifdef TIKV
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPANNIndex:UseTiKV\n");
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPANNIndex:PD addresses:%s, prefix:%s\n",
+                     m_options.m_tikvPDAddresses.c_str(), m_options.m_tikvKeyPrefix.c_str());
+        db.reset(new TiKVIO(m_options.m_tikvPDAddresses, m_options.m_tikvKeyPrefix));
+#else
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "SPANNIndex:TiKV unsupport! Use -DTIKV to enable TiKV when doing cmake.\n");
+        return;
+#endif
+    }
+}
+} // namespace SPANN
+} // namespace SPTAG
+
+#define DefineVectorValueType(Name, Type) template class SPTAG::SPANN::Index<Type>;
+
+#include "inc/Core/DefinitionList.h"
+#undef DefineVectorValueType

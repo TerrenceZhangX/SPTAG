@@ -223,7 +223,8 @@ std::shared_ptr<VectorIndex> BuildIndex(const std::string &outDirectory, std::sh
 template <typename T>
 std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, std::string &pvecset,
                                         std::string& pmetaset, std::string& pmetaidx, const std::string &distMethod = "L2",
-                                        int searchthread = 2, int insertthread = 2, std::shared_ptr<COMMON::IQuantizer> quantizer = nullptr, std::string quantizerFilePath = "quantizer.bin",
+                                        int searchthread = 2, int insertthread = 2, int layers = 1,
+                                        std::shared_ptr<COMMON::IQuantizer> quantizer = nullptr, std::string quantizerFilePath = "quantizer.bin",
                                         const std::map<std::string, std::string>& ssdOverrides = {})
 {
     auto vecIndex = VectorIndex::CreateInstance(IndexAlgoType::SPANN, GetEnumValueType<T>());
@@ -293,7 +294,7 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
             DeletePercentageForRefine=0.4
             AsyncAppendQueueSize=0
             AllowZeroReplica=false
-	        Layers=2
+            Layers=)" + std::to_string(layers) + R"(
         )";
 
     std::shared_ptr<Helper::DiskIO> buffer(new Helper::SimpleBufferIO());
@@ -573,7 +574,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                   DistCalcMethod distMethod, const std::string &indexPath, int dimension, int baseVectorCount,
                   int insertVectorCount, int deleteVectorCount, int batches, int topK, int numThreads, int numQueries,
                   const std::string &outputFile = "output.json", const bool rebuild = true, const int resume = -1,
-                  const std::string &quantizerFilePath = std::string(""), int quantizedDim = 0,
+                  const std::string &quantizerFilePath = std::string(""), int quantizedDim = 0, int layers = 1,
                   const std::map<std::string, std::string>& ssdOverrides = {})
 {
     int oldM = M, oldK = K, oldN = N, oldQueries = queries;
@@ -631,6 +632,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     jsonFile << "    \"topK\": " << topK << ",\n";
     jsonFile << "    \"numQueries\": " << numQueries << ",\n";
     jsonFile << "    \"numThreads\": " << numThreads << ",\n";
+    jsonFile << "    \"layers\": " << layers << ",\n";
     jsonFile << "    \"DistMethod\": \"" << Helper::Convert::ConvertToString(distMethod) << "\"\n";
     jsonFile << "  },\n";
     jsonFile << "  \"results\": {\n";
@@ -667,13 +669,13 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                 quantizedBase->Save(pquanvecset);
             }
 
-            index = BuildLargeIndex<uint8_t>(indexPath, pquanvecset, pmeta, pmetaidx, dist, numThreads, numThreads, quantizer, "quantizer.bin", ssdOverrides);
+            index = BuildLargeIndex<uint8_t>(indexPath, pquanvecset, pmeta, pmetaidx, dist, numThreads, numThreads, layers, quantizer, "quantizer.bin", ssdOverrides);
             BOOST_REQUIRE(index != nullptr);
             index->SetQuantizerADC(true);
         }
         else
         {
-            index = BuildLargeIndex<T>(indexPath, pvecset, pmeta, pmetaidx, dist, numThreads, numThreads, nullptr, "quantizer.bin", ssdOverrides);
+            index = BuildLargeIndex<T>(indexPath, pvecset, pmeta, pmetaidx, dist, numThreads, numThreads, layers, nullptr, "quantizer.bin", ssdOverrides);
             BOOST_REQUIRE(index != nullptr);
         }
 
@@ -1921,6 +1923,7 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     int topK = iniReader.GetParameter("Benchmark", "TopK", 10);
     int numThreads = iniReader.GetParameter("Benchmark", "NumThreads", 32);
     int numQueries = iniReader.GetParameter("Benchmark", "NumQueries", 1000);
+    int layers = iniReader.GetParameter("Benchmark", "Layers", 1);
     DistCalcMethod distMethod = iniReader.GetParameter("Benchmark", "DistMethod", DistCalcMethod::L2);
     bool rebuild = iniReader.GetParameter("Benchmark", "Rebuild", true);
     int resume = iniReader.GetParameter("Benchmark", "Resume", -1);
@@ -1956,6 +1959,7 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     BOOST_TEST_MESSAGE("Top-K: " << topK);
     BOOST_TEST_MESSAGE("Threads: " << numThreads);
     BOOST_TEST_MESSAGE("Queries: " << numQueries);
+    BOOST_TEST_MESSAGE("Layers: " << layers);
     BOOST_TEST_MESSAGE("DistMethod: " << Helper::Convert::ConvertToString(distMethod));
     if (!quantizerFilePath.empty())
     {
@@ -1973,19 +1977,19 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     {
         RunBenchmark<float>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                     insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries, outputFile, 
-                    rebuild, resume, quantizerFilePath, quantizedDim, ssdOverrides);
+                    rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides);
     }
     else if (valueType == VectorValueType::Int8)
     {
         RunBenchmark<std::int8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                       insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries,
-                      outputFile, rebuild, resume, quantizerFilePath, quantizedDim, ssdOverrides);
+                      outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides);
     }
     else if (valueType == VectorValueType::UInt8)
     {
         RunBenchmark<std::uint8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                        insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries,
-                       outputFile, rebuild, resume, quantizerFilePath, quantizedDim, ssdOverrides);
+                       outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides);
     }
 
     //std::filesystem::remove_all(indexPath);
