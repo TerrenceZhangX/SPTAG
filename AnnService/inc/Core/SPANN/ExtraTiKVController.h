@@ -340,6 +340,8 @@ namespace SPTAG::SPANN
 
         // ---- MultiGet operations ----
         // Use individual Get calls since keys may span multiple TiKV regions.
+        // Tolerate individual key not-found: set empty buffer for missing keys
+        // (e.g., postings deleted by splits in multi-layer SPANN).
 
         ErrorCode MultiGet(const std::vector<SizeType>& keys,
                            std::vector<Helper::PageBuffer<std::uint8_t>>& values,
@@ -349,9 +351,10 @@ namespace SPTAG::SPANN
             for (size_t i = 0; i < keys.size(); i++) {
                 std::string val;
                 auto ret = Get(keys[i], &val, timeout, reqs);
-                if (ret != ErrorCode::Success || val.empty()) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::MultiGet key not found: %d\n", keys[i]);
-                    return ErrorCode::Fail;
+                if (ret != ErrorCode::Success) {
+                    // Key might have been deleted by a split — set empty buffer and continue.
+                    values[i].SetAvailableSize(0);
+                    continue;
                 }
                 // Resize buffer if the value is larger than pre-allocated capacity
                 if (val.size() > values[i].GetPageSize()) {
@@ -372,8 +375,8 @@ namespace SPTAG::SPANN
                 std::string val;
                 auto ret = Get(keys[i], &val, timeout, reqs);
                 if (ret != ErrorCode::Success) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::MultiGet key not found\n");
-                    return ErrorCode::Fail;
+                    values->push_back(std::string());
+                    continue;
                 }
                 values->push_back(std::move(val));
             }
@@ -389,8 +392,8 @@ namespace SPTAG::SPANN
                 std::string val;
                 auto ret = Get(keys[i], &val, timeout, reqs);
                 if (ret != ErrorCode::Success) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::MultiGet key not found: %d\n", keys[i]);
-                    return ErrorCode::Fail;
+                    values->push_back(std::string());
+                    continue;
                 }
                 values->push_back(std::move(val));
             }
