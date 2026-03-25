@@ -339,7 +339,7 @@ namespace SPTAG::SPANN
         }
 
         // ---- MultiGet operations ----
-        // Use individual Get calls since keys may span multiple TiKV regions.
+        // Use RawBatchGet grouped by region for efficient batched reads.
         // Tolerate individual key not-found: set empty buffer for missing keys
         // (e.g., postings deleted by splits in multi-layer SPANN).
 
@@ -348,21 +348,98 @@ namespace SPTAG::SPANN
                            const std::chrono::microseconds& timeout,
                            std::vector<Helper::AsyncReadRequest>* reqs) override
         {
+            if (keys.empty()) return ErrorCode::Success;
+
+            // Build prefixed keys and initialize all values as empty
+            std::vector<std::string> prefixedKeys(keys.size());
             for (size_t i = 0; i < keys.size(); i++) {
-                std::string val;
-                auto ret = Get(keys[i], &val, timeout, reqs);
-                if (ret != ErrorCode::Success) {
-                    // Key might have been deleted by a split — set empty buffer and continue.
-                    values[i].SetAvailableSize(0);
-                    continue;
-                }
-                // Resize buffer if the value is larger than pre-allocated capacity
-                if (val.size() > values[i].GetPageSize()) {
-                    values[i].ReservePageBuffer(val.size());
-                }
-                memcpy(values[i].GetBuffer(), val.data(), val.size());
-                values[i].SetAvailableSize(static_cast<int>(val.size()));
+                std::string k(reinterpret_cast<const char*>(&keys[i]), sizeof(SizeType));
+                prefixedKeys[i] = MakePrefixedKey(k);
+                values[i].SetAvailableSize(0);
             }
+
+            // Group keys by region
+            // Map: region leader address -> vector of (original_index, prefixed_key)
+            std::unordered_map<std::string, std::vector<std::pair<size_t, std::string>>> regionGroups;
+            for (size_t i = 0; i < prefixedKeys.size(); i++) {
+                RegionInfo region;
+                std::string addr;
+                if (FindRegionForKey(prefixedKeys[i], region) && !region.leaderAddr.empty()) {
+                    addr = region.leaderAddr;
+                } else {
+                    addr = GetAnyStoreAddress();
+                }
+                regionGroups[addr].push_back({i, prefixedKeys[i]});
+            }
+
+            // Send RawBatchGet per region group (in parallel via futures)
+            std::vector<std::future<void>> futures;
+            std::mutex resultMutex;
+
+            for (auto& [addr, group] : regionGroups) {
+                futures.push_back(std::async(std::launch::async, [&, addr, &group]() {
+                    auto* stub = GetOrCreateStub(addr);
+                    if (!stub) return;
+
+                    kvrpcpb::RawBatchGetRequest request;
+                    SetContext(request.mutable_context(), group[0].second);
+                    for (auto& [idx, pkey] : group) {
+                        request.add_keys(pkey);
+                    }
+
+                    kvrpcpb::RawBatchGetResponse response;
+                    grpc::ClientContext ctx;
+                    SetDeadline(ctx, timeout);
+
+                    auto status = stub->RawBatchGet(&ctx, request, &response);
+                    if (!status.ok()) {
+                        // Fallback: individual gets for this group
+                        for (auto& [idx, pkey] : group) {
+                            std::string val;
+                            auto ret = Get(keys[idx], &val, timeout, reqs);
+                            if (ret == ErrorCode::Success && !val.empty()) {
+                                std::lock_guard<std::mutex> lock(resultMutex);
+                                if (val.size() > values[idx].GetPageSize()) {
+                                    values[idx].ReservePageBuffer(val.size());
+                                }
+                                memcpy(values[idx].GetBuffer(), val.data(), val.size());
+                                values[idx].SetAvailableSize(static_cast<int>(val.size()));
+                            }
+                        }
+                        return;
+                    }
+
+                    // Build a map from prefixed key -> response value
+                    std::unordered_map<std::string, std::string> resultMap;
+                    for (int p = 0; p < response.pairs_size(); p++) {
+                        const auto& pair = response.pairs(p);
+                        if (!pair.has_error() && !pair.value().empty()) {
+                            resultMap[pair.key()] = pair.value();
+                        }
+                    }
+
+                    // Copy results to output buffers
+                    std::lock_guard<std::mutex> lock(resultMutex);
+                    for (auto& [idx, pkey] : group) {
+                        auto it = resultMap.find(pkey);
+                        if (it != resultMap.end()) {
+                            const auto& val = it->second;
+                            if (val.size() > values[idx].GetPageSize()) {
+                                values[idx].ReservePageBuffer(val.size());
+                            }
+                            memcpy(values[idx].GetBuffer(), val.data(), val.size());
+                            values[idx].SetAvailableSize(static_cast<int>(val.size()));
+                        }
+                        // else: remains empty (SetAvailableSize(0)), tolerating missing keys
+                    }
+                }));
+            }
+
+            // Wait for all region batch gets to complete
+            for (auto& f : futures) {
+                f.get();
+            }
+
             return ErrorCode::Success;
         }
 
@@ -371,15 +448,72 @@ namespace SPTAG::SPANN
                            const std::chrono::microseconds& timeout,
                            std::vector<Helper::AsyncReadRequest>* reqs) override
         {
+            if (keys.empty()) return ErrorCode::Success;
+
+            // Build prefixed keys
+            std::vector<std::string> prefixedKeys(keys.size());
             for (size_t i = 0; i < keys.size(); i++) {
-                std::string val;
-                auto ret = Get(keys[i], &val, timeout, reqs);
-                if (ret != ErrorCode::Success) {
-                    values->push_back(std::string());
+                prefixedKeys[i] = MakePrefixedKey(keys[i]);
+            }
+
+            // Initialize output with empty strings
+            values->resize(keys.size());
+
+            // Group by region
+            std::unordered_map<std::string, std::vector<std::pair<size_t, std::string>>> regionGroups;
+            for (size_t i = 0; i < prefixedKeys.size(); i++) {
+                RegionInfo region;
+                std::string addr;
+                if (FindRegionForKey(prefixedKeys[i], region) && !region.leaderAddr.empty()) {
+                    addr = region.leaderAddr;
+                } else {
+                    addr = GetAnyStoreAddress();
+                }
+                regionGroups[addr].push_back({i, prefixedKeys[i]});
+            }
+
+            for (auto& [addr, group] : regionGroups) {
+                auto* stub = GetOrCreateStub(addr);
+                if (!stub) continue;
+
+                kvrpcpb::RawBatchGetRequest request;
+                SetContext(request.mutable_context(), group[0].second);
+                for (auto& [idx, pkey] : group) {
+                    request.add_keys(pkey);
+                }
+
+                kvrpcpb::RawBatchGetResponse response;
+                grpc::ClientContext ctx;
+                SetDeadline(ctx, timeout);
+
+                auto status = stub->RawBatchGet(&ctx, request, &response);
+                if (!status.ok()) {
+                    // Fallback to individual gets
+                    for (auto& [idx, pkey] : group) {
+                        std::string val;
+                        if (Get(keys[idx], &val, timeout, reqs) == ErrorCode::Success) {
+                            (*values)[idx] = std::move(val);
+                        }
+                    }
                     continue;
                 }
-                values->push_back(std::move(val));
+
+                std::unordered_map<std::string, std::string> resultMap;
+                for (int p = 0; p < response.pairs_size(); p++) {
+                    const auto& pair = response.pairs(p);
+                    if (!pair.has_error() && !pair.value().empty()) {
+                        resultMap[pair.key()] = pair.value();
+                    }
+                }
+
+                for (auto& [idx, pkey] : group) {
+                    auto it = resultMap.find(pkey);
+                    if (it != resultMap.end()) {
+                        (*values)[idx] = std::move(it->second);
+                    }
+                }
             }
+
             return ErrorCode::Success;
         }
 
@@ -388,16 +522,14 @@ namespace SPTAG::SPANN
                            const std::chrono::microseconds& timeout,
                            std::vector<Helper::AsyncReadRequest>* reqs) override
         {
+            if (keys.empty()) return ErrorCode::Success;
+
+            // Convert SizeType keys to strings and delegate
+            std::vector<std::string> strKeys(keys.size());
             for (size_t i = 0; i < keys.size(); i++) {
-                std::string val;
-                auto ret = Get(keys[i], &val, timeout, reqs);
-                if (ret != ErrorCode::Success) {
-                    values->push_back(std::string());
-                    continue;
-                }
-                values->push_back(std::move(val));
+                strKeys[i] = std::string(reinterpret_cast<const char*>(&keys[i]), sizeof(SizeType));
             }
-            return ErrorCode::Success;
+            return MultiGet(strKeys, values, timeout, reqs);
         }
 
         // ---- Scan operations ----
@@ -488,7 +620,7 @@ namespace SPTAG::SPANN
         uint64_t m_clusterId = 0;
         bool m_available = false;
 
-        // Cache of TiKV store stubs keyed by store address
+        // TiKV store stubs keyed by store address
         mutable std::mutex m_storeMutex;
         std::unordered_map<std::string, std::shared_ptr<tikvpb::Tikv::Stub>> m_storeStubs;
 
@@ -707,10 +839,10 @@ namespace SPTAG::SPANN
                 return nullptr;
             }
 
-            auto* rawPtr = stub.get();
+            auto* result = stub.get();
             m_storeStubs[address] = std::move(stub);
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "TiKVIO: Created stub for TiKV store at %s\n", address.c_str());
-            return rawPtr;
+            return result;
         }
     };
 } // namespace SPTAG::SPANN
