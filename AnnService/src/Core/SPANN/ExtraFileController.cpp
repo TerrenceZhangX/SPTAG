@@ -138,7 +138,7 @@ bool FileIO::BlockController::GetBlocks(AddressType *p_data, int p_size)
     for (int i = 0; i < p_size; i++)
     {
         int retry = 0;
-        AddressType currBlockAddress = 0xffffffffffffffff;
+        AddressType currBlockAddress = InvalidPointer;
         while (retry < 3 && !m_blockAddresses.try_pop(currBlockAddress)) retry++;
         if (retry < 3)
         {
@@ -181,7 +181,7 @@ bool FileIO::BlockController::ReadBlocks(AddressType *p_data, std::string *p_val
                                          const std::chrono::microseconds &timeout,
                                          std::vector<Helper::AsyncReadRequest> *reqs)
 {
-    if ((uintptr_t)p_data == InvalidPointer)
+    if ((uintptr_t)p_data == InvalidPointer || static_cast<int>(p_data[0]) <= 0)
     {
         p_value->resize(0);
         return true;
@@ -232,7 +232,7 @@ bool FileIO::BlockController::ReadBlocks(
     AddressType *p_data, Helper::PageBuffer<std::uint8_t> &p_value, const std::chrono::microseconds &timeout,
     std::vector<Helper::AsyncReadRequest> *reqs)
 {
-    if ((uintptr_t)p_data == InvalidPointer)
+    if ((uintptr_t)p_data == InvalidPointer || static_cast<int>(p_data[0]) <= 0)
     {
         p_value.SetAvailableSize(0);
         return true;
@@ -285,7 +285,7 @@ bool FileIO::BlockController::ReadBlocks(const std::vector<AddressType *> &p_dat
     {
         AddressType *p_data_i = p_data[i];
 
-        if (p_data_i == nullptr || (uintptr_t)p_data_i == InvalidPointer)
+        if (p_data_i == nullptr || (uintptr_t)p_data_i == InvalidPointer || static_cast<int>(p_data_i[0]) <= 0)
         {
             if (p_data_i != nullptr) (*p_values)[i].resize(0);
             continue;
@@ -329,12 +329,12 @@ bool FileIO::BlockController::ReadBlocks(const std::vector<AddressType *> &p_dat
     {
         AddressType *p_data_i = p_data[i];
 
-        if (p_data_i == nullptr || (uintptr_t)p_data_i == 0xffffffffffffffff)
+        if (p_data_i == nullptr || (uintptr_t)p_data_i == InvalidPointer || static_cast<int>(p_data_i[0]) <= 0)
         {
             continue;
         }
 
-        std::size_t postingSize = (std::size_t)p_data_i[0];
+        int postingSize = (int)p_data_i[0];
         ((*p_values)[i]).resize(postingSize);
         AddressType currOffset = 0;
         while (currOffset < postingSize)
@@ -361,9 +361,14 @@ bool FileIO::BlockController::ReadBlocks(const std::vector<AddressType *> &p_dat
         AddressType *p_data_i = p_data[i];
         int numPages = (int)(p_values[i].GetPageSize() >> PageSizeEx);
 
-        if (p_data_i == nullptr || (uintptr_t)p_data_i == InvalidPointer)
+        if (p_data_i == nullptr || (uintptr_t)p_data_i == InvalidPointer || static_cast<int>(p_data_i[0]) <= 0)
         {
-            if (p_data_i != nullptr) p_values[i].SetAvailableSize(0);
+            if (p_data_i != nullptr) {
+                p_values[i].SetAvailableSize(0);
+                if ((uintptr_t)p_data_i != InvalidPointer) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "FileIO::BlockController::ReadBlocks: invalid posting size %d\n", (int)(p_data_i[0]));
+                }
+            }
             for (std::uint32_t r = 0; r < numPages; r++)
             {
                 Helper::AsyncReadRequest &curr = reqs->at(reqcount);

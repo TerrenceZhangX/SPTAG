@@ -786,6 +786,7 @@ namespace SPTAG::SPANN {
             }
 
             int64_t checksum = ((int64_t)m_checkSum.CalcChecksum(value.c_str(), (int)(value.size()))) << 32;
+            int64_t newValueMeta = ((int64_t)(value.size()) | checksum);
             std::shared_timed_mutex *lock = nullptr;
             if (useCache && m_pShardedLRUCache)
             {
@@ -829,8 +830,9 @@ namespace SPTAG::SPANN {
                             return ErrorCode::DiskIOFail;
                         }
                     }
-                    int64_t oldSize = *postingSize, newValue = ((int64_t)(value.size()) | checksum);
-                    while (InterlockedCompareExchange(postingSize, newValue, oldSize) != oldSize) {
+                    int64_t oldSize = *postingSize;
+                    while (InterlockedCompareExchange(postingSize, newValueMeta, oldSize) != oldSize) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Put] Update posting size for key %lld failed due to concurrent update! Retry...\n", (std::int64_t)key);
                         oldSize = *postingSize;
                     }
                     lock->unlock();
@@ -861,16 +863,20 @@ namespace SPTAG::SPANN {
                                  "[Put] Not enough blocks in the pool can be allocated!\n");
                     if (lock) lock->unlock();
                     return ErrorCode::DiskIOFail;
-                }
-                *postingSize = ((int64_t)(value.size()) | checksum);                 
+                }                                
                 if (!m_pBlockController.WriteBlocks(postingSize + 1, blocks, value, timeout, reqs))
                 {
                     m_pBlockController.ReleaseBlocks(postingSize + 1, blocks);
-                    memset(postingSize + 1, -1, sizeof(AddressType) * blocks);
+                    memset(postingSize, -1, sizeof(AddressType) * blocks);
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Put] Write new block failed!\n");
                     if (lock) lock->unlock();
                     return ErrorCode::DiskIOFail;
-                }     
+                }
+                int64_t oldSize = *postingSize;
+                while (InterlockedCompareExchange(postingSize, newValueMeta, oldSize) != oldSize) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Put] Update posting size for key %lld failed due to concurrent update! Retry...\n", (std::int64_t)key);
+                    oldSize = *postingSize;
+                } 
                 AtKey(key) = tmpblocks;
             }
             else {
@@ -885,8 +891,7 @@ namespace SPTAG::SPANN {
                     m_buffer.push(partialtmpblocks);
                     if (lock) lock->unlock();
                     return ErrorCode::DiskIOFail;
-                }               
-                *((int64_t*)partialtmpblocks) = ((int64_t)(value.size()) | checksum);
+                }
                 if (!m_pBlockController.WriteBlocks((AddressType*)partialtmpblocks + 1, blocks, value, timeout, reqs))
                 {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Put] Write new block failed!\n");
@@ -895,13 +900,15 @@ namespace SPTAG::SPANN {
                     if (lock) lock->unlock();
                     return ErrorCode::DiskIOFail;
                 }
-
+                *((int64_t*)partialtmpblocks) = newValueMeta;
+                
                 // Release the original blocks
                 m_pBlockController.ReleaseBlocks(postingSize + 1, (static_cast<int>(*postingSize) + PageSize - 1) >> PageSizeEx);
+                m_buffer.push((uintptr_t)postingSize);
                 while (InterlockedCompareExchange(&AtKey(key), partialtmpblocks, (uintptr_t)postingSize) != (uintptr_t)postingSize) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Put] Update key mapping failed due to concurrent update! Retry...\n");
                     postingSize = (int64_t*)GetKey(key);
                 }
-                m_buffer.push((uintptr_t)postingSize);
             }
             if (lock) lock->unlock();
             return ErrorCode::Success;
@@ -1006,6 +1013,7 @@ namespace SPTAG::SPANN {
             
             ChecksumType checksum = (ChecksumType)(*postingSize >> 32);
             checksum = m_checkSum.AppendChecksum(checksum, value.c_str(), (int)(value.size()));
+            int64_t newValueMeta = (newSize | (((int64_t)checksum) << 32));
             if (m_pShardedLRUCache && m_pShardedLRUCache->merge(key, (void *)(value.data()), (int)(value.size())))
             {
                 int oldblocks = ((static_cast<int>(*postingSize) + PageSize - 1) >> PageSizeEx);
@@ -1016,8 +1024,9 @@ namespace SPTAG::SPANN {
                     if (lock) lock->unlock();
                     return ErrorCode::DiskIOFail;
                 }
-                int64_t oldSize = *postingSize, newValue = (newSize | (((int64_t)checksum) << 32));
-                while (InterlockedCompareExchange(postingSize, newValue, oldSize) != oldSize) {
+                int64_t oldSize = *postingSize;
+                while (InterlockedCompareExchange(postingSize, newValueMeta, oldSize) != oldSize) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Merge] Update posting size for key %lld failed due to concurrent update! Retry...\n", (std::int64_t)key);
                     oldSize = *postingSize;
                 }
                 if (lock) lock->unlock();
@@ -1063,14 +1072,15 @@ namespace SPTAG::SPANN {
                     if (lock) lock->unlock();
                     return ErrorCode::DiskIOFail;
                 }
-                *((int64_t *)tmpblocks) = (newSize | (((int64_t)checksum) << 32));
+                *((int64_t *)tmpblocks) = newValueMeta;
 
                 // This is also to ensure checkpoint correctness, so we release the partially used block and allocate a new one.
                 m_pBlockController.ReleaseBlocks(postingSize + 1 + oldblocks, 1);
+                m_buffer.push((uintptr_t)postingSize);
                 while (InterlockedCompareExchange(&AtKey(key), tmpblocks, (uintptr_t)postingSize) != (uintptr_t)postingSize) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Merge] Posting pointer changed during merge! Key %lld, Retry...\n", (int64_t)key);
                     postingSize = (int64_t*)GetKey(key);
                 }
-                m_buffer.push((uintptr_t)postingSize);
             }
             else {  // Otherwise, directly allocate a new batch of blocks to append after the current ones.
                 if (!m_pBlockController.GetBlocks(postingSize + 1 + oldblocks, allocblocks))
@@ -1090,8 +1100,10 @@ namespace SPTAG::SPANN {
                 }
                 
                 //*postingSize = (newSize | (((int64_t)checksum)<< 32));
-                int64_t oldSize = *postingSize, newValue = (newSize | (((int64_t)checksum)<< 32));
-                while (InterlockedCompareExchange(postingSize, newValue, oldSize) != oldSize) {
+                int64_t oldSize = *postingSize;
+                while (InterlockedCompareExchange(postingSize, newValueMeta, oldSize) != oldSize) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[Merge] Posting size changed during merge! Key %lld, old size %d, new size %d, Retry...\n",
+                                 (int64_t)key, (int)(oldSize & 0xFFFFFFFF), (int)(newValueMeta & 0xFFFFFFFF));
                     oldSize = *postingSize;
                 }
             }
