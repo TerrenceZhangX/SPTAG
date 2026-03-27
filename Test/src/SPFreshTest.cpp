@@ -358,7 +358,7 @@ float Search(std::shared_ptr<VectorIndex> &vecIndex, std::shared_ptr<VectorSet> 
 
 template <typename ValueType>
 void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step,
-                   std::shared_ptr<VectorSet> addset, std::shared_ptr<MetadataSet> &metaset, int start = 0)
+                   std::shared_ptr<VectorSet> addset, std::shared_ptr<MetadataSet> &metaset, int searchThreads = 0, std::shared_ptr<VectorSet> queryset = nullptr, int numQueries = 0, std::ostream* benchmarkData = nullptr, int start = 0)
 {
     p_index->ForceCompaction();
     p_index->GetDBStat();
@@ -402,15 +402,69 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
             }
         }
     };
-    for (int j = 0; j < insertThreads; j++)
-    {
-        threads.emplace_back(func);
-    }
-    for (auto &thread : threads)
-    {
-        thread.join();
-    }
 
+    if (searchThreads > 0 && queryset != nullptr && numQueries != 0 && benchmarkData != nullptr) {
+        std::vector<float> latencies(numQueries);
+        std::vector<QueryResult> results(numQueries);
+        std::vector<float> duration(searchThreads);
+        std::atomic_size_t queriesSent(0);
+        auto search = [&](int tid) {
+            auto s1 = std::chrono::high_resolution_clock::now();
+            size_t qid;
+            while ((qid = queriesSent.fetch_add(1)) < numQueries)
+            {
+                auto t1 = std::chrono::high_resolution_clock::now();
+                p_index->SearchIndex(results[qid]);
+                auto t2 = std::chrono::high_resolution_clock::now();
+                latencies[qid] = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000.0f;
+            }
+            auto s2 = std::chrono::high_resolution_clock::now();
+            duration[tid] = std::chrono::duration_cast<std::chrono::microseconds>(s2 - s1).count() / 1000.0f;
+        };
+
+        for (int j = 0; j < insertThreads; j++)
+        {
+            threads.emplace_back(func);
+        }
+        for (int j = 0; j < searchThreads; j++)
+        {
+            threads.emplace_back(search, j);
+        }
+        for (auto &thread : threads)
+        {
+            thread.join();
+        }
+
+        // Calculate statistics
+        float mean = 0, minLat = (std::numeric_limits<float>::max)(), maxLat = 0;
+        for (int i = 0; i < numQueries; i++)
+        {
+            mean += latencies[i];
+            minLat = (std::min)(minLat, latencies[i]);
+            maxLat = (std::max)(maxLat, latencies[i]);
+        }
+        mean /= numQueries;
+
+        std::sort(latencies.begin(), latencies.end());
+        float p50 = latencies[static_cast<size_t>(numQueries * 0.50)];
+        float p90 = latencies[static_cast<size_t>(numQueries * 0.90)];
+        float p95 = latencies[static_cast<size_t>(numQueries * 0.95)];
+        float p99 = latencies[static_cast<size_t>(numQueries * 0.99)];
+        float maxBatchLatency = 1e-6;
+        for (int i = 0; i < searchThreads; i++)
+            if (maxBatchLatency < duration[i]) maxBatchLatency = duration[i];
+        float qps = numQueries / maxBatchLatency;
+
+        *benchmarkData << "        \"numQueries\": " << numQueries << ",\n";
+        *benchmarkData << "        \"meanLatency\": " << mean << ",\n";
+        *benchmarkData << "        \"p50\": " << p50 << ",\n";
+        *benchmarkData << "        \"p90\": " << p90 << ",\n";
+        *benchmarkData << "        \"p95\": " << p95 << ",\n";
+        *benchmarkData << "        \"p99\": " << p99 << ",\n";
+        *benchmarkData << "        \"minLatency\": " << minLat << ",\n";
+        *benchmarkData << "        \"maxLatency\": " << maxLat << ",\n";
+        *benchmarkData << "        \"qps\": " << qps << ",\n";
+    }
     while (!p_index->AllFinished())
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -564,7 +618,7 @@ ErrorCode QuantizeVectors(const std::shared_ptr<COMMON::IQuantizer>& quantizer,
 template <typename T>
 void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, const std::string &truthPath,
                   DistCalcMethod distMethod, const std::string &indexPath, int dimension, int baseVectorCount,
-                  int insertVectorCount, int deleteVectorCount, int batches, int topK, int numThreads, int numQueries,
+                  int insertVectorCount, int deleteVectorCount, int batches, int topK, int numSearchThreads, int numInsertThreads, int numQueries,
                   const std::string &outputFile = "output.json", const bool rebuild = true, const int resume = -1,
                   const std::string &quantizerFilePath = std::string(""), int quantizedDim = 0, int layers = 1)
 {
@@ -622,7 +676,8 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     jsonFile << "    \"BatchNum\": " << batches << ",\n";
     jsonFile << "    \"topK\": " << topK << ",\n";
     jsonFile << "    \"numQueries\": " << numQueries << ",\n";
-    jsonFile << "    \"numThreads\": " << numThreads << ",\n";
+    jsonFile << "    \"numSearchThreads\": " << numSearchThreads << ",\n";
+    jsonFile << "    \"numInsertThreads\": " << numInsertThreads << ",\n";
     jsonFile << "    \"layers\": " << layers << ",\n";
     jsonFile << "    \"DistMethod\": \"" << Helper::Convert::ConvertToString(distMethod) << "\"\n";
     jsonFile << "  },\n";
@@ -649,7 +704,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
             if (quantizedDim <= 0) quantizedDim = dimension / 2;
             BOOST_REQUIRE(quantizedDim > 0 && (dimension % quantizedDim) == 0);
 
-            quantizer = EnsurePQQuantizer(quantizerFilePath, baseVectorsFloat, (DimensionType)quantizedDim, numThreads);
+            quantizer = EnsurePQQuantizer(quantizerFilePath, baseVectorsFloat, (DimensionType)quantizedDim, numSearchThreads);
             BOOST_REQUIRE(quantizer != nullptr);
 
             std::string pquanvecset = "perftest_quanvectors.bin";
@@ -660,13 +715,13 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                 quantizedBase->Save(pquanvecset);
             }
 
-            index = BuildLargeIndex<uint8_t>(indexPath, pquanvecset, pmeta, pmetaidx, dist, numThreads, numThreads, layers, quantizer);
+            index = BuildLargeIndex<uint8_t>(indexPath, pquanvecset, pmeta, pmetaidx, dist, numSearchThreads, numInsertThreads, layers, quantizer);
             BOOST_REQUIRE(index != nullptr);
             index->SetQuantizerADC(true);
         }
         else
         {
-            index = BuildLargeIndex<T>(indexPath, pvecset, pmeta, pmetaidx, dist, numThreads, numThreads, layers);
+            index = BuildLargeIndex<T>(indexPath, pvecset, pmeta, pmetaidx, dist, numSearchThreads, numInsertThreads, layers);
             BOOST_REQUIRE(index != nullptr);
         }
 
@@ -704,10 +759,10 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     // Benchmark 0: Query performance before insertions
     BOOST_TEST_MESSAGE("\n=== Benchmark 0: Query Before Insertions ===");
     BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
-                                 numThreads, numQueries, 0, batches, tmpbenchmark);
+                                 numSearchThreads, numQueries, 0, batches, tmpbenchmark);
     jsonFile << "    \"benchmark0_query_before_insert\": ";
     BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
-                                 numThreads, numQueries, 0, batches, jsonFile);
+                                 numSearchThreads, numQueries, 0, batches, jsonFile);
     jsonFile << ",\n";
     jsonFile.flush();
 
@@ -787,8 +842,8 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                     }
                     std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<T>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, insertBatchSize);
                     start = std::chrono::high_resolution_clock::now();
-                    InsertVectors<T>(static_cast<SPANN::Index<T> *>(cloneIndex.get()), numThreads, insertBatchSize,
-                                     addset, addmetaset, 0);
+                    InsertVectors<T>(static_cast<SPANN::Index<T> *>(cloneIndex.get()), numInsertThreads, insertBatchSize,
+                                     addset, addmetaset, numSearchThreads, queryset, numQueries, &jsonFile, 0);
                     end = std::chrono::high_resolution_clock::now();
                 }
                 seconds =
@@ -807,7 +862,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                 if (deleteBatchSize > 0)
                 {
                     std::vector<std::thread> threads;
-                    threads.reserve(numThreads);
+                    threads.reserve(numInsertThreads);
 
                     int startidx = iter * deleteBatchSize;
                     std::atomic_size_t vectorsSent(startidx);
@@ -835,7 +890,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                     };
 
                     start = std::chrono::high_resolution_clock::now();
-                    for (int j = 0; j < numThreads; j++)
+                    for (int j = 0; j < numInsertThreads; j++)
                     {
                         threads.emplace_back(func);
                     }
@@ -855,10 +910,10 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
 
                 BOOST_TEST_MESSAGE("\n=== Benchmark 2: Query After Insertions and Deletions ===");
                 jsonFile << "        \"search\":";
-                BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount, topK, SearchK, numThreads,
+                BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount, topK, SearchK, numSearchThreads,
                                              numQueries, iter + 1, batches, tmpbenchmark, "    ");
                 BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount,
-                                             topK, SearchK, numThreads, numQueries, iter + 1, batches, jsonFile, "    ");
+                                             topK, SearchK, numSearchThreads, numQueries, iter + 1, batches, jsonFile, "    ");
                 jsonFile << ",\n";
 
                 start = std::chrono::high_resolution_clock::now();
@@ -1912,7 +1967,8 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     int deleteVectorCount = iniReader.GetParameter("Benchmark", "DeleteVectorCount", 2000);
     int batchNum = iniReader.GetParameter("Benchmark", "BatchNum", 100);
     int topK = iniReader.GetParameter("Benchmark", "TopK", 10);
-    int numThreads = iniReader.GetParameter("Benchmark", "NumThreads", 32);
+    int numSearchThreads = iniReader.GetParameter("Benchmark", "NumSearchThreads", 8);
+    int numInsertThreads = iniReader.GetParameter("Benchmark", "NumInsertThreads", 8);
     int numQueries = iniReader.GetParameter("Benchmark", "NumQueries", 1000);
     int layers = iniReader.GetParameter("Benchmark", "Layers", 1);
     DistCalcMethod distMethod = iniReader.GetParameter("Benchmark", "DistMethod", DistCalcMethod::L2);
@@ -1927,7 +1983,8 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     BOOST_TEST_MESSAGE("Dimension: " << dimension);
     BOOST_TEST_MESSAGE("Batch Number: " << batchNum);
     BOOST_TEST_MESSAGE("Top-K: " << topK);
-    BOOST_TEST_MESSAGE("Threads: " << numThreads);
+    BOOST_TEST_MESSAGE("SearchThreads: " << numSearchThreads);
+    BOOST_TEST_MESSAGE("InsertThreads: " << numInsertThreads);
     BOOST_TEST_MESSAGE("Queries: " << numQueries);
     BOOST_TEST_MESSAGE("Layers: " << layers);
     BOOST_TEST_MESSAGE("DistMethod: " << Helper::Convert::ConvertToString(distMethod));
@@ -1946,19 +2003,19 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     if (valueType == VectorValueType::Float)
     {
         RunBenchmark<float>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
-                    insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries, outputFile, 
+                    insertVectorCount, deleteVectorCount, batchNum, topK, numSearchThreads, numInsertThreads, numQueries, outputFile, 
                     rebuild, resume, quantizerFilePath, quantizedDim, layers);
     }
     else if (valueType == VectorValueType::Int8)
     {
         RunBenchmark<std::int8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
-                      insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries,
+                      insertVectorCount, deleteVectorCount, batchNum, topK, numSearchThreads, numInsertThreads, numQueries,
                       outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers);
     }
     else if (valueType == VectorValueType::UInt8)
     {
         RunBenchmark<std::uint8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
-                       insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries,
+                       insertVectorCount, deleteVectorCount, batchNum, topK, numSearchThreads, numInsertThreads, numQueries,
                        outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers);
     }
 
