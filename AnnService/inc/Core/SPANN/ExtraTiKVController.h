@@ -358,31 +358,35 @@ namespace SPTAG::SPANN
                 values[i].SetAvailableSize(0);
             }
 
-            // Group keys by region
-            // Map: region leader address -> vector of (original_index, prefixed_key)
-            std::unordered_map<std::string, std::vector<std::pair<size_t, std::string>>> regionGroups;
+            // Group keys by (leader address, region id)
+            std::unordered_map<RegionGroupKey, RegionGroup, RegionGroupKeyHash> regionGroups;
             for (size_t i = 0; i < prefixedKeys.size(); i++) {
                 RegionInfo region;
                 std::string addr;
+                uint64_t rid = 0;
                 if (FindRegionForKey(prefixedKeys[i], region) && !region.leaderAddr.empty()) {
                     addr = region.leaderAddr;
+                    rid = region.regionId;
                 } else {
                     addr = GetAnyStoreAddress();
                 }
-                regionGroups[addr].push_back({i, prefixedKeys[i]});
+                auto& g = regionGroups[{addr, rid}];
+                if (g.keys.empty()) g.region = region;
+                g.keys.push_back({i, prefixedKeys[i]});
             }
 
             // Send RawBatchGet per region group (in parallel via futures)
             std::vector<std::future<void>> futures;
             std::mutex resultMutex;
 
-            for (auto& [addr, group] : regionGroups) {
-                futures.push_back(std::async(std::launch::async, [&, addr, &group]() {
-                    auto* stub = GetOrCreateStub(addr);
+            for (auto& [gkey, rg] : regionGroups) {
+                futures.push_back(std::async(std::launch::async, [&, &gkey, &rg]() {
+                    auto& group = rg.keys;
+                    auto* stub = GetOrCreateStub(gkey.leaderAddr);
                     if (!stub) return;
 
                     kvrpcpb::RawBatchGetRequest request;
-                    SetContext(request.mutable_context(), group[0].second);
+                    SetContextFromRegion(request.mutable_context(), rg.region);
                     for (auto& [idx, pkey] : group) {
                         request.add_keys(pkey);
                     }
@@ -459,25 +463,30 @@ namespace SPTAG::SPANN
             // Initialize output with empty strings
             values->resize(keys.size());
 
-            // Group by region
-            std::unordered_map<std::string, std::vector<std::pair<size_t, std::string>>> regionGroups;
+            // Group by (leader address, region id)
+            std::unordered_map<RegionGroupKey, RegionGroup, RegionGroupKeyHash> regionGroups;
             for (size_t i = 0; i < prefixedKeys.size(); i++) {
                 RegionInfo region;
                 std::string addr;
+                uint64_t rid = 0;
                 if (FindRegionForKey(prefixedKeys[i], region) && !region.leaderAddr.empty()) {
                     addr = region.leaderAddr;
+                    rid = region.regionId;
                 } else {
                     addr = GetAnyStoreAddress();
                 }
-                regionGroups[addr].push_back({i, prefixedKeys[i]});
+                auto& g = regionGroups[{addr, rid}];
+                if (g.keys.empty()) g.region = region;
+                g.keys.push_back({i, prefixedKeys[i]});
             }
 
-            for (auto& [addr, group] : regionGroups) {
-                auto* stub = GetOrCreateStub(addr);
+            for (auto& [gkey, rg] : regionGroups) {
+                auto& group = rg.keys;
+                auto* stub = GetOrCreateStub(gkey.leaderAddr);
                 if (!stub) continue;
 
                 kvrpcpb::RawBatchGetRequest request;
-                SetContext(request.mutable_context(), group[0].second);
+                SetContextFromRegion(request.mutable_context(), rg.region);
                 for (auto& [idx, pkey] : group) {
                     request.add_keys(pkey);
                 }
@@ -530,6 +539,129 @@ namespace SPTAG::SPANN
                 strKeys[i] = std::string(reinterpret_cast<const char*>(&keys[i]), sizeof(SizeType));
             }
             return MultiGet(strKeys, values, timeout, reqs);
+        }
+
+        // ---- Coprocessor vector search ----
+        // Push distance computation into TiKV: send query vector + posting
+        // keys, TiKV reads posting data locally, computes L2 distances, and
+        // returns only top-N (vector_id, distance) candidates.
+
+        struct CoprocessorResult {
+            SizeType vectorID;
+            float distance;
+        };
+
+        ErrorCode CoprocessorSearch(
+            const std::vector<SizeType>& postingIDs,
+            const uint8_t* queryVector,
+            int dim,
+            int valueType,       // 0=UInt8, 1=Int8, 3=Float32
+            int metaDataSize,
+            int topN,
+            const std::chrono::microseconds& timeout,
+            std::vector<CoprocessorResult>& results)
+        {
+            if (postingIDs.empty()) return ErrorCode::Success;
+
+            // Determine vector data size
+            int valueSize = (valueType == 3) ? 4 : 1;
+            int queryVecBytes = dim * valueSize;
+
+            // Build prefixed keys for all posting IDs
+            std::vector<std::string> prefixedKeys(postingIDs.size());
+            for (size_t i = 0; i < postingIDs.size(); i++) {
+                std::string k(reinterpret_cast<const char*>(&postingIDs[i]), sizeof(SizeType));
+                prefixedKeys[i] = MakePrefixedKey(k);
+            }
+
+            // Group keys by (leader address, region id)
+            std::unordered_map<RegionGroupKey, RegionGroup, RegionGroupKeyHash> regionGroups;
+            for (size_t i = 0; i < prefixedKeys.size(); i++) {
+                RegionInfo region;
+                std::string addr;
+                uint64_t rid = 0;
+                if (FindRegionForKey(prefixedKeys[i], region) && !region.leaderAddr.empty()) {
+                    addr = region.leaderAddr;
+                    rid = region.regionId;
+                } else {
+                    addr = GetAnyStoreAddress();
+                }
+                auto& g = regionGroups[{addr, rid}];
+                if (g.keys.empty()) g.region = region;
+                g.keys.push_back({i, prefixedKeys[i]});
+            }
+
+            // Send RawCoprocessor per region group in parallel
+            std::vector<std::future<std::vector<CoprocessorResult>>> futures;
+
+            for (auto& [gkey, rg] : regionGroups) {
+                futures.push_back(std::async(std::launch::async,
+                    [&, &gkey, &rg]() -> std::vector<CoprocessorResult> {
+                    auto& group = rg.keys;
+                    auto* stub = GetOrCreateStub(gkey.leaderAddr);
+                    if (!stub) return {};
+
+                    // Encode the vector search request
+                    std::string requestData = EncodeVectorSearchRequest(
+                        dim, topN, valueType, metaDataSize,
+                        queryVector, queryVecBytes, group);
+
+                    kvrpcpb::RawCoprocessorRequest request;
+                    SetContextFromRegion(request.mutable_context(), rg.region);
+                    request.set_copr_name("vector_search");
+                    request.set_copr_version_req("*");
+                    request.set_data(std::move(requestData));
+
+                    // Add a key range covering the group keys for routing
+                    auto* range = request.add_ranges();
+                    range->set_start_key(group.front().second);
+                    range->set_end_key(group.back().second);
+
+                    kvrpcpb::RawCoprocessorResponse response;
+                    grpc::ClientContext ctx;
+                    SetDeadline(ctx, timeout);
+
+                    auto status = stub->RawCoprocessor(&ctx, request, &response);
+                    if (!status.ok()) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                            "TiKVIO::CoprocessorSearch gRPC error: %s\n",
+                            status.error_message().c_str());
+                        return {};
+                    }
+                    if (response.has_region_error()) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                            "TiKVIO::CoprocessorSearch region error\n");
+                        InvalidateRegionCache(group[0].second);
+                        return {};
+                    }
+                    if (!response.error().empty()) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                            "TiKVIO::CoprocessorSearch error: %s\n",
+                            response.error().c_str());
+                        return {};
+                    }
+
+                    return DecodeVectorSearchResponse(response.data());
+                }));
+            }
+
+            // Merge results from all regions
+            results.clear();
+            for (auto& f : futures) {
+                auto regionResults = f.get();
+                results.insert(results.end(), regionResults.begin(), regionResults.end());
+            }
+
+            // Sort by distance and truncate to topN
+            std::sort(results.begin(), results.end(),
+                [](const CoprocessorResult& a, const CoprocessorResult& b) {
+                    return a.distance < b.distance;
+                });
+            if (static_cast<int>(results.size()) > topN) {
+                results.resize(topN);
+            }
+
+            return ErrorCode::Success;
         }
 
         // ---- Scan operations ----
@@ -678,6 +810,34 @@ namespace SPTAG::SPANN
                 *ctx->mutable_peer() = region.leaderPeer;
             }
         }
+
+        // Overload: set context directly from a cached RegionInfo.
+        void SetContextFromRegion(kvrpcpb::Context* ctx, const RegionInfo& region) {
+            ctx->set_region_id(region.regionId);
+            *ctx->mutable_region_epoch() = region.epoch;
+            *ctx->mutable_peer() = region.leaderPeer;
+        }
+
+        // Composite key for grouping by (leader address, region id).
+        struct RegionGroupKey {
+            std::string leaderAddr;
+            uint64_t regionId;
+            bool operator==(const RegionGroupKey& o) const {
+                return leaderAddr == o.leaderAddr && regionId == o.regionId;
+            }
+        };
+        struct RegionGroupKeyHash {
+            size_t operator()(const RegionGroupKey& k) const {
+                auto h1 = std::hash<std::string>{}(k.leaderAddr);
+                auto h2 = std::hash<uint64_t>{}(k.regionId);
+                return h1 ^ (h2 << 1);
+            }
+        };
+
+        struct RegionGroup {
+            RegionInfo region;
+            std::vector<std::pair<size_t, std::string>> keys; // (original_index, prefixed_key)
+        };
 
         // ---- PD: get region for a given key ----
         bool GetRegionFromPD(const std::string& key, RegionInfo& info) {
@@ -843,6 +1003,84 @@ namespace SPTAG::SPANN
             m_storeStubs[address] = std::move(stub);
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "TiKVIO: Created stub for TiKV store at %s\n", address.c_str());
             return result;
+        }
+
+        // ---- Vector search protocol encoding/decoding ----
+
+        static constexpr uint32_t VSCH_MAGIC = 0x56534348; // "VSCH"
+        static constexpr uint32_t VSCH_VERSION = 1;
+
+        std::string EncodeVectorSearchRequest(
+            int dim, int topN, int valueType, int metaDataSize,
+            const uint8_t* queryVector, int queryVecBytes,
+            const std::vector<std::pair<size_t, std::string>>& group) const
+        {
+            // Header: 7 × uint32 = 28 bytes
+            // Query vector: queryVecBytes
+            // Keys: (4 + keyLen) per key
+            size_t totalSize = 28 + queryVecBytes;
+            for (auto& [idx, pkey] : group) {
+                totalSize += 4 + pkey.size();
+            }
+
+            std::string buf;
+            buf.resize(totalSize);
+            char* p = buf.data();
+
+            auto write_u32 = [&p](uint32_t v) {
+                memcpy(p, &v, 4); p += 4;
+            };
+
+            write_u32(VSCH_MAGIC);
+            write_u32(VSCH_VERSION);
+            write_u32(static_cast<uint32_t>(dim));
+            write_u32(static_cast<uint32_t>(topN));
+            write_u32(static_cast<uint32_t>(valueType));
+            write_u32(static_cast<uint32_t>(metaDataSize));
+            write_u32(static_cast<uint32_t>(group.size()));
+
+            memcpy(p, queryVector, queryVecBytes);
+            p += queryVecBytes;
+
+            for (auto& [idx, pkey] : group) {
+                uint32_t keyLen = static_cast<uint32_t>(pkey.size());
+                memcpy(p, &keyLen, 4); p += 4;
+                memcpy(p, pkey.data(), keyLen); p += keyLen;
+            }
+
+            return buf;
+        }
+
+        std::vector<CoprocessorResult> DecodeVectorSearchResponse(const std::string& data) const {
+            std::vector<CoprocessorResult> results;
+            if (data.size() < 12) return results;
+
+            const char* p = data.data();
+            uint32_t magic, version, numResults;
+            memcpy(&magic, p, 4); p += 4;
+            memcpy(&version, p, 4); p += 4;
+            memcpy(&numResults, p, 4); p += 4;
+
+            if (magic != VSCH_MAGIC || version != VSCH_VERSION) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "TiKVIO: Invalid vector search response magic=%x version=%u\n",
+                    magic, version);
+                return results;
+            }
+
+            if (data.size() < 12 + numResults * 12) return results;
+
+            results.reserve(numResults);
+            for (uint32_t i = 0; i < numResults; i++) {
+                CoprocessorResult r;
+                int64_t vid;
+                memcpy(&vid, p, 8); p += 8;
+                r.vectorID = static_cast<SizeType>(vid);
+                memcpy(&r.distance, p, 4); p += 4;
+                results.push_back(r);
+            }
+
+            return results;
         }
     };
 } // namespace SPTAG::SPANN

@@ -311,8 +311,54 @@ struct RawScanResponseDefaultTypeInternal {
   };
 };
 PROTOBUF_ATTRIBUTE_NO_DESTROY PROTOBUF_CONSTINIT PROTOBUF_ATTRIBUTE_INIT_PRIORITY1 RawScanResponseDefaultTypeInternal _RawScanResponse_default_instance_;
+PROTOBUF_CONSTEXPR KeyRange::KeyRange(
+    ::_pbi::ConstantInitialized): _impl_{
+    /*decltype(_impl_.start_key_)*/{&::_pbi::fixed_address_empty_string, ::_pbi::ConstantInitialized{}}
+  , /*decltype(_impl_.end_key_)*/{&::_pbi::fixed_address_empty_string, ::_pbi::ConstantInitialized{}}
+  , /*decltype(_impl_._cached_size_)*/{}} {}
+struct KeyRangeDefaultTypeInternal {
+  PROTOBUF_CONSTEXPR KeyRangeDefaultTypeInternal()
+      : _instance(::_pbi::ConstantInitialized{}) {}
+  ~KeyRangeDefaultTypeInternal() {}
+  union {
+    KeyRange _instance;
+  };
+};
+PROTOBUF_ATTRIBUTE_NO_DESTROY PROTOBUF_CONSTINIT PROTOBUF_ATTRIBUTE_INIT_PRIORITY1 KeyRangeDefaultTypeInternal _KeyRange_default_instance_;
+PROTOBUF_CONSTEXPR RawCoprocessorRequest::RawCoprocessorRequest(
+    ::_pbi::ConstantInitialized): _impl_{
+    /*decltype(_impl_.ranges_)*/{}
+  , /*decltype(_impl_.copr_name_)*/{&::_pbi::fixed_address_empty_string, ::_pbi::ConstantInitialized{}}
+  , /*decltype(_impl_.copr_version_req_)*/{&::_pbi::fixed_address_empty_string, ::_pbi::ConstantInitialized{}}
+  , /*decltype(_impl_.data_)*/{&::_pbi::fixed_address_empty_string, ::_pbi::ConstantInitialized{}}
+  , /*decltype(_impl_.context_)*/nullptr
+  , /*decltype(_impl_._cached_size_)*/{}} {}
+struct RawCoprocessorRequestDefaultTypeInternal {
+  PROTOBUF_CONSTEXPR RawCoprocessorRequestDefaultTypeInternal()
+      : _instance(::_pbi::ConstantInitialized{}) {}
+  ~RawCoprocessorRequestDefaultTypeInternal() {}
+  union {
+    RawCoprocessorRequest _instance;
+  };
+};
+PROTOBUF_ATTRIBUTE_NO_DESTROY PROTOBUF_CONSTINIT PROTOBUF_ATTRIBUTE_INIT_PRIORITY1 RawCoprocessorRequestDefaultTypeInternal _RawCoprocessorRequest_default_instance_;
+PROTOBUF_CONSTEXPR RawCoprocessorResponse::RawCoprocessorResponse(
+    ::_pbi::ConstantInitialized): _impl_{
+    /*decltype(_impl_.error_)*/{&::_pbi::fixed_address_empty_string, ::_pbi::ConstantInitialized{}}
+  , /*decltype(_impl_.data_)*/{&::_pbi::fixed_address_empty_string, ::_pbi::ConstantInitialized{}}
+  , /*decltype(_impl_.region_error_)*/nullptr
+  , /*decltype(_impl_._cached_size_)*/{}} {}
+struct RawCoprocessorResponseDefaultTypeInternal {
+  PROTOBUF_CONSTEXPR RawCoprocessorResponseDefaultTypeInternal()
+      : _instance(::_pbi::ConstantInitialized{}) {}
+  ~RawCoprocessorResponseDefaultTypeInternal() {}
+  union {
+    RawCoprocessorResponse _instance;
+  };
+};
+PROTOBUF_ATTRIBUTE_NO_DESTROY PROTOBUF_CONSTINIT PROTOBUF_ATTRIBUTE_INIT_PRIORITY1 RawCoprocessorResponseDefaultTypeInternal _RawCoprocessorResponse_default_instance_;
 }  // namespace kvrpcpb
-static ::_pb::Metadata file_level_metadata_kvrpcpb_2eproto[18];
+static ::_pb::Metadata file_level_metadata_kvrpcpb_2eproto[21];
 static const ::_pb::EnumDescriptor* file_level_enum_descriptors_kvrpcpb_2eproto[2];
 static constexpr ::_pb::ServiceDescriptor const** file_level_service_descriptors_kvrpcpb_2eproto = nullptr;
 
@@ -498,6 +544,34 @@ const uint32_t TableStruct_kvrpcpb_2eproto::offsets[] PROTOBUF_SECTION_VARIABLE(
   ~0u,  // no _inlined_string_donated_
   PROTOBUF_FIELD_OFFSET(::kvrpcpb::RawScanResponse, _impl_.region_error_),
   PROTOBUF_FIELD_OFFSET(::kvrpcpb::RawScanResponse, _impl_.kvs_),
+  ~0u,  // no _has_bits_
+  PROTOBUF_FIELD_OFFSET(::kvrpcpb::KeyRange, _internal_metadata_),
+  ~0u,  // no _extensions_
+  ~0u,  // no _oneof_case_
+  ~0u,  // no _weak_field_map_
+  ~0u,  // no _inlined_string_donated_
+  PROTOBUF_FIELD_OFFSET(::kvrpcpb::KeyRange, _impl_.start_key_),
+  PROTOBUF_FIELD_OFFSET(::kvrpcpb::KeyRange, _impl_.end_key_),
+  ~0u,  // no _has_bits_
+  PROTOBUF_FIELD_OFFSET(::kvrpcpb::RawCoprocessorRequest, _internal_metadata_),
+  ~0u,  // no _extensions_
+  ~0u,  // no _oneof_case_
+  ~0u,  // no _weak_field_map_
+  ~0u,  // no _inlined_string_donated_
+  PROTOBUF_FIELD_OFFSET(::kvrpcpb::RawCoprocessorRequest, _impl_.context_),
+  PROTOBUF_FIELD_OFFSET(::kvrpcpb::RawCoprocessorRequest, _impl_.copr_name_),
+  PROTOBUF_FIELD_OFFSET(::kvrpcpb::RawCoprocessorRequest, _impl_.copr_version_req_),
+  PROTOBUF_FIELD_OFFSET(::kvrpcpb::RawCoprocessorRequest, _impl_.ranges_),
+  PROTOBUF_FIELD_OFFSET(::kvrpcpb::RawCoprocessorRequest, _impl_.data_),
+  ~0u,  // no _has_bits_
+  PROTOBUF_FIELD_OFFSET(::kvrpcpb::RawCoprocessorResponse, _internal_metadata_),
+  ~0u,  // no _extensions_
+  ~0u,  // no _oneof_case_
+  ~0u,  // no _weak_field_map_
+  ~0u,  // no _inlined_string_donated_
+  PROTOBUF_FIELD_OFFSET(::kvrpcpb::RawCoprocessorResponse, _impl_.region_error_),
+  PROTOBUF_FIELD_OFFSET(::kvrpcpb::RawCoprocessorResponse, _impl_.error_),
+  PROTOBUF_FIELD_OFFSET(::kvrpcpb::RawCoprocessorResponse, _impl_.data_),
 };
 static const ::_pbi::MigrationSchema schemas[] PROTOBUF_SECTION_VARIABLE(protodesc_cold) = {
   { 0, -1, -1, sizeof(::kvrpcpb::Context)},
@@ -518,6 +592,9 @@ static const ::_pbi::MigrationSchema schemas[] PROTOBUF_SECTION_VARIABLE(protode
   { 152, -1, -1, sizeof(::kvrpcpb::RawDeleteRangeResponse)},
   { 160, -1, -1, sizeof(::kvrpcpb::RawScanRequest)},
   { 173, -1, -1, sizeof(::kvrpcpb::RawScanResponse)},
+  { 181, -1, -1, sizeof(::kvrpcpb::KeyRange)},
+  { 189, -1, -1, sizeof(::kvrpcpb::RawCoprocessorRequest)},
+  { 200, -1, -1, sizeof(::kvrpcpb::RawCoprocessorResponse)},
 };
 
 static const ::_pb::Message* const file_default_instances[] = {
@@ -539,6 +616,9 @@ static const ::_pb::Message* const file_default_instances[] = {
   &::kvrpcpb::_RawDeleteRangeResponse_default_instance_._instance,
   &::kvrpcpb::_RawScanRequest_default_instance_._instance,
   &::kvrpcpb::_RawScanResponse_default_instance_._instance,
+  &::kvrpcpb::_KeyRange_default_instance_._instance,
+  &::kvrpcpb::_RawCoprocessorRequest_default_instance_._instance,
+  &::kvrpcpb::_RawCoprocessorResponse_default_instance_._instance,
 };
 
 const char descriptor_table_protodef_kvrpcpb_2eproto[] PROTOBUF_SECTION_VARIABLE(protodesc_cold) =
@@ -594,10 +674,18 @@ const char descriptor_table_protodef_kvrpcpb_2eproto[] PROTOBUF_SECTION_VARIABLE
   "\001(\r\022\020\n\010key_only\030\004 \001(\010\022\n\n\002cf\030\005 \001(\t\022\017\n\007rev"
   "erse\030\006 \001(\010\022\017\n\007end_key\030\007 \001(\014\"U\n\017RawScanRe"
   "sponse\022$\n\014region_error\030\001 \001(\0132\016.errorpb.E"
-  "rror\022\034\n\003kvs\030\002 \003(\0132\017.kvrpcpb.KvPair*+\n\nCo"
-  "mmandPri\022\n\n\006Normal\020\000\022\007\n\003Low\020\001\022\010\n\004High\020\002*"
-  "/\n\016IsolationLevel\022\006\n\002SI\020\000\022\006\n\002RC\020\001\022\r\n\tRCC"
-  "heckTS\020\002B\022\n\020org.tikv.kvprotob\006proto3"
+  "rror\022\034\n\003kvs\030\002 \003(\0132\017.kvrpcpb.KvPair\".\n\010Ke"
+  "yRange\022\021\n\tstart_key\030\001 \001(\014\022\017\n\007end_key\030\002 \001"
+  "(\014\"\230\001\n\025RawCoprocessorRequest\022!\n\007context\030"
+  "\001 \001(\0132\020.kvrpcpb.Context\022\021\n\tcopr_name\030\002 \001"
+  "(\t\022\030\n\020copr_version_req\030\003 \001(\t\022!\n\006ranges\030\004"
+  " \003(\0132\021.kvrpcpb.KeyRange\022\014\n\004data\030\005 \001(\014\"[\n"
+  "\026RawCoprocessorResponse\022$\n\014region_error\030"
+  "\001 \001(\0132\016.errorpb.Error\022\r\n\005error\030\002 \001(\t\022\014\n\004"
+  "data\030\003 \001(\014*+\n\nCommandPri\022\n\n\006Normal\020\000\022\007\n\003"
+  "Low\020\001\022\010\n\004High\020\002*/\n\016IsolationLevel\022\006\n\002SI\020"
+  "\000\022\006\n\002RC\020\001\022\r\n\tRCCheckTS\020\002B\022\n\020org.tikv.kvp"
+  "rotob\006proto3"
   ;
 static const ::_pbi::DescriptorTable* const descriptor_table_kvrpcpb_2eproto_deps[2] = {
   &::descriptor_table_errorpb_2eproto,
@@ -605,9 +693,9 @@ static const ::_pbi::DescriptorTable* const descriptor_table_kvrpcpb_2eproto_dep
 };
 static ::_pbi::once_flag descriptor_table_kvrpcpb_2eproto_once;
 const ::_pbi::DescriptorTable descriptor_table_kvrpcpb_2eproto = {
-    false, false, 2236, descriptor_table_protodef_kvrpcpb_2eproto,
+    false, false, 2532, descriptor_table_protodef_kvrpcpb_2eproto,
     "kvrpcpb.proto",
-    &descriptor_table_kvrpcpb_2eproto_once, descriptor_table_kvrpcpb_2eproto_deps, 2, 18,
+    &descriptor_table_kvrpcpb_2eproto_once, descriptor_table_kvrpcpb_2eproto_deps, 2, 21,
     schemas, file_default_instances, TableStruct_kvrpcpb_2eproto::offsets,
     file_level_metadata_kvrpcpb_2eproto, file_level_enum_descriptors_kvrpcpb_2eproto,
     file_level_service_descriptors_kvrpcpb_2eproto,
@@ -6335,6 +6423,919 @@ void RawScanResponse::InternalSwap(RawScanResponse* other) {
       file_level_metadata_kvrpcpb_2eproto[17]);
 }
 
+// ===================================================================
+
+class KeyRange::_Internal {
+ public:
+};
+
+KeyRange::KeyRange(::PROTOBUF_NAMESPACE_ID::Arena* arena,
+                         bool is_message_owned)
+  : ::PROTOBUF_NAMESPACE_ID::Message(arena, is_message_owned) {
+  SharedCtor(arena, is_message_owned);
+  // @@protoc_insertion_point(arena_constructor:kvrpcpb.KeyRange)
+}
+KeyRange::KeyRange(const KeyRange& from)
+  : ::PROTOBUF_NAMESPACE_ID::Message() {
+  KeyRange* const _this = this; (void)_this;
+  new (&_impl_) Impl_{
+      decltype(_impl_.start_key_){}
+    , decltype(_impl_.end_key_){}
+    , /*decltype(_impl_._cached_size_)*/{}};
+
+  _internal_metadata_.MergeFrom<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(from._internal_metadata_);
+  _impl_.start_key_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.start_key_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (!from._internal_start_key().empty()) {
+    _this->_impl_.start_key_.Set(from._internal_start_key(), 
+      _this->GetArenaForAllocation());
+  }
+  _impl_.end_key_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.end_key_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (!from._internal_end_key().empty()) {
+    _this->_impl_.end_key_.Set(from._internal_end_key(), 
+      _this->GetArenaForAllocation());
+  }
+  // @@protoc_insertion_point(copy_constructor:kvrpcpb.KeyRange)
+}
+
+inline void KeyRange::SharedCtor(
+    ::_pb::Arena* arena, bool is_message_owned) {
+  (void)arena;
+  (void)is_message_owned;
+  new (&_impl_) Impl_{
+      decltype(_impl_.start_key_){}
+    , decltype(_impl_.end_key_){}
+    , /*decltype(_impl_._cached_size_)*/{}
+  };
+  _impl_.start_key_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.start_key_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  _impl_.end_key_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.end_key_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+}
+
+KeyRange::~KeyRange() {
+  // @@protoc_insertion_point(destructor:kvrpcpb.KeyRange)
+  if (auto *arena = _internal_metadata_.DeleteReturnArena<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>()) {
+  (void)arena;
+    return;
+  }
+  SharedDtor();
+}
+
+inline void KeyRange::SharedDtor() {
+  GOOGLE_DCHECK(GetArenaForAllocation() == nullptr);
+  _impl_.start_key_.Destroy();
+  _impl_.end_key_.Destroy();
+}
+
+void KeyRange::SetCachedSize(int size) const {
+  _impl_._cached_size_.Set(size);
+}
+
+void KeyRange::Clear() {
+// @@protoc_insertion_point(message_clear_start:kvrpcpb.KeyRange)
+  uint32_t cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void) cached_has_bits;
+
+  _impl_.start_key_.ClearToEmpty();
+  _impl_.end_key_.ClearToEmpty();
+  _internal_metadata_.Clear<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>();
+}
+
+const char* KeyRange::_InternalParse(const char* ptr, ::_pbi::ParseContext* ctx) {
+#define CHK_(x) if (PROTOBUF_PREDICT_FALSE(!(x))) goto failure
+  while (!ctx->Done(&ptr)) {
+    uint32_t tag;
+    ptr = ::_pbi::ReadTag(ptr, &tag);
+    switch (tag >> 3) {
+      // bytes start_key = 1;
+      case 1:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 10)) {
+          auto str = _internal_mutable_start_key();
+          ptr = ::_pbi::InlineGreedyStringParser(str, ptr, ctx);
+          CHK_(ptr);
+        } else
+          goto handle_unusual;
+        continue;
+      // bytes end_key = 2;
+      case 2:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 18)) {
+          auto str = _internal_mutable_end_key();
+          ptr = ::_pbi::InlineGreedyStringParser(str, ptr, ctx);
+          CHK_(ptr);
+        } else
+          goto handle_unusual;
+        continue;
+      default:
+        goto handle_unusual;
+    }  // switch
+  handle_unusual:
+    if ((tag == 0) || ((tag & 7) == 4)) {
+      CHK_(ptr);
+      ctx->SetLastTag(tag);
+      goto message_done;
+    }
+    ptr = UnknownFieldParse(
+        tag,
+        _internal_metadata_.mutable_unknown_fields<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(),
+        ptr, ctx);
+    CHK_(ptr != nullptr);
+  }  // while
+message_done:
+  return ptr;
+failure:
+  ptr = nullptr;
+  goto message_done;
+#undef CHK_
+}
+
+uint8_t* KeyRange::_InternalSerialize(
+    uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const {
+  // @@protoc_insertion_point(serialize_to_array_start:kvrpcpb.KeyRange)
+  uint32_t cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // bytes start_key = 1;
+  if (!this->_internal_start_key().empty()) {
+    target = stream->WriteBytesMaybeAliased(
+        1, this->_internal_start_key(), target);
+  }
+
+  // bytes end_key = 2;
+  if (!this->_internal_end_key().empty()) {
+    target = stream->WriteBytesMaybeAliased(
+        2, this->_internal_end_key(), target);
+  }
+
+  if (PROTOBUF_PREDICT_FALSE(_internal_metadata_.have_unknown_fields())) {
+    target = ::_pbi::WireFormat::InternalSerializeUnknownFieldsToArray(
+        _internal_metadata_.unknown_fields<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(::PROTOBUF_NAMESPACE_ID::UnknownFieldSet::default_instance), target, stream);
+  }
+  // @@protoc_insertion_point(serialize_to_array_end:kvrpcpb.KeyRange)
+  return target;
+}
+
+size_t KeyRange::ByteSizeLong() const {
+// @@protoc_insertion_point(message_byte_size_start:kvrpcpb.KeyRange)
+  size_t total_size = 0;
+
+  uint32_t cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void) cached_has_bits;
+
+  // bytes start_key = 1;
+  if (!this->_internal_start_key().empty()) {
+    total_size += 1 +
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::BytesSize(
+        this->_internal_start_key());
+  }
+
+  // bytes end_key = 2;
+  if (!this->_internal_end_key().empty()) {
+    total_size += 1 +
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::BytesSize(
+        this->_internal_end_key());
+  }
+
+  return MaybeComputeUnknownFieldsSize(total_size, &_impl_._cached_size_);
+}
+
+const ::PROTOBUF_NAMESPACE_ID::Message::ClassData KeyRange::_class_data_ = {
+    ::PROTOBUF_NAMESPACE_ID::Message::CopyWithSourceCheck,
+    KeyRange::MergeImpl
+};
+const ::PROTOBUF_NAMESPACE_ID::Message::ClassData*KeyRange::GetClassData() const { return &_class_data_; }
+
+
+void KeyRange::MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg) {
+  auto* const _this = static_cast<KeyRange*>(&to_msg);
+  auto& from = static_cast<const KeyRange&>(from_msg);
+  // @@protoc_insertion_point(class_specific_merge_from_start:kvrpcpb.KeyRange)
+  GOOGLE_DCHECK_NE(&from, _this);
+  uint32_t cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  if (!from._internal_start_key().empty()) {
+    _this->_internal_set_start_key(from._internal_start_key());
+  }
+  if (!from._internal_end_key().empty()) {
+    _this->_internal_set_end_key(from._internal_end_key());
+  }
+  _this->_internal_metadata_.MergeFrom<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(from._internal_metadata_);
+}
+
+void KeyRange::CopyFrom(const KeyRange& from) {
+// @@protoc_insertion_point(class_specific_copy_from_start:kvrpcpb.KeyRange)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+bool KeyRange::IsInitialized() const {
+  return true;
+}
+
+void KeyRange::InternalSwap(KeyRange* other) {
+  using std::swap;
+  auto* lhs_arena = GetArenaForAllocation();
+  auto* rhs_arena = other->GetArenaForAllocation();
+  _internal_metadata_.InternalSwap(&other->_internal_metadata_);
+  ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr::InternalSwap(
+      &_impl_.start_key_, lhs_arena,
+      &other->_impl_.start_key_, rhs_arena
+  );
+  ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr::InternalSwap(
+      &_impl_.end_key_, lhs_arena,
+      &other->_impl_.end_key_, rhs_arena
+  );
+}
+
+::PROTOBUF_NAMESPACE_ID::Metadata KeyRange::GetMetadata() const {
+  return ::_pbi::AssignDescriptors(
+      &descriptor_table_kvrpcpb_2eproto_getter, &descriptor_table_kvrpcpb_2eproto_once,
+      file_level_metadata_kvrpcpb_2eproto[18]);
+}
+
+// ===================================================================
+
+class RawCoprocessorRequest::_Internal {
+ public:
+  static const ::kvrpcpb::Context& context(const RawCoprocessorRequest* msg);
+};
+
+const ::kvrpcpb::Context&
+RawCoprocessorRequest::_Internal::context(const RawCoprocessorRequest* msg) {
+  return *msg->_impl_.context_;
+}
+RawCoprocessorRequest::RawCoprocessorRequest(::PROTOBUF_NAMESPACE_ID::Arena* arena,
+                         bool is_message_owned)
+  : ::PROTOBUF_NAMESPACE_ID::Message(arena, is_message_owned) {
+  SharedCtor(arena, is_message_owned);
+  // @@protoc_insertion_point(arena_constructor:kvrpcpb.RawCoprocessorRequest)
+}
+RawCoprocessorRequest::RawCoprocessorRequest(const RawCoprocessorRequest& from)
+  : ::PROTOBUF_NAMESPACE_ID::Message() {
+  RawCoprocessorRequest* const _this = this; (void)_this;
+  new (&_impl_) Impl_{
+      decltype(_impl_.ranges_){from._impl_.ranges_}
+    , decltype(_impl_.copr_name_){}
+    , decltype(_impl_.copr_version_req_){}
+    , decltype(_impl_.data_){}
+    , decltype(_impl_.context_){nullptr}
+    , /*decltype(_impl_._cached_size_)*/{}};
+
+  _internal_metadata_.MergeFrom<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(from._internal_metadata_);
+  _impl_.copr_name_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.copr_name_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (!from._internal_copr_name().empty()) {
+    _this->_impl_.copr_name_.Set(from._internal_copr_name(), 
+      _this->GetArenaForAllocation());
+  }
+  _impl_.copr_version_req_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.copr_version_req_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (!from._internal_copr_version_req().empty()) {
+    _this->_impl_.copr_version_req_.Set(from._internal_copr_version_req(), 
+      _this->GetArenaForAllocation());
+  }
+  _impl_.data_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.data_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (!from._internal_data().empty()) {
+    _this->_impl_.data_.Set(from._internal_data(), 
+      _this->GetArenaForAllocation());
+  }
+  if (from._internal_has_context()) {
+    _this->_impl_.context_ = new ::kvrpcpb::Context(*from._impl_.context_);
+  }
+  // @@protoc_insertion_point(copy_constructor:kvrpcpb.RawCoprocessorRequest)
+}
+
+inline void RawCoprocessorRequest::SharedCtor(
+    ::_pb::Arena* arena, bool is_message_owned) {
+  (void)arena;
+  (void)is_message_owned;
+  new (&_impl_) Impl_{
+      decltype(_impl_.ranges_){arena}
+    , decltype(_impl_.copr_name_){}
+    , decltype(_impl_.copr_version_req_){}
+    , decltype(_impl_.data_){}
+    , decltype(_impl_.context_){nullptr}
+    , /*decltype(_impl_._cached_size_)*/{}
+  };
+  _impl_.copr_name_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.copr_name_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  _impl_.copr_version_req_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.copr_version_req_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  _impl_.data_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.data_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+}
+
+RawCoprocessorRequest::~RawCoprocessorRequest() {
+  // @@protoc_insertion_point(destructor:kvrpcpb.RawCoprocessorRequest)
+  if (auto *arena = _internal_metadata_.DeleteReturnArena<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>()) {
+  (void)arena;
+    return;
+  }
+  SharedDtor();
+}
+
+inline void RawCoprocessorRequest::SharedDtor() {
+  GOOGLE_DCHECK(GetArenaForAllocation() == nullptr);
+  _impl_.ranges_.~RepeatedPtrField();
+  _impl_.copr_name_.Destroy();
+  _impl_.copr_version_req_.Destroy();
+  _impl_.data_.Destroy();
+  if (this != internal_default_instance()) delete _impl_.context_;
+}
+
+void RawCoprocessorRequest::SetCachedSize(int size) const {
+  _impl_._cached_size_.Set(size);
+}
+
+void RawCoprocessorRequest::Clear() {
+// @@protoc_insertion_point(message_clear_start:kvrpcpb.RawCoprocessorRequest)
+  uint32_t cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void) cached_has_bits;
+
+  _impl_.ranges_.Clear();
+  _impl_.copr_name_.ClearToEmpty();
+  _impl_.copr_version_req_.ClearToEmpty();
+  _impl_.data_.ClearToEmpty();
+  if (GetArenaForAllocation() == nullptr && _impl_.context_ != nullptr) {
+    delete _impl_.context_;
+  }
+  _impl_.context_ = nullptr;
+  _internal_metadata_.Clear<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>();
+}
+
+const char* RawCoprocessorRequest::_InternalParse(const char* ptr, ::_pbi::ParseContext* ctx) {
+#define CHK_(x) if (PROTOBUF_PREDICT_FALSE(!(x))) goto failure
+  while (!ctx->Done(&ptr)) {
+    uint32_t tag;
+    ptr = ::_pbi::ReadTag(ptr, &tag);
+    switch (tag >> 3) {
+      // .kvrpcpb.Context context = 1;
+      case 1:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 10)) {
+          ptr = ctx->ParseMessage(_internal_mutable_context(), ptr);
+          CHK_(ptr);
+        } else
+          goto handle_unusual;
+        continue;
+      // string copr_name = 2;
+      case 2:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 18)) {
+          auto str = _internal_mutable_copr_name();
+          ptr = ::_pbi::InlineGreedyStringParser(str, ptr, ctx);
+          CHK_(ptr);
+          CHK_(::_pbi::VerifyUTF8(str, "kvrpcpb.RawCoprocessorRequest.copr_name"));
+        } else
+          goto handle_unusual;
+        continue;
+      // string copr_version_req = 3;
+      case 3:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 26)) {
+          auto str = _internal_mutable_copr_version_req();
+          ptr = ::_pbi::InlineGreedyStringParser(str, ptr, ctx);
+          CHK_(ptr);
+          CHK_(::_pbi::VerifyUTF8(str, "kvrpcpb.RawCoprocessorRequest.copr_version_req"));
+        } else
+          goto handle_unusual;
+        continue;
+      // repeated .kvrpcpb.KeyRange ranges = 4;
+      case 4:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 34)) {
+          ptr -= 1;
+          do {
+            ptr += 1;
+            ptr = ctx->ParseMessage(_internal_add_ranges(), ptr);
+            CHK_(ptr);
+            if (!ctx->DataAvailable(ptr)) break;
+          } while (::PROTOBUF_NAMESPACE_ID::internal::ExpectTag<34>(ptr));
+        } else
+          goto handle_unusual;
+        continue;
+      // bytes data = 5;
+      case 5:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 42)) {
+          auto str = _internal_mutable_data();
+          ptr = ::_pbi::InlineGreedyStringParser(str, ptr, ctx);
+          CHK_(ptr);
+        } else
+          goto handle_unusual;
+        continue;
+      default:
+        goto handle_unusual;
+    }  // switch
+  handle_unusual:
+    if ((tag == 0) || ((tag & 7) == 4)) {
+      CHK_(ptr);
+      ctx->SetLastTag(tag);
+      goto message_done;
+    }
+    ptr = UnknownFieldParse(
+        tag,
+        _internal_metadata_.mutable_unknown_fields<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(),
+        ptr, ctx);
+    CHK_(ptr != nullptr);
+  }  // while
+message_done:
+  return ptr;
+failure:
+  ptr = nullptr;
+  goto message_done;
+#undef CHK_
+}
+
+uint8_t* RawCoprocessorRequest::_InternalSerialize(
+    uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const {
+  // @@protoc_insertion_point(serialize_to_array_start:kvrpcpb.RawCoprocessorRequest)
+  uint32_t cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // .kvrpcpb.Context context = 1;
+  if (this->_internal_has_context()) {
+    target = ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::
+      InternalWriteMessage(1, _Internal::context(this),
+        _Internal::context(this).GetCachedSize(), target, stream);
+  }
+
+  // string copr_name = 2;
+  if (!this->_internal_copr_name().empty()) {
+    ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::VerifyUtf8String(
+      this->_internal_copr_name().data(), static_cast<int>(this->_internal_copr_name().length()),
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::SERIALIZE,
+      "kvrpcpb.RawCoprocessorRequest.copr_name");
+    target = stream->WriteStringMaybeAliased(
+        2, this->_internal_copr_name(), target);
+  }
+
+  // string copr_version_req = 3;
+  if (!this->_internal_copr_version_req().empty()) {
+    ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::VerifyUtf8String(
+      this->_internal_copr_version_req().data(), static_cast<int>(this->_internal_copr_version_req().length()),
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::SERIALIZE,
+      "kvrpcpb.RawCoprocessorRequest.copr_version_req");
+    target = stream->WriteStringMaybeAliased(
+        3, this->_internal_copr_version_req(), target);
+  }
+
+  // repeated .kvrpcpb.KeyRange ranges = 4;
+  for (unsigned i = 0,
+      n = static_cast<unsigned>(this->_internal_ranges_size()); i < n; i++) {
+    const auto& repfield = this->_internal_ranges(i);
+    target = ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::
+        InternalWriteMessage(4, repfield, repfield.GetCachedSize(), target, stream);
+  }
+
+  // bytes data = 5;
+  if (!this->_internal_data().empty()) {
+    target = stream->WriteBytesMaybeAliased(
+        5, this->_internal_data(), target);
+  }
+
+  if (PROTOBUF_PREDICT_FALSE(_internal_metadata_.have_unknown_fields())) {
+    target = ::_pbi::WireFormat::InternalSerializeUnknownFieldsToArray(
+        _internal_metadata_.unknown_fields<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(::PROTOBUF_NAMESPACE_ID::UnknownFieldSet::default_instance), target, stream);
+  }
+  // @@protoc_insertion_point(serialize_to_array_end:kvrpcpb.RawCoprocessorRequest)
+  return target;
+}
+
+size_t RawCoprocessorRequest::ByteSizeLong() const {
+// @@protoc_insertion_point(message_byte_size_start:kvrpcpb.RawCoprocessorRequest)
+  size_t total_size = 0;
+
+  uint32_t cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void) cached_has_bits;
+
+  // repeated .kvrpcpb.KeyRange ranges = 4;
+  total_size += 1UL * this->_internal_ranges_size();
+  for (const auto& msg : this->_impl_.ranges_) {
+    total_size +=
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::MessageSize(msg);
+  }
+
+  // string copr_name = 2;
+  if (!this->_internal_copr_name().empty()) {
+    total_size += 1 +
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::StringSize(
+        this->_internal_copr_name());
+  }
+
+  // string copr_version_req = 3;
+  if (!this->_internal_copr_version_req().empty()) {
+    total_size += 1 +
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::StringSize(
+        this->_internal_copr_version_req());
+  }
+
+  // bytes data = 5;
+  if (!this->_internal_data().empty()) {
+    total_size += 1 +
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::BytesSize(
+        this->_internal_data());
+  }
+
+  // .kvrpcpb.Context context = 1;
+  if (this->_internal_has_context()) {
+    total_size += 1 +
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::MessageSize(
+        *_impl_.context_);
+  }
+
+  return MaybeComputeUnknownFieldsSize(total_size, &_impl_._cached_size_);
+}
+
+const ::PROTOBUF_NAMESPACE_ID::Message::ClassData RawCoprocessorRequest::_class_data_ = {
+    ::PROTOBUF_NAMESPACE_ID::Message::CopyWithSourceCheck,
+    RawCoprocessorRequest::MergeImpl
+};
+const ::PROTOBUF_NAMESPACE_ID::Message::ClassData*RawCoprocessorRequest::GetClassData() const { return &_class_data_; }
+
+
+void RawCoprocessorRequest::MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg) {
+  auto* const _this = static_cast<RawCoprocessorRequest*>(&to_msg);
+  auto& from = static_cast<const RawCoprocessorRequest&>(from_msg);
+  // @@protoc_insertion_point(class_specific_merge_from_start:kvrpcpb.RawCoprocessorRequest)
+  GOOGLE_DCHECK_NE(&from, _this);
+  uint32_t cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  _this->_impl_.ranges_.MergeFrom(from._impl_.ranges_);
+  if (!from._internal_copr_name().empty()) {
+    _this->_internal_set_copr_name(from._internal_copr_name());
+  }
+  if (!from._internal_copr_version_req().empty()) {
+    _this->_internal_set_copr_version_req(from._internal_copr_version_req());
+  }
+  if (!from._internal_data().empty()) {
+    _this->_internal_set_data(from._internal_data());
+  }
+  if (from._internal_has_context()) {
+    _this->_internal_mutable_context()->::kvrpcpb::Context::MergeFrom(
+        from._internal_context());
+  }
+  _this->_internal_metadata_.MergeFrom<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(from._internal_metadata_);
+}
+
+void RawCoprocessorRequest::CopyFrom(const RawCoprocessorRequest& from) {
+// @@protoc_insertion_point(class_specific_copy_from_start:kvrpcpb.RawCoprocessorRequest)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+bool RawCoprocessorRequest::IsInitialized() const {
+  return true;
+}
+
+void RawCoprocessorRequest::InternalSwap(RawCoprocessorRequest* other) {
+  using std::swap;
+  auto* lhs_arena = GetArenaForAllocation();
+  auto* rhs_arena = other->GetArenaForAllocation();
+  _internal_metadata_.InternalSwap(&other->_internal_metadata_);
+  _impl_.ranges_.InternalSwap(&other->_impl_.ranges_);
+  ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr::InternalSwap(
+      &_impl_.copr_name_, lhs_arena,
+      &other->_impl_.copr_name_, rhs_arena
+  );
+  ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr::InternalSwap(
+      &_impl_.copr_version_req_, lhs_arena,
+      &other->_impl_.copr_version_req_, rhs_arena
+  );
+  ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr::InternalSwap(
+      &_impl_.data_, lhs_arena,
+      &other->_impl_.data_, rhs_arena
+  );
+  swap(_impl_.context_, other->_impl_.context_);
+}
+
+::PROTOBUF_NAMESPACE_ID::Metadata RawCoprocessorRequest::GetMetadata() const {
+  return ::_pbi::AssignDescriptors(
+      &descriptor_table_kvrpcpb_2eproto_getter, &descriptor_table_kvrpcpb_2eproto_once,
+      file_level_metadata_kvrpcpb_2eproto[19]);
+}
+
+// ===================================================================
+
+class RawCoprocessorResponse::_Internal {
+ public:
+  static const ::errorpb::Error& region_error(const RawCoprocessorResponse* msg);
+};
+
+const ::errorpb::Error&
+RawCoprocessorResponse::_Internal::region_error(const RawCoprocessorResponse* msg) {
+  return *msg->_impl_.region_error_;
+}
+void RawCoprocessorResponse::clear_region_error() {
+  if (GetArenaForAllocation() == nullptr && _impl_.region_error_ != nullptr) {
+    delete _impl_.region_error_;
+  }
+  _impl_.region_error_ = nullptr;
+}
+RawCoprocessorResponse::RawCoprocessorResponse(::PROTOBUF_NAMESPACE_ID::Arena* arena,
+                         bool is_message_owned)
+  : ::PROTOBUF_NAMESPACE_ID::Message(arena, is_message_owned) {
+  SharedCtor(arena, is_message_owned);
+  // @@protoc_insertion_point(arena_constructor:kvrpcpb.RawCoprocessorResponse)
+}
+RawCoprocessorResponse::RawCoprocessorResponse(const RawCoprocessorResponse& from)
+  : ::PROTOBUF_NAMESPACE_ID::Message() {
+  RawCoprocessorResponse* const _this = this; (void)_this;
+  new (&_impl_) Impl_{
+      decltype(_impl_.error_){}
+    , decltype(_impl_.data_){}
+    , decltype(_impl_.region_error_){nullptr}
+    , /*decltype(_impl_._cached_size_)*/{}};
+
+  _internal_metadata_.MergeFrom<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(from._internal_metadata_);
+  _impl_.error_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.error_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (!from._internal_error().empty()) {
+    _this->_impl_.error_.Set(from._internal_error(), 
+      _this->GetArenaForAllocation());
+  }
+  _impl_.data_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.data_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (!from._internal_data().empty()) {
+    _this->_impl_.data_.Set(from._internal_data(), 
+      _this->GetArenaForAllocation());
+  }
+  if (from._internal_has_region_error()) {
+    _this->_impl_.region_error_ = new ::errorpb::Error(*from._impl_.region_error_);
+  }
+  // @@protoc_insertion_point(copy_constructor:kvrpcpb.RawCoprocessorResponse)
+}
+
+inline void RawCoprocessorResponse::SharedCtor(
+    ::_pb::Arena* arena, bool is_message_owned) {
+  (void)arena;
+  (void)is_message_owned;
+  new (&_impl_) Impl_{
+      decltype(_impl_.error_){}
+    , decltype(_impl_.data_){}
+    , decltype(_impl_.region_error_){nullptr}
+    , /*decltype(_impl_._cached_size_)*/{}
+  };
+  _impl_.error_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.error_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  _impl_.data_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.data_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+}
+
+RawCoprocessorResponse::~RawCoprocessorResponse() {
+  // @@protoc_insertion_point(destructor:kvrpcpb.RawCoprocessorResponse)
+  if (auto *arena = _internal_metadata_.DeleteReturnArena<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>()) {
+  (void)arena;
+    return;
+  }
+  SharedDtor();
+}
+
+inline void RawCoprocessorResponse::SharedDtor() {
+  GOOGLE_DCHECK(GetArenaForAllocation() == nullptr);
+  _impl_.error_.Destroy();
+  _impl_.data_.Destroy();
+  if (this != internal_default_instance()) delete _impl_.region_error_;
+}
+
+void RawCoprocessorResponse::SetCachedSize(int size) const {
+  _impl_._cached_size_.Set(size);
+}
+
+void RawCoprocessorResponse::Clear() {
+// @@protoc_insertion_point(message_clear_start:kvrpcpb.RawCoprocessorResponse)
+  uint32_t cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void) cached_has_bits;
+
+  _impl_.error_.ClearToEmpty();
+  _impl_.data_.ClearToEmpty();
+  if (GetArenaForAllocation() == nullptr && _impl_.region_error_ != nullptr) {
+    delete _impl_.region_error_;
+  }
+  _impl_.region_error_ = nullptr;
+  _internal_metadata_.Clear<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>();
+}
+
+const char* RawCoprocessorResponse::_InternalParse(const char* ptr, ::_pbi::ParseContext* ctx) {
+#define CHK_(x) if (PROTOBUF_PREDICT_FALSE(!(x))) goto failure
+  while (!ctx->Done(&ptr)) {
+    uint32_t tag;
+    ptr = ::_pbi::ReadTag(ptr, &tag);
+    switch (tag >> 3) {
+      // .errorpb.Error region_error = 1;
+      case 1:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 10)) {
+          ptr = ctx->ParseMessage(_internal_mutable_region_error(), ptr);
+          CHK_(ptr);
+        } else
+          goto handle_unusual;
+        continue;
+      // string error = 2;
+      case 2:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 18)) {
+          auto str = _internal_mutable_error();
+          ptr = ::_pbi::InlineGreedyStringParser(str, ptr, ctx);
+          CHK_(ptr);
+          CHK_(::_pbi::VerifyUTF8(str, "kvrpcpb.RawCoprocessorResponse.error"));
+        } else
+          goto handle_unusual;
+        continue;
+      // bytes data = 3;
+      case 3:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 26)) {
+          auto str = _internal_mutable_data();
+          ptr = ::_pbi::InlineGreedyStringParser(str, ptr, ctx);
+          CHK_(ptr);
+        } else
+          goto handle_unusual;
+        continue;
+      default:
+        goto handle_unusual;
+    }  // switch
+  handle_unusual:
+    if ((tag == 0) || ((tag & 7) == 4)) {
+      CHK_(ptr);
+      ctx->SetLastTag(tag);
+      goto message_done;
+    }
+    ptr = UnknownFieldParse(
+        tag,
+        _internal_metadata_.mutable_unknown_fields<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(),
+        ptr, ctx);
+    CHK_(ptr != nullptr);
+  }  // while
+message_done:
+  return ptr;
+failure:
+  ptr = nullptr;
+  goto message_done;
+#undef CHK_
+}
+
+uint8_t* RawCoprocessorResponse::_InternalSerialize(
+    uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const {
+  // @@protoc_insertion_point(serialize_to_array_start:kvrpcpb.RawCoprocessorResponse)
+  uint32_t cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  // .errorpb.Error region_error = 1;
+  if (this->_internal_has_region_error()) {
+    target = ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::
+      InternalWriteMessage(1, _Internal::region_error(this),
+        _Internal::region_error(this).GetCachedSize(), target, stream);
+  }
+
+  // string error = 2;
+  if (!this->_internal_error().empty()) {
+    ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::VerifyUtf8String(
+      this->_internal_error().data(), static_cast<int>(this->_internal_error().length()),
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::SERIALIZE,
+      "kvrpcpb.RawCoprocessorResponse.error");
+    target = stream->WriteStringMaybeAliased(
+        2, this->_internal_error(), target);
+  }
+
+  // bytes data = 3;
+  if (!this->_internal_data().empty()) {
+    target = stream->WriteBytesMaybeAliased(
+        3, this->_internal_data(), target);
+  }
+
+  if (PROTOBUF_PREDICT_FALSE(_internal_metadata_.have_unknown_fields())) {
+    target = ::_pbi::WireFormat::InternalSerializeUnknownFieldsToArray(
+        _internal_metadata_.unknown_fields<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(::PROTOBUF_NAMESPACE_ID::UnknownFieldSet::default_instance), target, stream);
+  }
+  // @@protoc_insertion_point(serialize_to_array_end:kvrpcpb.RawCoprocessorResponse)
+  return target;
+}
+
+size_t RawCoprocessorResponse::ByteSizeLong() const {
+// @@protoc_insertion_point(message_byte_size_start:kvrpcpb.RawCoprocessorResponse)
+  size_t total_size = 0;
+
+  uint32_t cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void) cached_has_bits;
+
+  // string error = 2;
+  if (!this->_internal_error().empty()) {
+    total_size += 1 +
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::StringSize(
+        this->_internal_error());
+  }
+
+  // bytes data = 3;
+  if (!this->_internal_data().empty()) {
+    total_size += 1 +
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::BytesSize(
+        this->_internal_data());
+  }
+
+  // .errorpb.Error region_error = 1;
+  if (this->_internal_has_region_error()) {
+    total_size += 1 +
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::MessageSize(
+        *_impl_.region_error_);
+  }
+
+  return MaybeComputeUnknownFieldsSize(total_size, &_impl_._cached_size_);
+}
+
+const ::PROTOBUF_NAMESPACE_ID::Message::ClassData RawCoprocessorResponse::_class_data_ = {
+    ::PROTOBUF_NAMESPACE_ID::Message::CopyWithSourceCheck,
+    RawCoprocessorResponse::MergeImpl
+};
+const ::PROTOBUF_NAMESPACE_ID::Message::ClassData*RawCoprocessorResponse::GetClassData() const { return &_class_data_; }
+
+
+void RawCoprocessorResponse::MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg) {
+  auto* const _this = static_cast<RawCoprocessorResponse*>(&to_msg);
+  auto& from = static_cast<const RawCoprocessorResponse&>(from_msg);
+  // @@protoc_insertion_point(class_specific_merge_from_start:kvrpcpb.RawCoprocessorResponse)
+  GOOGLE_DCHECK_NE(&from, _this);
+  uint32_t cached_has_bits = 0;
+  (void) cached_has_bits;
+
+  if (!from._internal_error().empty()) {
+    _this->_internal_set_error(from._internal_error());
+  }
+  if (!from._internal_data().empty()) {
+    _this->_internal_set_data(from._internal_data());
+  }
+  if (from._internal_has_region_error()) {
+    _this->_internal_mutable_region_error()->::errorpb::Error::MergeFrom(
+        from._internal_region_error());
+  }
+  _this->_internal_metadata_.MergeFrom<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(from._internal_metadata_);
+}
+
+void RawCoprocessorResponse::CopyFrom(const RawCoprocessorResponse& from) {
+// @@protoc_insertion_point(class_specific_copy_from_start:kvrpcpb.RawCoprocessorResponse)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+bool RawCoprocessorResponse::IsInitialized() const {
+  return true;
+}
+
+void RawCoprocessorResponse::InternalSwap(RawCoprocessorResponse* other) {
+  using std::swap;
+  auto* lhs_arena = GetArenaForAllocation();
+  auto* rhs_arena = other->GetArenaForAllocation();
+  _internal_metadata_.InternalSwap(&other->_internal_metadata_);
+  ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr::InternalSwap(
+      &_impl_.error_, lhs_arena,
+      &other->_impl_.error_, rhs_arena
+  );
+  ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr::InternalSwap(
+      &_impl_.data_, lhs_arena,
+      &other->_impl_.data_, rhs_arena
+  );
+  swap(_impl_.region_error_, other->_impl_.region_error_);
+}
+
+::PROTOBUF_NAMESPACE_ID::Metadata RawCoprocessorResponse::GetMetadata() const {
+  return ::_pbi::AssignDescriptors(
+      &descriptor_table_kvrpcpb_2eproto_getter, &descriptor_table_kvrpcpb_2eproto_once,
+      file_level_metadata_kvrpcpb_2eproto[20]);
+}
+
 // @@protoc_insertion_point(namespace_scope)
 }  // namespace kvrpcpb
 PROTOBUF_NAMESPACE_OPEN
@@ -6409,6 +7410,18 @@ Arena::CreateMaybeMessage< ::kvrpcpb::RawScanRequest >(Arena* arena) {
 template<> PROTOBUF_NOINLINE ::kvrpcpb::RawScanResponse*
 Arena::CreateMaybeMessage< ::kvrpcpb::RawScanResponse >(Arena* arena) {
   return Arena::CreateMessageInternal< ::kvrpcpb::RawScanResponse >(arena);
+}
+template<> PROTOBUF_NOINLINE ::kvrpcpb::KeyRange*
+Arena::CreateMaybeMessage< ::kvrpcpb::KeyRange >(Arena* arena) {
+  return Arena::CreateMessageInternal< ::kvrpcpb::KeyRange >(arena);
+}
+template<> PROTOBUF_NOINLINE ::kvrpcpb::RawCoprocessorRequest*
+Arena::CreateMaybeMessage< ::kvrpcpb::RawCoprocessorRequest >(Arena* arena) {
+  return Arena::CreateMessageInternal< ::kvrpcpb::RawCoprocessorRequest >(arena);
+}
+template<> PROTOBUF_NOINLINE ::kvrpcpb::RawCoprocessorResponse*
+Arena::CreateMaybeMessage< ::kvrpcpb::RawCoprocessorResponse >(Arena* arena) {
+  return Arena::CreateMessageInternal< ::kvrpcpb::RawCoprocessorResponse >(arena);
 }
 PROTOBUF_NAMESPACE_CLOSE
 

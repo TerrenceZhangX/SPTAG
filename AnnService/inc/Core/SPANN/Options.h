@@ -109,6 +109,10 @@ namespace SPTAG {
             bool m_enableWAL;
             bool m_disableCheckpoint;
 
+            // Coprocessor search (push computation to TiKV)
+            bool m_useCoprocessorSearch;
+            int m_coprocessorTopN;
+
             // GPU building
             int m_gpuSSDNumTrees;
             int m_gpuSSDLeafSize;

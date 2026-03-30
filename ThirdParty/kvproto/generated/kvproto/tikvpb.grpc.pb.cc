@@ -30,6 +30,7 @@ static const char* Tikv_method_names[] = {
   "/tikvpb.Tikv/RawBatchDelete",
   "/tikvpb.Tikv/RawDeleteRange",
   "/tikvpb.Tikv/RawScan",
+  "/tikvpb.Tikv/RawCoprocessor",
 };
 
 std::unique_ptr< Tikv::Stub> Tikv::NewStub(const std::shared_ptr< ::grpc::ChannelInterface>& channel, const ::grpc::StubOptions& options) {
@@ -47,6 +48,7 @@ Tikv::Stub::Stub(const std::shared_ptr< ::grpc::ChannelInterface>& channel, cons
   , rpcmethod_RawBatchDelete_(Tikv_method_names[5], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
   , rpcmethod_RawDeleteRange_(Tikv_method_names[6], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
   , rpcmethod_RawScan_(Tikv_method_names[7], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
+  , rpcmethod_RawCoprocessor_(Tikv_method_names[8], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
   {}
 
 ::grpc::Status Tikv::Stub::RawGet(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest& request, ::kvrpcpb::RawGetResponse* response) {
@@ -233,6 +235,29 @@ void Tikv::Stub::async::RawScan(::grpc::ClientContext* context, const ::kvrpcpb:
   return result;
 }
 
+::grpc::Status Tikv::Stub::RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::kvrpcpb::RawCoprocessorResponse* response) {
+  return ::grpc::internal::BlockingUnaryCall< ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_RawCoprocessor_, context, request, response);
+}
+
+void Tikv::Stub::async::RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc::internal::CallbackUnaryCall< ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawCoprocessor_, context, request, response, std::move(f));
+}
+
+void Tikv::Stub::async::RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, ::grpc::ClientUnaryReactor* reactor) {
+  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawCoprocessor_, context, request, response, reactor);
+}
+
+::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawCoprocessorResponse>* Tikv::Stub::PrepareAsyncRawCoprocessorRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) {
+  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::kvrpcpb::RawCoprocessorResponse, ::kvrpcpb::RawCoprocessorRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_RawCoprocessor_, context, request);
+}
+
+::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawCoprocessorResponse>* Tikv::Stub::AsyncRawCoprocessorRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) {
+  auto* result =
+    this->PrepareAsyncRawCoprocessorRaw(context, request, cq);
+  result->StartCall();
+  return result;
+}
+
 Tikv::Service::Service() {
   AddMethod(new ::grpc::internal::RpcServiceMethod(
       Tikv_method_names[0],
@@ -314,6 +339,16 @@ Tikv::Service::Service() {
              ::kvrpcpb::RawScanResponse* resp) {
                return service->RawScan(ctx, req, resp);
              }, this)));
+  AddMethod(new ::grpc::internal::RpcServiceMethod(
+      Tikv_method_names[8],
+      ::grpc::internal::RpcMethod::NORMAL_RPC,
+      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+          [](Tikv::Service* service,
+             ::grpc::ServerContext* ctx,
+             const ::kvrpcpb::RawCoprocessorRequest* req,
+             ::kvrpcpb::RawCoprocessorResponse* resp) {
+               return service->RawCoprocessor(ctx, req, resp);
+             }, this)));
 }
 
 Tikv::Service::~Service() {
@@ -369,6 +404,13 @@ Tikv::Service::~Service() {
 }
 
 ::grpc::Status Tikv::Service::RawScan(::grpc::ServerContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response) {
+  (void) context;
+  (void) request;
+  (void) response;
+  return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
+}
+
+::grpc::Status Tikv::Service::RawCoprocessor(::grpc::ServerContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response) {
   (void) context;
   (void) request;
   (void) response;

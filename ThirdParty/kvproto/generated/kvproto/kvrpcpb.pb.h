@@ -51,6 +51,9 @@ namespace kvrpcpb {
 class Context;
 struct ContextDefaultTypeInternal;
 extern ContextDefaultTypeInternal _Context_default_instance_;
+class KeyRange;
+struct KeyRangeDefaultTypeInternal;
+extern KeyRangeDefaultTypeInternal _KeyRange_default_instance_;
 class KvPair;
 struct KvPairDefaultTypeInternal;
 extern KvPairDefaultTypeInternal _KvPair_default_instance_;
@@ -72,6 +75,12 @@ extern RawBatchPutRequestDefaultTypeInternal _RawBatchPutRequest_default_instanc
 class RawBatchPutResponse;
 struct RawBatchPutResponseDefaultTypeInternal;
 extern RawBatchPutResponseDefaultTypeInternal _RawBatchPutResponse_default_instance_;
+class RawCoprocessorRequest;
+struct RawCoprocessorRequestDefaultTypeInternal;
+extern RawCoprocessorRequestDefaultTypeInternal _RawCoprocessorRequest_default_instance_;
+class RawCoprocessorResponse;
+struct RawCoprocessorResponseDefaultTypeInternal;
+extern RawCoprocessorResponseDefaultTypeInternal _RawCoprocessorResponse_default_instance_;
 class RawDeleteRangeRequest;
 struct RawDeleteRangeRequestDefaultTypeInternal;
 extern RawDeleteRangeRequestDefaultTypeInternal _RawDeleteRangeRequest_default_instance_;
@@ -105,6 +114,7 @@ extern RawScanResponseDefaultTypeInternal _RawScanResponse_default_instance_;
 }  // namespace kvrpcpb
 PROTOBUF_NAMESPACE_OPEN
 template<> ::kvrpcpb::Context* Arena::CreateMaybeMessage<::kvrpcpb::Context>(Arena*);
+template<> ::kvrpcpb::KeyRange* Arena::CreateMaybeMessage<::kvrpcpb::KeyRange>(Arena*);
 template<> ::kvrpcpb::KvPair* Arena::CreateMaybeMessage<::kvrpcpb::KvPair>(Arena*);
 template<> ::kvrpcpb::RawBatchDeleteRequest* Arena::CreateMaybeMessage<::kvrpcpb::RawBatchDeleteRequest>(Arena*);
 template<> ::kvrpcpb::RawBatchDeleteResponse* Arena::CreateMaybeMessage<::kvrpcpb::RawBatchDeleteResponse>(Arena*);
@@ -112,6 +122,8 @@ template<> ::kvrpcpb::RawBatchGetRequest* Arena::CreateMaybeMessage<::kvrpcpb::R
 template<> ::kvrpcpb::RawBatchGetResponse* Arena::CreateMaybeMessage<::kvrpcpb::RawBatchGetResponse>(Arena*);
 template<> ::kvrpcpb::RawBatchPutRequest* Arena::CreateMaybeMessage<::kvrpcpb::RawBatchPutRequest>(Arena*);
 template<> ::kvrpcpb::RawBatchPutResponse* Arena::CreateMaybeMessage<::kvrpcpb::RawBatchPutResponse>(Arena*);
+template<> ::kvrpcpb::RawCoprocessorRequest* Arena::CreateMaybeMessage<::kvrpcpb::RawCoprocessorRequest>(Arena*);
+template<> ::kvrpcpb::RawCoprocessorResponse* Arena::CreateMaybeMessage<::kvrpcpb::RawCoprocessorResponse>(Arena*);
 template<> ::kvrpcpb::RawDeleteRangeRequest* Arena::CreateMaybeMessage<::kvrpcpb::RawDeleteRangeRequest>(Arena*);
 template<> ::kvrpcpb::RawDeleteRangeResponse* Arena::CreateMaybeMessage<::kvrpcpb::RawDeleteRangeResponse>(Arena*);
 template<> ::kvrpcpb::RawDeleteRequest* Arena::CreateMaybeMessage<::kvrpcpb::RawDeleteRequest>(Arena*);
@@ -3817,6 +3829,589 @@ class RawScanResponse final :
   typedef void DestructorSkippable_;
   struct Impl_ {
     ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::kvrpcpb::KvPair > kvs_;
+    ::errorpb::Error* region_error_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
+  };
+  union { Impl_ _impl_; };
+  friend struct ::TableStruct_kvrpcpb_2eproto;
+};
+// -------------------------------------------------------------------
+
+class KeyRange final :
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:kvrpcpb.KeyRange) */ {
+ public:
+  inline KeyRange() : KeyRange(nullptr) {}
+  ~KeyRange() override;
+  explicit PROTOBUF_CONSTEXPR KeyRange(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
+
+  KeyRange(const KeyRange& from);
+  KeyRange(KeyRange&& from) noexcept
+    : KeyRange() {
+    *this = ::std::move(from);
+  }
+
+  inline KeyRange& operator=(const KeyRange& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  inline KeyRange& operator=(KeyRange&& from) noexcept {
+    if (this == &from) return *this;
+    if (GetOwningArena() == from.GetOwningArena()
+  #ifdef PROTOBUF_FORCE_COPY_IN_MOVE
+        && GetOwningArena() != nullptr
+  #endif  // !PROTOBUF_FORCE_COPY_IN_MOVE
+    ) {
+      InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* descriptor() {
+    return GetDescriptor();
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* GetDescriptor() {
+    return default_instance().GetMetadata().descriptor;
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Reflection* GetReflection() {
+    return default_instance().GetMetadata().reflection;
+  }
+  static const KeyRange& default_instance() {
+    return *internal_default_instance();
+  }
+  static inline const KeyRange* internal_default_instance() {
+    return reinterpret_cast<const KeyRange*>(
+               &_KeyRange_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    18;
+
+  friend void swap(KeyRange& a, KeyRange& b) {
+    a.Swap(&b);
+  }
+  inline void Swap(KeyRange* other) {
+    if (other == this) return;
+  #ifdef PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() != nullptr &&
+        GetOwningArena() == other->GetOwningArena()) {
+   #else  // PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() == other->GetOwningArena()) {
+  #endif  // !PROTOBUF_FORCE_COPY_IN_SWAP
+      InternalSwap(other);
+    } else {
+      ::PROTOBUF_NAMESPACE_ID::internal::GenericSwap(this, other);
+    }
+  }
+  void UnsafeArenaSwap(KeyRange* other) {
+    if (other == this) return;
+    GOOGLE_DCHECK(GetOwningArena() == other->GetOwningArena());
+    InternalSwap(other);
+  }
+
+  // implements Message ----------------------------------------------
+
+  KeyRange* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
+    return CreateMaybeMessage<KeyRange>(arena);
+  }
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const KeyRange& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const KeyRange& from) {
+    KeyRange::MergeImpl(*this, from);
+  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
+  public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(KeyRange* other);
+
+  private:
+  friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
+  static ::PROTOBUF_NAMESPACE_ID::StringPiece FullMessageName() {
+    return "kvrpcpb.KeyRange";
+  }
+  protected:
+  explicit KeyRange(::PROTOBUF_NAMESPACE_ID::Arena* arena,
+                       bool is_message_owned = false);
+  public:
+
+  static const ClassData _class_data_;
+  const ::PROTOBUF_NAMESPACE_ID::Message::ClassData*GetClassData() const final;
+
+  ::PROTOBUF_NAMESPACE_ID::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  enum : int {
+    kStartKeyFieldNumber = 1,
+    kEndKeyFieldNumber = 2,
+  };
+  // bytes start_key = 1;
+  void clear_start_key();
+  const std::string& start_key() const;
+  template <typename ArgT0 = const std::string&, typename... ArgT>
+  void set_start_key(ArgT0&& arg0, ArgT... args);
+  std::string* mutable_start_key();
+  PROTOBUF_NODISCARD std::string* release_start_key();
+  void set_allocated_start_key(std::string* start_key);
+  private:
+  const std::string& _internal_start_key() const;
+  inline PROTOBUF_ALWAYS_INLINE void _internal_set_start_key(const std::string& value);
+  std::string* _internal_mutable_start_key();
+  public:
+
+  // bytes end_key = 2;
+  void clear_end_key();
+  const std::string& end_key() const;
+  template <typename ArgT0 = const std::string&, typename... ArgT>
+  void set_end_key(ArgT0&& arg0, ArgT... args);
+  std::string* mutable_end_key();
+  PROTOBUF_NODISCARD std::string* release_end_key();
+  void set_allocated_end_key(std::string* end_key);
+  private:
+  const std::string& _internal_end_key() const;
+  inline PROTOBUF_ALWAYS_INLINE void _internal_set_end_key(const std::string& value);
+  std::string* _internal_mutable_end_key();
+  public:
+
+  // @@protoc_insertion_point(class_scope:kvrpcpb.KeyRange)
+ private:
+  class _Internal;
+
+  template <typename T> friend class ::PROTOBUF_NAMESPACE_ID::Arena::InternalHelper;
+  typedef void InternalArenaConstructable_;
+  typedef void DestructorSkippable_;
+  struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr start_key_;
+    ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr end_key_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
+  };
+  union { Impl_ _impl_; };
+  friend struct ::TableStruct_kvrpcpb_2eproto;
+};
+// -------------------------------------------------------------------
+
+class RawCoprocessorRequest final :
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:kvrpcpb.RawCoprocessorRequest) */ {
+ public:
+  inline RawCoprocessorRequest() : RawCoprocessorRequest(nullptr) {}
+  ~RawCoprocessorRequest() override;
+  explicit PROTOBUF_CONSTEXPR RawCoprocessorRequest(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
+
+  RawCoprocessorRequest(const RawCoprocessorRequest& from);
+  RawCoprocessorRequest(RawCoprocessorRequest&& from) noexcept
+    : RawCoprocessorRequest() {
+    *this = ::std::move(from);
+  }
+
+  inline RawCoprocessorRequest& operator=(const RawCoprocessorRequest& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  inline RawCoprocessorRequest& operator=(RawCoprocessorRequest&& from) noexcept {
+    if (this == &from) return *this;
+    if (GetOwningArena() == from.GetOwningArena()
+  #ifdef PROTOBUF_FORCE_COPY_IN_MOVE
+        && GetOwningArena() != nullptr
+  #endif  // !PROTOBUF_FORCE_COPY_IN_MOVE
+    ) {
+      InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* descriptor() {
+    return GetDescriptor();
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* GetDescriptor() {
+    return default_instance().GetMetadata().descriptor;
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Reflection* GetReflection() {
+    return default_instance().GetMetadata().reflection;
+  }
+  static const RawCoprocessorRequest& default_instance() {
+    return *internal_default_instance();
+  }
+  static inline const RawCoprocessorRequest* internal_default_instance() {
+    return reinterpret_cast<const RawCoprocessorRequest*>(
+               &_RawCoprocessorRequest_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    19;
+
+  friend void swap(RawCoprocessorRequest& a, RawCoprocessorRequest& b) {
+    a.Swap(&b);
+  }
+  inline void Swap(RawCoprocessorRequest* other) {
+    if (other == this) return;
+  #ifdef PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() != nullptr &&
+        GetOwningArena() == other->GetOwningArena()) {
+   #else  // PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() == other->GetOwningArena()) {
+  #endif  // !PROTOBUF_FORCE_COPY_IN_SWAP
+      InternalSwap(other);
+    } else {
+      ::PROTOBUF_NAMESPACE_ID::internal::GenericSwap(this, other);
+    }
+  }
+  void UnsafeArenaSwap(RawCoprocessorRequest* other) {
+    if (other == this) return;
+    GOOGLE_DCHECK(GetOwningArena() == other->GetOwningArena());
+    InternalSwap(other);
+  }
+
+  // implements Message ----------------------------------------------
+
+  RawCoprocessorRequest* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
+    return CreateMaybeMessage<RawCoprocessorRequest>(arena);
+  }
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const RawCoprocessorRequest& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const RawCoprocessorRequest& from) {
+    RawCoprocessorRequest::MergeImpl(*this, from);
+  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
+  public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(RawCoprocessorRequest* other);
+
+  private:
+  friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
+  static ::PROTOBUF_NAMESPACE_ID::StringPiece FullMessageName() {
+    return "kvrpcpb.RawCoprocessorRequest";
+  }
+  protected:
+  explicit RawCoprocessorRequest(::PROTOBUF_NAMESPACE_ID::Arena* arena,
+                       bool is_message_owned = false);
+  public:
+
+  static const ClassData _class_data_;
+  const ::PROTOBUF_NAMESPACE_ID::Message::ClassData*GetClassData() const final;
+
+  ::PROTOBUF_NAMESPACE_ID::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  enum : int {
+    kRangesFieldNumber = 4,
+    kCoprNameFieldNumber = 2,
+    kCoprVersionReqFieldNumber = 3,
+    kDataFieldNumber = 5,
+    kContextFieldNumber = 1,
+  };
+  // repeated .kvrpcpb.KeyRange ranges = 4;
+  int ranges_size() const;
+  private:
+  int _internal_ranges_size() const;
+  public:
+  void clear_ranges();
+  ::kvrpcpb::KeyRange* mutable_ranges(int index);
+  ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::kvrpcpb::KeyRange >*
+      mutable_ranges();
+  private:
+  const ::kvrpcpb::KeyRange& _internal_ranges(int index) const;
+  ::kvrpcpb::KeyRange* _internal_add_ranges();
+  public:
+  const ::kvrpcpb::KeyRange& ranges(int index) const;
+  ::kvrpcpb::KeyRange* add_ranges();
+  const ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::kvrpcpb::KeyRange >&
+      ranges() const;
+
+  // string copr_name = 2;
+  void clear_copr_name();
+  const std::string& copr_name() const;
+  template <typename ArgT0 = const std::string&, typename... ArgT>
+  void set_copr_name(ArgT0&& arg0, ArgT... args);
+  std::string* mutable_copr_name();
+  PROTOBUF_NODISCARD std::string* release_copr_name();
+  void set_allocated_copr_name(std::string* copr_name);
+  private:
+  const std::string& _internal_copr_name() const;
+  inline PROTOBUF_ALWAYS_INLINE void _internal_set_copr_name(const std::string& value);
+  std::string* _internal_mutable_copr_name();
+  public:
+
+  // string copr_version_req = 3;
+  void clear_copr_version_req();
+  const std::string& copr_version_req() const;
+  template <typename ArgT0 = const std::string&, typename... ArgT>
+  void set_copr_version_req(ArgT0&& arg0, ArgT... args);
+  std::string* mutable_copr_version_req();
+  PROTOBUF_NODISCARD std::string* release_copr_version_req();
+  void set_allocated_copr_version_req(std::string* copr_version_req);
+  private:
+  const std::string& _internal_copr_version_req() const;
+  inline PROTOBUF_ALWAYS_INLINE void _internal_set_copr_version_req(const std::string& value);
+  std::string* _internal_mutable_copr_version_req();
+  public:
+
+  // bytes data = 5;
+  void clear_data();
+  const std::string& data() const;
+  template <typename ArgT0 = const std::string&, typename... ArgT>
+  void set_data(ArgT0&& arg0, ArgT... args);
+  std::string* mutable_data();
+  PROTOBUF_NODISCARD std::string* release_data();
+  void set_allocated_data(std::string* data);
+  private:
+  const std::string& _internal_data() const;
+  inline PROTOBUF_ALWAYS_INLINE void _internal_set_data(const std::string& value);
+  std::string* _internal_mutable_data();
+  public:
+
+  // .kvrpcpb.Context context = 1;
+  bool has_context() const;
+  private:
+  bool _internal_has_context() const;
+  public:
+  void clear_context();
+  const ::kvrpcpb::Context& context() const;
+  PROTOBUF_NODISCARD ::kvrpcpb::Context* release_context();
+  ::kvrpcpb::Context* mutable_context();
+  void set_allocated_context(::kvrpcpb::Context* context);
+  private:
+  const ::kvrpcpb::Context& _internal_context() const;
+  ::kvrpcpb::Context* _internal_mutable_context();
+  public:
+  void unsafe_arena_set_allocated_context(
+      ::kvrpcpb::Context* context);
+  ::kvrpcpb::Context* unsafe_arena_release_context();
+
+  // @@protoc_insertion_point(class_scope:kvrpcpb.RawCoprocessorRequest)
+ private:
+  class _Internal;
+
+  template <typename T> friend class ::PROTOBUF_NAMESPACE_ID::Arena::InternalHelper;
+  typedef void InternalArenaConstructable_;
+  typedef void DestructorSkippable_;
+  struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::kvrpcpb::KeyRange > ranges_;
+    ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr copr_name_;
+    ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr copr_version_req_;
+    ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr data_;
+    ::kvrpcpb::Context* context_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
+  };
+  union { Impl_ _impl_; };
+  friend struct ::TableStruct_kvrpcpb_2eproto;
+};
+// -------------------------------------------------------------------
+
+class RawCoprocessorResponse final :
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:kvrpcpb.RawCoprocessorResponse) */ {
+ public:
+  inline RawCoprocessorResponse() : RawCoprocessorResponse(nullptr) {}
+  ~RawCoprocessorResponse() override;
+  explicit PROTOBUF_CONSTEXPR RawCoprocessorResponse(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
+
+  RawCoprocessorResponse(const RawCoprocessorResponse& from);
+  RawCoprocessorResponse(RawCoprocessorResponse&& from) noexcept
+    : RawCoprocessorResponse() {
+    *this = ::std::move(from);
+  }
+
+  inline RawCoprocessorResponse& operator=(const RawCoprocessorResponse& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  inline RawCoprocessorResponse& operator=(RawCoprocessorResponse&& from) noexcept {
+    if (this == &from) return *this;
+    if (GetOwningArena() == from.GetOwningArena()
+  #ifdef PROTOBUF_FORCE_COPY_IN_MOVE
+        && GetOwningArena() != nullptr
+  #endif  // !PROTOBUF_FORCE_COPY_IN_MOVE
+    ) {
+      InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* descriptor() {
+    return GetDescriptor();
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* GetDescriptor() {
+    return default_instance().GetMetadata().descriptor;
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Reflection* GetReflection() {
+    return default_instance().GetMetadata().reflection;
+  }
+  static const RawCoprocessorResponse& default_instance() {
+    return *internal_default_instance();
+  }
+  static inline const RawCoprocessorResponse* internal_default_instance() {
+    return reinterpret_cast<const RawCoprocessorResponse*>(
+               &_RawCoprocessorResponse_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    20;
+
+  friend void swap(RawCoprocessorResponse& a, RawCoprocessorResponse& b) {
+    a.Swap(&b);
+  }
+  inline void Swap(RawCoprocessorResponse* other) {
+    if (other == this) return;
+  #ifdef PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() != nullptr &&
+        GetOwningArena() == other->GetOwningArena()) {
+   #else  // PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() == other->GetOwningArena()) {
+  #endif  // !PROTOBUF_FORCE_COPY_IN_SWAP
+      InternalSwap(other);
+    } else {
+      ::PROTOBUF_NAMESPACE_ID::internal::GenericSwap(this, other);
+    }
+  }
+  void UnsafeArenaSwap(RawCoprocessorResponse* other) {
+    if (other == this) return;
+    GOOGLE_DCHECK(GetOwningArena() == other->GetOwningArena());
+    InternalSwap(other);
+  }
+
+  // implements Message ----------------------------------------------
+
+  RawCoprocessorResponse* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
+    return CreateMaybeMessage<RawCoprocessorResponse>(arena);
+  }
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const RawCoprocessorResponse& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const RawCoprocessorResponse& from) {
+    RawCoprocessorResponse::MergeImpl(*this, from);
+  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
+  public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(RawCoprocessorResponse* other);
+
+  private:
+  friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
+  static ::PROTOBUF_NAMESPACE_ID::StringPiece FullMessageName() {
+    return "kvrpcpb.RawCoprocessorResponse";
+  }
+  protected:
+  explicit RawCoprocessorResponse(::PROTOBUF_NAMESPACE_ID::Arena* arena,
+                       bool is_message_owned = false);
+  public:
+
+  static const ClassData _class_data_;
+  const ::PROTOBUF_NAMESPACE_ID::Message::ClassData*GetClassData() const final;
+
+  ::PROTOBUF_NAMESPACE_ID::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  enum : int {
+    kErrorFieldNumber = 2,
+    kDataFieldNumber = 3,
+    kRegionErrorFieldNumber = 1,
+  };
+  // string error = 2;
+  void clear_error();
+  const std::string& error() const;
+  template <typename ArgT0 = const std::string&, typename... ArgT>
+  void set_error(ArgT0&& arg0, ArgT... args);
+  std::string* mutable_error();
+  PROTOBUF_NODISCARD std::string* release_error();
+  void set_allocated_error(std::string* error);
+  private:
+  const std::string& _internal_error() const;
+  inline PROTOBUF_ALWAYS_INLINE void _internal_set_error(const std::string& value);
+  std::string* _internal_mutable_error();
+  public:
+
+  // bytes data = 3;
+  void clear_data();
+  const std::string& data() const;
+  template <typename ArgT0 = const std::string&, typename... ArgT>
+  void set_data(ArgT0&& arg0, ArgT... args);
+  std::string* mutable_data();
+  PROTOBUF_NODISCARD std::string* release_data();
+  void set_allocated_data(std::string* data);
+  private:
+  const std::string& _internal_data() const;
+  inline PROTOBUF_ALWAYS_INLINE void _internal_set_data(const std::string& value);
+  std::string* _internal_mutable_data();
+  public:
+
+  // .errorpb.Error region_error = 1;
+  bool has_region_error() const;
+  private:
+  bool _internal_has_region_error() const;
+  public:
+  void clear_region_error();
+  const ::errorpb::Error& region_error() const;
+  PROTOBUF_NODISCARD ::errorpb::Error* release_region_error();
+  ::errorpb::Error* mutable_region_error();
+  void set_allocated_region_error(::errorpb::Error* region_error);
+  private:
+  const ::errorpb::Error& _internal_region_error() const;
+  ::errorpb::Error* _internal_mutable_region_error();
+  public:
+  void unsafe_arena_set_allocated_region_error(
+      ::errorpb::Error* region_error);
+  ::errorpb::Error* unsafe_arena_release_region_error();
+
+  // @@protoc_insertion_point(class_scope:kvrpcpb.RawCoprocessorResponse)
+ private:
+  class _Internal;
+
+  template <typename T> friend class ::PROTOBUF_NAMESPACE_ID::Arena::InternalHelper;
+  typedef void InternalArenaConstructable_;
+  typedef void DestructorSkippable_;
+  struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr error_;
+    ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr data_;
     ::errorpb::Error* region_error_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
@@ -7644,9 +8239,592 @@ RawScanResponse::kvs() const {
   return _impl_.kvs_;
 }
 
+// -------------------------------------------------------------------
+
+// KeyRange
+
+// bytes start_key = 1;
+inline void KeyRange::clear_start_key() {
+  _impl_.start_key_.ClearToEmpty();
+}
+inline const std::string& KeyRange::start_key() const {
+  // @@protoc_insertion_point(field_get:kvrpcpb.KeyRange.start_key)
+  return _internal_start_key();
+}
+template <typename ArgT0, typename... ArgT>
+inline PROTOBUF_ALWAYS_INLINE
+void KeyRange::set_start_key(ArgT0&& arg0, ArgT... args) {
+ 
+ _impl_.start_key_.SetBytes(static_cast<ArgT0 &&>(arg0), args..., GetArenaForAllocation());
+  // @@protoc_insertion_point(field_set:kvrpcpb.KeyRange.start_key)
+}
+inline std::string* KeyRange::mutable_start_key() {
+  std::string* _s = _internal_mutable_start_key();
+  // @@protoc_insertion_point(field_mutable:kvrpcpb.KeyRange.start_key)
+  return _s;
+}
+inline const std::string& KeyRange::_internal_start_key() const {
+  return _impl_.start_key_.Get();
+}
+inline void KeyRange::_internal_set_start_key(const std::string& value) {
+  
+  _impl_.start_key_.Set(value, GetArenaForAllocation());
+}
+inline std::string* KeyRange::_internal_mutable_start_key() {
+  
+  return _impl_.start_key_.Mutable(GetArenaForAllocation());
+}
+inline std::string* KeyRange::release_start_key() {
+  // @@protoc_insertion_point(field_release:kvrpcpb.KeyRange.start_key)
+  return _impl_.start_key_.Release();
+}
+inline void KeyRange::set_allocated_start_key(std::string* start_key) {
+  if (start_key != nullptr) {
+    
+  } else {
+    
+  }
+  _impl_.start_key_.SetAllocated(start_key, GetArenaForAllocation());
+#ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (_impl_.start_key_.IsDefault()) {
+    _impl_.start_key_.Set("", GetArenaForAllocation());
+  }
+#endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  // @@protoc_insertion_point(field_set_allocated:kvrpcpb.KeyRange.start_key)
+}
+
+// bytes end_key = 2;
+inline void KeyRange::clear_end_key() {
+  _impl_.end_key_.ClearToEmpty();
+}
+inline const std::string& KeyRange::end_key() const {
+  // @@protoc_insertion_point(field_get:kvrpcpb.KeyRange.end_key)
+  return _internal_end_key();
+}
+template <typename ArgT0, typename... ArgT>
+inline PROTOBUF_ALWAYS_INLINE
+void KeyRange::set_end_key(ArgT0&& arg0, ArgT... args) {
+ 
+ _impl_.end_key_.SetBytes(static_cast<ArgT0 &&>(arg0), args..., GetArenaForAllocation());
+  // @@protoc_insertion_point(field_set:kvrpcpb.KeyRange.end_key)
+}
+inline std::string* KeyRange::mutable_end_key() {
+  std::string* _s = _internal_mutable_end_key();
+  // @@protoc_insertion_point(field_mutable:kvrpcpb.KeyRange.end_key)
+  return _s;
+}
+inline const std::string& KeyRange::_internal_end_key() const {
+  return _impl_.end_key_.Get();
+}
+inline void KeyRange::_internal_set_end_key(const std::string& value) {
+  
+  _impl_.end_key_.Set(value, GetArenaForAllocation());
+}
+inline std::string* KeyRange::_internal_mutable_end_key() {
+  
+  return _impl_.end_key_.Mutable(GetArenaForAllocation());
+}
+inline std::string* KeyRange::release_end_key() {
+  // @@protoc_insertion_point(field_release:kvrpcpb.KeyRange.end_key)
+  return _impl_.end_key_.Release();
+}
+inline void KeyRange::set_allocated_end_key(std::string* end_key) {
+  if (end_key != nullptr) {
+    
+  } else {
+    
+  }
+  _impl_.end_key_.SetAllocated(end_key, GetArenaForAllocation());
+#ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (_impl_.end_key_.IsDefault()) {
+    _impl_.end_key_.Set("", GetArenaForAllocation());
+  }
+#endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  // @@protoc_insertion_point(field_set_allocated:kvrpcpb.KeyRange.end_key)
+}
+
+// -------------------------------------------------------------------
+
+// RawCoprocessorRequest
+
+// .kvrpcpb.Context context = 1;
+inline bool RawCoprocessorRequest::_internal_has_context() const {
+  return this != internal_default_instance() && _impl_.context_ != nullptr;
+}
+inline bool RawCoprocessorRequest::has_context() const {
+  return _internal_has_context();
+}
+inline void RawCoprocessorRequest::clear_context() {
+  if (GetArenaForAllocation() == nullptr && _impl_.context_ != nullptr) {
+    delete _impl_.context_;
+  }
+  _impl_.context_ = nullptr;
+}
+inline const ::kvrpcpb::Context& RawCoprocessorRequest::_internal_context() const {
+  const ::kvrpcpb::Context* p = _impl_.context_;
+  return p != nullptr ? *p : reinterpret_cast<const ::kvrpcpb::Context&>(
+      ::kvrpcpb::_Context_default_instance_);
+}
+inline const ::kvrpcpb::Context& RawCoprocessorRequest::context() const {
+  // @@protoc_insertion_point(field_get:kvrpcpb.RawCoprocessorRequest.context)
+  return _internal_context();
+}
+inline void RawCoprocessorRequest::unsafe_arena_set_allocated_context(
+    ::kvrpcpb::Context* context) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.context_);
+  }
+  _impl_.context_ = context;
+  if (context) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:kvrpcpb.RawCoprocessorRequest.context)
+}
+inline ::kvrpcpb::Context* RawCoprocessorRequest::release_context() {
+  
+  ::kvrpcpb::Context* temp = _impl_.context_;
+  _impl_.context_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::kvrpcpb::Context* RawCoprocessorRequest::unsafe_arena_release_context() {
+  // @@protoc_insertion_point(field_release:kvrpcpb.RawCoprocessorRequest.context)
+  
+  ::kvrpcpb::Context* temp = _impl_.context_;
+  _impl_.context_ = nullptr;
+  return temp;
+}
+inline ::kvrpcpb::Context* RawCoprocessorRequest::_internal_mutable_context() {
+  
+  if (_impl_.context_ == nullptr) {
+    auto* p = CreateMaybeMessage<::kvrpcpb::Context>(GetArenaForAllocation());
+    _impl_.context_ = p;
+  }
+  return _impl_.context_;
+}
+inline ::kvrpcpb::Context* RawCoprocessorRequest::mutable_context() {
+  ::kvrpcpb::Context* _msg = _internal_mutable_context();
+  // @@protoc_insertion_point(field_mutable:kvrpcpb.RawCoprocessorRequest.context)
+  return _msg;
+}
+inline void RawCoprocessorRequest::set_allocated_context(::kvrpcpb::Context* context) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete _impl_.context_;
+  }
+  if (context) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(context);
+    if (message_arena != submessage_arena) {
+      context = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, context, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.context_ = context;
+  // @@protoc_insertion_point(field_set_allocated:kvrpcpb.RawCoprocessorRequest.context)
+}
+
+// string copr_name = 2;
+inline void RawCoprocessorRequest::clear_copr_name() {
+  _impl_.copr_name_.ClearToEmpty();
+}
+inline const std::string& RawCoprocessorRequest::copr_name() const {
+  // @@protoc_insertion_point(field_get:kvrpcpb.RawCoprocessorRequest.copr_name)
+  return _internal_copr_name();
+}
+template <typename ArgT0, typename... ArgT>
+inline PROTOBUF_ALWAYS_INLINE
+void RawCoprocessorRequest::set_copr_name(ArgT0&& arg0, ArgT... args) {
+ 
+ _impl_.copr_name_.Set(static_cast<ArgT0 &&>(arg0), args..., GetArenaForAllocation());
+  // @@protoc_insertion_point(field_set:kvrpcpb.RawCoprocessorRequest.copr_name)
+}
+inline std::string* RawCoprocessorRequest::mutable_copr_name() {
+  std::string* _s = _internal_mutable_copr_name();
+  // @@protoc_insertion_point(field_mutable:kvrpcpb.RawCoprocessorRequest.copr_name)
+  return _s;
+}
+inline const std::string& RawCoprocessorRequest::_internal_copr_name() const {
+  return _impl_.copr_name_.Get();
+}
+inline void RawCoprocessorRequest::_internal_set_copr_name(const std::string& value) {
+  
+  _impl_.copr_name_.Set(value, GetArenaForAllocation());
+}
+inline std::string* RawCoprocessorRequest::_internal_mutable_copr_name() {
+  
+  return _impl_.copr_name_.Mutable(GetArenaForAllocation());
+}
+inline std::string* RawCoprocessorRequest::release_copr_name() {
+  // @@protoc_insertion_point(field_release:kvrpcpb.RawCoprocessorRequest.copr_name)
+  return _impl_.copr_name_.Release();
+}
+inline void RawCoprocessorRequest::set_allocated_copr_name(std::string* copr_name) {
+  if (copr_name != nullptr) {
+    
+  } else {
+    
+  }
+  _impl_.copr_name_.SetAllocated(copr_name, GetArenaForAllocation());
+#ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (_impl_.copr_name_.IsDefault()) {
+    _impl_.copr_name_.Set("", GetArenaForAllocation());
+  }
+#endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  // @@protoc_insertion_point(field_set_allocated:kvrpcpb.RawCoprocessorRequest.copr_name)
+}
+
+// string copr_version_req = 3;
+inline void RawCoprocessorRequest::clear_copr_version_req() {
+  _impl_.copr_version_req_.ClearToEmpty();
+}
+inline const std::string& RawCoprocessorRequest::copr_version_req() const {
+  // @@protoc_insertion_point(field_get:kvrpcpb.RawCoprocessorRequest.copr_version_req)
+  return _internal_copr_version_req();
+}
+template <typename ArgT0, typename... ArgT>
+inline PROTOBUF_ALWAYS_INLINE
+void RawCoprocessorRequest::set_copr_version_req(ArgT0&& arg0, ArgT... args) {
+ 
+ _impl_.copr_version_req_.Set(static_cast<ArgT0 &&>(arg0), args..., GetArenaForAllocation());
+  // @@protoc_insertion_point(field_set:kvrpcpb.RawCoprocessorRequest.copr_version_req)
+}
+inline std::string* RawCoprocessorRequest::mutable_copr_version_req() {
+  std::string* _s = _internal_mutable_copr_version_req();
+  // @@protoc_insertion_point(field_mutable:kvrpcpb.RawCoprocessorRequest.copr_version_req)
+  return _s;
+}
+inline const std::string& RawCoprocessorRequest::_internal_copr_version_req() const {
+  return _impl_.copr_version_req_.Get();
+}
+inline void RawCoprocessorRequest::_internal_set_copr_version_req(const std::string& value) {
+  
+  _impl_.copr_version_req_.Set(value, GetArenaForAllocation());
+}
+inline std::string* RawCoprocessorRequest::_internal_mutable_copr_version_req() {
+  
+  return _impl_.copr_version_req_.Mutable(GetArenaForAllocation());
+}
+inline std::string* RawCoprocessorRequest::release_copr_version_req() {
+  // @@protoc_insertion_point(field_release:kvrpcpb.RawCoprocessorRequest.copr_version_req)
+  return _impl_.copr_version_req_.Release();
+}
+inline void RawCoprocessorRequest::set_allocated_copr_version_req(std::string* copr_version_req) {
+  if (copr_version_req != nullptr) {
+    
+  } else {
+    
+  }
+  _impl_.copr_version_req_.SetAllocated(copr_version_req, GetArenaForAllocation());
+#ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (_impl_.copr_version_req_.IsDefault()) {
+    _impl_.copr_version_req_.Set("", GetArenaForAllocation());
+  }
+#endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  // @@protoc_insertion_point(field_set_allocated:kvrpcpb.RawCoprocessorRequest.copr_version_req)
+}
+
+// repeated .kvrpcpb.KeyRange ranges = 4;
+inline int RawCoprocessorRequest::_internal_ranges_size() const {
+  return _impl_.ranges_.size();
+}
+inline int RawCoprocessorRequest::ranges_size() const {
+  return _internal_ranges_size();
+}
+inline void RawCoprocessorRequest::clear_ranges() {
+  _impl_.ranges_.Clear();
+}
+inline ::kvrpcpb::KeyRange* RawCoprocessorRequest::mutable_ranges(int index) {
+  // @@protoc_insertion_point(field_mutable:kvrpcpb.RawCoprocessorRequest.ranges)
+  return _impl_.ranges_.Mutable(index);
+}
+inline ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::kvrpcpb::KeyRange >*
+RawCoprocessorRequest::mutable_ranges() {
+  // @@protoc_insertion_point(field_mutable_list:kvrpcpb.RawCoprocessorRequest.ranges)
+  return &_impl_.ranges_;
+}
+inline const ::kvrpcpb::KeyRange& RawCoprocessorRequest::_internal_ranges(int index) const {
+  return _impl_.ranges_.Get(index);
+}
+inline const ::kvrpcpb::KeyRange& RawCoprocessorRequest::ranges(int index) const {
+  // @@protoc_insertion_point(field_get:kvrpcpb.RawCoprocessorRequest.ranges)
+  return _internal_ranges(index);
+}
+inline ::kvrpcpb::KeyRange* RawCoprocessorRequest::_internal_add_ranges() {
+  return _impl_.ranges_.Add();
+}
+inline ::kvrpcpb::KeyRange* RawCoprocessorRequest::add_ranges() {
+  ::kvrpcpb::KeyRange* _add = _internal_add_ranges();
+  // @@protoc_insertion_point(field_add:kvrpcpb.RawCoprocessorRequest.ranges)
+  return _add;
+}
+inline const ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::kvrpcpb::KeyRange >&
+RawCoprocessorRequest::ranges() const {
+  // @@protoc_insertion_point(field_list:kvrpcpb.RawCoprocessorRequest.ranges)
+  return _impl_.ranges_;
+}
+
+// bytes data = 5;
+inline void RawCoprocessorRequest::clear_data() {
+  _impl_.data_.ClearToEmpty();
+}
+inline const std::string& RawCoprocessorRequest::data() const {
+  // @@protoc_insertion_point(field_get:kvrpcpb.RawCoprocessorRequest.data)
+  return _internal_data();
+}
+template <typename ArgT0, typename... ArgT>
+inline PROTOBUF_ALWAYS_INLINE
+void RawCoprocessorRequest::set_data(ArgT0&& arg0, ArgT... args) {
+ 
+ _impl_.data_.SetBytes(static_cast<ArgT0 &&>(arg0), args..., GetArenaForAllocation());
+  // @@protoc_insertion_point(field_set:kvrpcpb.RawCoprocessorRequest.data)
+}
+inline std::string* RawCoprocessorRequest::mutable_data() {
+  std::string* _s = _internal_mutable_data();
+  // @@protoc_insertion_point(field_mutable:kvrpcpb.RawCoprocessorRequest.data)
+  return _s;
+}
+inline const std::string& RawCoprocessorRequest::_internal_data() const {
+  return _impl_.data_.Get();
+}
+inline void RawCoprocessorRequest::_internal_set_data(const std::string& value) {
+  
+  _impl_.data_.Set(value, GetArenaForAllocation());
+}
+inline std::string* RawCoprocessorRequest::_internal_mutable_data() {
+  
+  return _impl_.data_.Mutable(GetArenaForAllocation());
+}
+inline std::string* RawCoprocessorRequest::release_data() {
+  // @@protoc_insertion_point(field_release:kvrpcpb.RawCoprocessorRequest.data)
+  return _impl_.data_.Release();
+}
+inline void RawCoprocessorRequest::set_allocated_data(std::string* data) {
+  if (data != nullptr) {
+    
+  } else {
+    
+  }
+  _impl_.data_.SetAllocated(data, GetArenaForAllocation());
+#ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (_impl_.data_.IsDefault()) {
+    _impl_.data_.Set("", GetArenaForAllocation());
+  }
+#endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  // @@protoc_insertion_point(field_set_allocated:kvrpcpb.RawCoprocessorRequest.data)
+}
+
+// -------------------------------------------------------------------
+
+// RawCoprocessorResponse
+
+// .errorpb.Error region_error = 1;
+inline bool RawCoprocessorResponse::_internal_has_region_error() const {
+  return this != internal_default_instance() && _impl_.region_error_ != nullptr;
+}
+inline bool RawCoprocessorResponse::has_region_error() const {
+  return _internal_has_region_error();
+}
+inline const ::errorpb::Error& RawCoprocessorResponse::_internal_region_error() const {
+  const ::errorpb::Error* p = _impl_.region_error_;
+  return p != nullptr ? *p : reinterpret_cast<const ::errorpb::Error&>(
+      ::errorpb::_Error_default_instance_);
+}
+inline const ::errorpb::Error& RawCoprocessorResponse::region_error() const {
+  // @@protoc_insertion_point(field_get:kvrpcpb.RawCoprocessorResponse.region_error)
+  return _internal_region_error();
+}
+inline void RawCoprocessorResponse::unsafe_arena_set_allocated_region_error(
+    ::errorpb::Error* region_error) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.region_error_);
+  }
+  _impl_.region_error_ = region_error;
+  if (region_error) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:kvrpcpb.RawCoprocessorResponse.region_error)
+}
+inline ::errorpb::Error* RawCoprocessorResponse::release_region_error() {
+  
+  ::errorpb::Error* temp = _impl_.region_error_;
+  _impl_.region_error_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::errorpb::Error* RawCoprocessorResponse::unsafe_arena_release_region_error() {
+  // @@protoc_insertion_point(field_release:kvrpcpb.RawCoprocessorResponse.region_error)
+  
+  ::errorpb::Error* temp = _impl_.region_error_;
+  _impl_.region_error_ = nullptr;
+  return temp;
+}
+inline ::errorpb::Error* RawCoprocessorResponse::_internal_mutable_region_error() {
+  
+  if (_impl_.region_error_ == nullptr) {
+    auto* p = CreateMaybeMessage<::errorpb::Error>(GetArenaForAllocation());
+    _impl_.region_error_ = p;
+  }
+  return _impl_.region_error_;
+}
+inline ::errorpb::Error* RawCoprocessorResponse::mutable_region_error() {
+  ::errorpb::Error* _msg = _internal_mutable_region_error();
+  // @@protoc_insertion_point(field_mutable:kvrpcpb.RawCoprocessorResponse.region_error)
+  return _msg;
+}
+inline void RawCoprocessorResponse::set_allocated_region_error(::errorpb::Error* region_error) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.region_error_);
+  }
+  if (region_error) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(region_error));
+    if (message_arena != submessage_arena) {
+      region_error = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, region_error, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.region_error_ = region_error;
+  // @@protoc_insertion_point(field_set_allocated:kvrpcpb.RawCoprocessorResponse.region_error)
+}
+
+// string error = 2;
+inline void RawCoprocessorResponse::clear_error() {
+  _impl_.error_.ClearToEmpty();
+}
+inline const std::string& RawCoprocessorResponse::error() const {
+  // @@protoc_insertion_point(field_get:kvrpcpb.RawCoprocessorResponse.error)
+  return _internal_error();
+}
+template <typename ArgT0, typename... ArgT>
+inline PROTOBUF_ALWAYS_INLINE
+void RawCoprocessorResponse::set_error(ArgT0&& arg0, ArgT... args) {
+ 
+ _impl_.error_.Set(static_cast<ArgT0 &&>(arg0), args..., GetArenaForAllocation());
+  // @@protoc_insertion_point(field_set:kvrpcpb.RawCoprocessorResponse.error)
+}
+inline std::string* RawCoprocessorResponse::mutable_error() {
+  std::string* _s = _internal_mutable_error();
+  // @@protoc_insertion_point(field_mutable:kvrpcpb.RawCoprocessorResponse.error)
+  return _s;
+}
+inline const std::string& RawCoprocessorResponse::_internal_error() const {
+  return _impl_.error_.Get();
+}
+inline void RawCoprocessorResponse::_internal_set_error(const std::string& value) {
+  
+  _impl_.error_.Set(value, GetArenaForAllocation());
+}
+inline std::string* RawCoprocessorResponse::_internal_mutable_error() {
+  
+  return _impl_.error_.Mutable(GetArenaForAllocation());
+}
+inline std::string* RawCoprocessorResponse::release_error() {
+  // @@protoc_insertion_point(field_release:kvrpcpb.RawCoprocessorResponse.error)
+  return _impl_.error_.Release();
+}
+inline void RawCoprocessorResponse::set_allocated_error(std::string* error) {
+  if (error != nullptr) {
+    
+  } else {
+    
+  }
+  _impl_.error_.SetAllocated(error, GetArenaForAllocation());
+#ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (_impl_.error_.IsDefault()) {
+    _impl_.error_.Set("", GetArenaForAllocation());
+  }
+#endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  // @@protoc_insertion_point(field_set_allocated:kvrpcpb.RawCoprocessorResponse.error)
+}
+
+// bytes data = 3;
+inline void RawCoprocessorResponse::clear_data() {
+  _impl_.data_.ClearToEmpty();
+}
+inline const std::string& RawCoprocessorResponse::data() const {
+  // @@protoc_insertion_point(field_get:kvrpcpb.RawCoprocessorResponse.data)
+  return _internal_data();
+}
+template <typename ArgT0, typename... ArgT>
+inline PROTOBUF_ALWAYS_INLINE
+void RawCoprocessorResponse::set_data(ArgT0&& arg0, ArgT... args) {
+ 
+ _impl_.data_.SetBytes(static_cast<ArgT0 &&>(arg0), args..., GetArenaForAllocation());
+  // @@protoc_insertion_point(field_set:kvrpcpb.RawCoprocessorResponse.data)
+}
+inline std::string* RawCoprocessorResponse::mutable_data() {
+  std::string* _s = _internal_mutable_data();
+  // @@protoc_insertion_point(field_mutable:kvrpcpb.RawCoprocessorResponse.data)
+  return _s;
+}
+inline const std::string& RawCoprocessorResponse::_internal_data() const {
+  return _impl_.data_.Get();
+}
+inline void RawCoprocessorResponse::_internal_set_data(const std::string& value) {
+  
+  _impl_.data_.Set(value, GetArenaForAllocation());
+}
+inline std::string* RawCoprocessorResponse::_internal_mutable_data() {
+  
+  return _impl_.data_.Mutable(GetArenaForAllocation());
+}
+inline std::string* RawCoprocessorResponse::release_data() {
+  // @@protoc_insertion_point(field_release:kvrpcpb.RawCoprocessorResponse.data)
+  return _impl_.data_.Release();
+}
+inline void RawCoprocessorResponse::set_allocated_data(std::string* data) {
+  if (data != nullptr) {
+    
+  } else {
+    
+  }
+  _impl_.data_.SetAllocated(data, GetArenaForAllocation());
+#ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (_impl_.data_.IsDefault()) {
+    _impl_.data_.Set("", GetArenaForAllocation());
+  }
+#endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  // @@protoc_insertion_point(field_set_allocated:kvrpcpb.RawCoprocessorResponse.data)
+}
+
 #ifdef __GNUC__
   #pragma GCC diagnostic pop
 #endif  // __GNUC__
+// -------------------------------------------------------------------
+
+// -------------------------------------------------------------------
+
+// -------------------------------------------------------------------
+
 // -------------------------------------------------------------------
 
 // -------------------------------------------------------------------

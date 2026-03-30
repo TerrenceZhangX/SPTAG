@@ -97,6 +97,13 @@ class Tikv final {
     std::unique_ptr< ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawScanResponse>> PrepareAsyncRawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest& request, ::grpc::CompletionQueue* cq) {
       return std::unique_ptr< ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawScanResponse>>(PrepareAsyncRawScanRaw(context, request, cq));
     }
+    virtual ::grpc::Status RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::kvrpcpb::RawCoprocessorResponse* response) = 0;
+    std::unique_ptr< ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawCoprocessorResponse>> AsyncRawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) {
+      return std::unique_ptr< ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawCoprocessorResponse>>(AsyncRawCoprocessorRaw(context, request, cq));
+    }
+    std::unique_ptr< ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawCoprocessorResponse>> PrepareAsyncRawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) {
+      return std::unique_ptr< ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawCoprocessorResponse>>(PrepareAsyncRawCoprocessorRaw(context, request, cq));
+    }
     class async_interface {
      public:
       virtual ~async_interface() {}
@@ -117,6 +124,8 @@ class Tikv final {
       virtual void RawDeleteRange(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
       virtual void RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response, std::function<void(::grpc::Status)>) = 0;
       virtual void RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      virtual void RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, std::function<void(::grpc::Status)>) = 0;
+      virtual void RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
     };
     typedef class async_interface experimental_async_interface;
     virtual class async_interface* async() { return nullptr; }
@@ -138,6 +147,8 @@ class Tikv final {
     virtual ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawDeleteRangeResponse>* PrepareAsyncRawDeleteRangeRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest& request, ::grpc::CompletionQueue* cq) = 0;
     virtual ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawScanResponse>* AsyncRawScanRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest& request, ::grpc::CompletionQueue* cq) = 0;
     virtual ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawScanResponse>* PrepareAsyncRawScanRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest& request, ::grpc::CompletionQueue* cq) = 0;
+    virtual ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawCoprocessorResponse>* AsyncRawCoprocessorRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) = 0;
+    virtual ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawCoprocessorResponse>* PrepareAsyncRawCoprocessorRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) = 0;
   };
   class Stub final : public StubInterface {
    public:
@@ -198,6 +209,13 @@ class Tikv final {
     std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawScanResponse>> PrepareAsyncRawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest& request, ::grpc::CompletionQueue* cq) {
       return std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawScanResponse>>(PrepareAsyncRawScanRaw(context, request, cq));
     }
+    ::grpc::Status RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::kvrpcpb::RawCoprocessorResponse* response) override;
+    std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawCoprocessorResponse>> AsyncRawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) {
+      return std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawCoprocessorResponse>>(AsyncRawCoprocessorRaw(context, request, cq));
+    }
+    std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawCoprocessorResponse>> PrepareAsyncRawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) {
+      return std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawCoprocessorResponse>>(PrepareAsyncRawCoprocessorRaw(context, request, cq));
+    }
     class async final :
       public StubInterface::async_interface {
      public:
@@ -217,6 +235,8 @@ class Tikv final {
       void RawDeleteRange(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
       void RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response, std::function<void(::grpc::Status)>) override;
       void RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      void RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, std::function<void(::grpc::Status)>) override;
+      void RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
      private:
       friend class Stub;
       explicit async(Stub* stub): stub_(stub) { }
@@ -244,6 +264,8 @@ class Tikv final {
     ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawDeleteRangeResponse>* PrepareAsyncRawDeleteRangeRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest& request, ::grpc::CompletionQueue* cq) override;
     ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawScanResponse>* AsyncRawScanRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest& request, ::grpc::CompletionQueue* cq) override;
     ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawScanResponse>* PrepareAsyncRawScanRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest& request, ::grpc::CompletionQueue* cq) override;
+    ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawCoprocessorResponse>* AsyncRawCoprocessorRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) override;
+    ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawCoprocessorResponse>* PrepareAsyncRawCoprocessorRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) override;
     const ::grpc::internal::RpcMethod rpcmethod_RawGet_;
     const ::grpc::internal::RpcMethod rpcmethod_RawBatchGet_;
     const ::grpc::internal::RpcMethod rpcmethod_RawPut_;
@@ -252,6 +274,7 @@ class Tikv final {
     const ::grpc::internal::RpcMethod rpcmethod_RawBatchDelete_;
     const ::grpc::internal::RpcMethod rpcmethod_RawDeleteRange_;
     const ::grpc::internal::RpcMethod rpcmethod_RawScan_;
+    const ::grpc::internal::RpcMethod rpcmethod_RawCoprocessor_;
   };
   static std::unique_ptr<Stub> NewStub(const std::shared_ptr< ::grpc::ChannelInterface>& channel, const ::grpc::StubOptions& options = ::grpc::StubOptions());
 
@@ -268,6 +291,7 @@ class Tikv final {
     virtual ::grpc::Status RawBatchDelete(::grpc::ServerContext* context, const ::kvrpcpb::RawBatchDeleteRequest* request, ::kvrpcpb::RawBatchDeleteResponse* response);
     virtual ::grpc::Status RawDeleteRange(::grpc::ServerContext* context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response);
     virtual ::grpc::Status RawScan(::grpc::ServerContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response);
+    virtual ::grpc::Status RawCoprocessor(::grpc::ServerContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response);
   };
   template <class BaseClass>
   class WithAsyncMethod_RawGet : public BaseClass {
@@ -429,7 +453,27 @@ class Tikv final {
       ::grpc::Service::RequestAsyncUnary(7, context, request, response, new_call_cq, notification_cq, tag);
     }
   };
-  typedef WithAsyncMethod_RawGet<WithAsyncMethod_RawBatchGet<WithAsyncMethod_RawPut<WithAsyncMethod_RawBatchPut<WithAsyncMethod_RawDelete<WithAsyncMethod_RawBatchDelete<WithAsyncMethod_RawDeleteRange<WithAsyncMethod_RawScan<Service > > > > > > > > AsyncService;
+  template <class BaseClass>
+  class WithAsyncMethod_RawCoprocessor : public BaseClass {
+   private:
+    void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
+   public:
+    WithAsyncMethod_RawCoprocessor() {
+      ::grpc::Service::MarkMethodAsync(8);
+    }
+    ~WithAsyncMethod_RawCoprocessor() override {
+      BaseClassMustBeDerivedFromService(this);
+    }
+    // disable synchronous version of this method
+    ::grpc::Status RawCoprocessor(::grpc::ServerContext* /*context*/, const ::kvrpcpb::RawCoprocessorRequest* /*request*/, ::kvrpcpb::RawCoprocessorResponse* /*response*/) override {
+      abort();
+      return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
+    }
+    void RequestRawCoprocessor(::grpc::ServerContext* context, ::kvrpcpb::RawCoprocessorRequest* request, ::grpc::ServerAsyncResponseWriter< ::kvrpcpb::RawCoprocessorResponse>* response, ::grpc::CompletionQueue* new_call_cq, ::grpc::ServerCompletionQueue* notification_cq, void *tag) {
+      ::grpc::Service::RequestAsyncUnary(8, context, request, response, new_call_cq, notification_cq, tag);
+    }
+  };
+  typedef WithAsyncMethod_RawGet<WithAsyncMethod_RawBatchGet<WithAsyncMethod_RawPut<WithAsyncMethod_RawBatchPut<WithAsyncMethod_RawDelete<WithAsyncMethod_RawBatchDelete<WithAsyncMethod_RawDeleteRange<WithAsyncMethod_RawScan<WithAsyncMethod_RawCoprocessor<Service > > > > > > > > > AsyncService;
   template <class BaseClass>
   class WithCallbackMethod_RawGet : public BaseClass {
    private:
@@ -646,7 +690,34 @@ class Tikv final {
     virtual ::grpc::ServerUnaryReactor* RawScan(
       ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawScanRequest* /*request*/, ::kvrpcpb::RawScanResponse* /*response*/)  { return nullptr; }
   };
-  typedef WithCallbackMethod_RawGet<WithCallbackMethod_RawBatchGet<WithCallbackMethod_RawPut<WithCallbackMethod_RawBatchPut<WithCallbackMethod_RawDelete<WithCallbackMethod_RawBatchDelete<WithCallbackMethod_RawDeleteRange<WithCallbackMethod_RawScan<Service > > > > > > > > CallbackService;
+  template <class BaseClass>
+  class WithCallbackMethod_RawCoprocessor : public BaseClass {
+   private:
+    void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
+   public:
+    WithCallbackMethod_RawCoprocessor() {
+      ::grpc::Service::MarkMethodCallback(8,
+          new ::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse>(
+            [this](
+                   ::grpc::CallbackServerContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response) { return this->RawCoprocessor(context, request, response); }));}
+    void SetMessageAllocatorFor_RawCoprocessor(
+        ::grpc::MessageAllocator< ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse>* allocator) {
+      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(8);
+      static_cast<::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse>*>(handler)
+              ->SetMessageAllocator(allocator);
+    }
+    ~WithCallbackMethod_RawCoprocessor() override {
+      BaseClassMustBeDerivedFromService(this);
+    }
+    // disable synchronous version of this method
+    ::grpc::Status RawCoprocessor(::grpc::ServerContext* /*context*/, const ::kvrpcpb::RawCoprocessorRequest* /*request*/, ::kvrpcpb::RawCoprocessorResponse* /*response*/) override {
+      abort();
+      return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
+    }
+    virtual ::grpc::ServerUnaryReactor* RawCoprocessor(
+      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawCoprocessorRequest* /*request*/, ::kvrpcpb::RawCoprocessorResponse* /*response*/)  { return nullptr; }
+  };
+  typedef WithCallbackMethod_RawGet<WithCallbackMethod_RawBatchGet<WithCallbackMethod_RawPut<WithCallbackMethod_RawBatchPut<WithCallbackMethod_RawDelete<WithCallbackMethod_RawBatchDelete<WithCallbackMethod_RawDeleteRange<WithCallbackMethod_RawScan<WithCallbackMethod_RawCoprocessor<Service > > > > > > > > > CallbackService;
   typedef CallbackService ExperimentalCallbackService;
   template <class BaseClass>
   class WithGenericMethod_RawGet : public BaseClass {
@@ -780,6 +851,23 @@ class Tikv final {
     }
     // disable synchronous version of this method
     ::grpc::Status RawScan(::grpc::ServerContext* /*context*/, const ::kvrpcpb::RawScanRequest* /*request*/, ::kvrpcpb::RawScanResponse* /*response*/) override {
+      abort();
+      return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
+    }
+  };
+  template <class BaseClass>
+  class WithGenericMethod_RawCoprocessor : public BaseClass {
+   private:
+    void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
+   public:
+    WithGenericMethod_RawCoprocessor() {
+      ::grpc::Service::MarkMethodGeneric(8);
+    }
+    ~WithGenericMethod_RawCoprocessor() override {
+      BaseClassMustBeDerivedFromService(this);
+    }
+    // disable synchronous version of this method
+    ::grpc::Status RawCoprocessor(::grpc::ServerContext* /*context*/, const ::kvrpcpb::RawCoprocessorRequest* /*request*/, ::kvrpcpb::RawCoprocessorResponse* /*response*/) override {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
@@ -942,6 +1030,26 @@ class Tikv final {
     }
     void RequestRawScan(::grpc::ServerContext* context, ::grpc::ByteBuffer* request, ::grpc::ServerAsyncResponseWriter< ::grpc::ByteBuffer>* response, ::grpc::CompletionQueue* new_call_cq, ::grpc::ServerCompletionQueue* notification_cq, void *tag) {
       ::grpc::Service::RequestAsyncUnary(7, context, request, response, new_call_cq, notification_cq, tag);
+    }
+  };
+  template <class BaseClass>
+  class WithRawMethod_RawCoprocessor : public BaseClass {
+   private:
+    void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
+   public:
+    WithRawMethod_RawCoprocessor() {
+      ::grpc::Service::MarkMethodRaw(8);
+    }
+    ~WithRawMethod_RawCoprocessor() override {
+      BaseClassMustBeDerivedFromService(this);
+    }
+    // disable synchronous version of this method
+    ::grpc::Status RawCoprocessor(::grpc::ServerContext* /*context*/, const ::kvrpcpb::RawCoprocessorRequest* /*request*/, ::kvrpcpb::RawCoprocessorResponse* /*response*/) override {
+      abort();
+      return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
+    }
+    void RequestRawCoprocessor(::grpc::ServerContext* context, ::grpc::ByteBuffer* request, ::grpc::ServerAsyncResponseWriter< ::grpc::ByteBuffer>* response, ::grpc::CompletionQueue* new_call_cq, ::grpc::ServerCompletionQueue* notification_cq, void *tag) {
+      ::grpc::Service::RequestAsyncUnary(8, context, request, response, new_call_cq, notification_cq, tag);
     }
   };
   template <class BaseClass>
@@ -1118,6 +1226,28 @@ class Tikv final {
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
     virtual ::grpc::ServerUnaryReactor* RawScan(
+      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
+  };
+  template <class BaseClass>
+  class WithRawCallbackMethod_RawCoprocessor : public BaseClass {
+   private:
+    void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
+   public:
+    WithRawCallbackMethod_RawCoprocessor() {
+      ::grpc::Service::MarkMethodRawCallback(8,
+          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+            [this](
+                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawCoprocessor(context, request, response); }));
+    }
+    ~WithRawCallbackMethod_RawCoprocessor() override {
+      BaseClassMustBeDerivedFromService(this);
+    }
+    // disable synchronous version of this method
+    ::grpc::Status RawCoprocessor(::grpc::ServerContext* /*context*/, const ::kvrpcpb::RawCoprocessorRequest* /*request*/, ::kvrpcpb::RawCoprocessorResponse* /*response*/) override {
+      abort();
+      return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
+    }
+    virtual ::grpc::ServerUnaryReactor* RawCoprocessor(
       ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
   };
   template <class BaseClass>
@@ -1336,9 +1466,36 @@ class Tikv final {
     // replace default version of method with streamed unary
     virtual ::grpc::Status StreamedRawScan(::grpc::ServerContext* context, ::grpc::ServerUnaryStreamer< ::kvrpcpb::RawScanRequest,::kvrpcpb::RawScanResponse>* server_unary_streamer) = 0;
   };
-  typedef WithStreamedUnaryMethod_RawGet<WithStreamedUnaryMethod_RawBatchGet<WithStreamedUnaryMethod_RawPut<WithStreamedUnaryMethod_RawBatchPut<WithStreamedUnaryMethod_RawDelete<WithStreamedUnaryMethod_RawBatchDelete<WithStreamedUnaryMethod_RawDeleteRange<WithStreamedUnaryMethod_RawScan<Service > > > > > > > > StreamedUnaryService;
+  template <class BaseClass>
+  class WithStreamedUnaryMethod_RawCoprocessor : public BaseClass {
+   private:
+    void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
+   public:
+    WithStreamedUnaryMethod_RawCoprocessor() {
+      ::grpc::Service::MarkMethodStreamed(8,
+        new ::grpc::internal::StreamedUnaryHandler<
+          ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse>(
+            [this](::grpc::ServerContext* context,
+                   ::grpc::ServerUnaryStreamer<
+                     ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse>* streamer) {
+                       return this->StreamedRawCoprocessor(context,
+                         streamer);
+                  }));
+    }
+    ~WithStreamedUnaryMethod_RawCoprocessor() override {
+      BaseClassMustBeDerivedFromService(this);
+    }
+    // disable regular version of this method
+    ::grpc::Status RawCoprocessor(::grpc::ServerContext* /*context*/, const ::kvrpcpb::RawCoprocessorRequest* /*request*/, ::kvrpcpb::RawCoprocessorResponse* /*response*/) override {
+      abort();
+      return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
+    }
+    // replace default version of method with streamed unary
+    virtual ::grpc::Status StreamedRawCoprocessor(::grpc::ServerContext* context, ::grpc::ServerUnaryStreamer< ::kvrpcpb::RawCoprocessorRequest,::kvrpcpb::RawCoprocessorResponse>* server_unary_streamer) = 0;
+  };
+  typedef WithStreamedUnaryMethod_RawGet<WithStreamedUnaryMethod_RawBatchGet<WithStreamedUnaryMethod_RawPut<WithStreamedUnaryMethod_RawBatchPut<WithStreamedUnaryMethod_RawDelete<WithStreamedUnaryMethod_RawBatchDelete<WithStreamedUnaryMethod_RawDeleteRange<WithStreamedUnaryMethod_RawScan<WithStreamedUnaryMethod_RawCoprocessor<Service > > > > > > > > > StreamedUnaryService;
   typedef Service SplitStreamedService;
-  typedef WithStreamedUnaryMethod_RawGet<WithStreamedUnaryMethod_RawBatchGet<WithStreamedUnaryMethod_RawPut<WithStreamedUnaryMethod_RawBatchPut<WithStreamedUnaryMethod_RawDelete<WithStreamedUnaryMethod_RawBatchDelete<WithStreamedUnaryMethod_RawDeleteRange<WithStreamedUnaryMethod_RawScan<Service > > > > > > > > StreamedService;
+  typedef WithStreamedUnaryMethod_RawGet<WithStreamedUnaryMethod_RawBatchGet<WithStreamedUnaryMethod_RawPut<WithStreamedUnaryMethod_RawBatchPut<WithStreamedUnaryMethod_RawDelete<WithStreamedUnaryMethod_RawBatchDelete<WithStreamedUnaryMethod_RawDeleteRange<WithStreamedUnaryMethod_RawScan<WithStreamedUnaryMethod_RawCoprocessor<Service > > > > > > > > > StreamedService;
 };
 
 }  // namespace tikvpb
