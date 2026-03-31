@@ -1201,34 +1201,198 @@ template <typename T> ErrorCode Index<T>::BuildIndexInternal(std::shared_ptr<Hel
 
     if (m_db == nullptr) PrepareDB(m_db);
 
-    auto ret = BuildIndexInternalLayer(vectorReader);
-    if (ret != ErrorCode::Success)
-    {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to build index layer 0.\n");
-        return ret;
-    }
-    for (int layer = 1; layer < m_options.m_layers; layer++)
-    {
-        std::string vectorPath = m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile;
-        if (rename(vectorPath.c_str(), (vectorPath + "_tmp").c_str()) != 0) {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to rename vector file to %s\n", (vectorPath + "_tmp").c_str());
-        }
-        vectorReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
-        if (ErrorCode::Success != vectorReader->LoadFile(vectorPath + "_tmp"))
-        {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to read headvector file for layer %d.\n", layer);
+    int resumeLayer = m_options.m_resumeLayer;
+
+    if (resumeLayer >= 0) {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Resuming build from layer %d (loading layers 0..%d from existing data)\n",
+                     resumeLayer, resumeLayer - 1);
+
+        // Save original file path options
+        std::string origHeadIDFile = m_options.m_headIDFile;
+        std::string origHeadVectorFile = m_options.m_headVectorFile;
+        std::string origHeadIndexFolder = m_options.m_headIndexFolder;
+
+        auto setLayerPaths = [&](int layer) {
+            if (m_options.m_layers > 1 && layer < m_options.m_layers - 1) {
+                std::string suffix = "_layer" + std::to_string(layer);
+                m_options.m_headIDFile = origHeadIDFile + suffix;
+                m_options.m_headVectorFile = origHeadVectorFile + suffix;
+                m_options.m_headIndexFolder = origHeadIndexFolder + suffix;
+            } else {
+                m_options.m_headIDFile = origHeadIDFile;
+                m_options.m_headVectorFile = origHeadVectorFile;
+                m_options.m_headIndexFolder = origHeadIndexFolder;
+            }
+        };
+
+        // For resume, we need the head index that corresponds to the layer ABOVE the resume layer.
+        // For 2-layer: resumeLayer=1 means load Layer 1's head index (the last layer, default paths).
+        setLayerPaths(resumeLayer);
+        std::string headIndexPath = m_options.m_indexDirectory + FolderSep + m_options.m_headIndexFolder;
+        std::string headIDPath = m_options.m_indexDirectory + FolderSep + m_options.m_headIDFile;
+
+        // Load head index from disk
+        if (LoadIndex(headIndexPath, m_topIndex) != ErrorCode::Success) {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Cannot load head index for resume from %s\n", headIndexPath.c_str());
+            m_options.m_headIDFile = origHeadIDFile;
+            m_options.m_headVectorFile = origHeadVectorFile;
+            m_options.m_headIndexFolder = origHeadIndexFolder;
             return ErrorCode::Fail;
         }
+        m_topIndex->SetQuantizer(m_pQuantizer);
+        m_topIndex->SetParameter("NumberOfThreads", std::to_string(m_options.m_iSSDNumberOfThreads));
+        m_topIndex->SetParameter("MaxCheck", std::to_string(m_options.m_maxCheck));
+        m_topIndex->SetParameter("HashTableExponent", std::to_string(m_options.m_hashExp));
+        m_topIndex->UpdateIndex();
+
+        // Load head ID mapping
+        {
+            std::shared_ptr<Helper::DiskIO> ptr = SPTAG::f_createIO();
+            if (ptr != nullptr && ptr->Initialize(headIDPath.c_str(),
+                    std::ios::binary | std::ios::in)) {
+                m_topLocalToGlobalID.Load(ptr, m_topIndex->m_iDataBlockSize, m_topIndex->m_iDataCapacity);
+                m_topGlobalToLocalID.clear();
+                for (int i = 0; i < m_topIndex->GetNumSamples(); i++) {
+                    SizeType globalID = *(m_topLocalToGlobalID[i]);
+                    m_topGlobalToLocalID[globalID] = i;
+                }
+            }
+        }
+
+        // Load existing layers below resumeLayer
+        for (int i = 0; i < resumeLayer; i++) {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Loading existing data for layer %d\n", i);
+            if (m_options.m_storage == Storage::STATIC) {
+                m_extraSearchers.push_back(std::make_shared<ExtraStaticSearcher<T>>(i, this));
+            } else {
+                m_extraSearchers.push_back(std::make_shared<ExtraDynamicSearcher<T>>(m_options, i, this, m_db));
+            }
+            if (!m_extraSearchers.back()->LoadIndex(m_options)) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to load existing index for layer %d\n", i);
+                return ErrorCode::Fail;
+            }
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Layer %d loaded successfully\n", i);
+        }
+
+        // For the resume layer and above, build SSD only (skip SelectHead + BuildHead)
+        bool origSelectHead = m_options.m_selectHead;
+        bool origBuildHead = m_options.m_buildHead;
+        m_options.m_selectHead = false;
+        m_options.m_buildHead = false;
+
+        for (int layer = resumeLayer; layer < m_options.m_layers; layer++) {
+            setLayerPaths(layer);
+
+            if (layer == 0) {
+                // Layer 0 uses the original base vectors
+                auto ret = BuildIndexInternalLayer(vectorReader);
+                if (ret != ErrorCode::Success) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to resume build for layer 0.\n");
+                    m_options.m_selectHead = origSelectHead;
+                    m_options.m_buildHead = origBuildHead;
+                    m_options.m_headIDFile = origHeadIDFile;
+                    m_options.m_headVectorFile = origHeadVectorFile;
+                    m_options.m_headIndexFolder = origHeadIndexFolder;
+                    return ret;
+                }
+            } else {
+                // Layer N uses the head vectors from the previous layer as input
+                setLayerPaths(layer - 1);
+                std::string prevHeadVectors = m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile;
+                setLayerPaths(layer);
+
+                vectorReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
+                if (ErrorCode::Success != vectorReader->LoadFile(prevHeadVectors)) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to read headvector file for layer %d from %s.\n", layer, prevHeadVectors.c_str());
+                    m_options.m_selectHead = origSelectHead;
+                    m_options.m_buildHead = origBuildHead;
+                    m_options.m_headIDFile = origHeadIDFile;
+                    m_options.m_headVectorFile = origHeadVectorFile;
+                    m_options.m_headIndexFolder = origHeadIndexFolder;
+                    return ErrorCode::Fail;
+                }
+                auto ret = BuildIndexInternalLayer(vectorReader);
+                if (ret != ErrorCode::Success) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to resume build for layer %d.\n", layer);
+                    m_options.m_selectHead = origSelectHead;
+                    m_options.m_buildHead = origBuildHead;
+                    m_options.m_headIDFile = origHeadIDFile;
+                    m_options.m_headVectorFile = origHeadVectorFile;
+                    m_options.m_headIndexFolder = origHeadIndexFolder;
+                    return ret;
+                }
+            }
+        }
+
+        m_options.m_selectHead = origSelectHead;
+        m_options.m_buildHead = origBuildHead;
+        m_options.m_headIDFile = origHeadIDFile;
+        m_options.m_headVectorFile = origHeadVectorFile;
+        m_options.m_headIndexFolder = origHeadIndexFolder;
+    } else {
+        // Normal build path
+        // Save original file path options for per-layer suffixing
+        std::string origHeadIDFile = m_options.m_headIDFile;
+        std::string origHeadVectorFile = m_options.m_headVectorFile;
+        std::string origHeadIndexFolder = m_options.m_headIndexFolder;
+
+        auto setLayerPaths = [&](int layer) {
+            if (m_options.m_layers > 1 && layer < m_options.m_layers - 1) {
+                std::string suffix = "_layer" + std::to_string(layer);
+                m_options.m_headIDFile = origHeadIDFile + suffix;
+                m_options.m_headVectorFile = origHeadVectorFile + suffix;
+                m_options.m_headIndexFolder = origHeadIndexFolder + suffix;
+            } else {
+                m_options.m_headIDFile = origHeadIDFile;
+                m_options.m_headVectorFile = origHeadVectorFile;
+                m_options.m_headIndexFolder = origHeadIndexFolder;
+            }
+        };
+
+        // Layer 0
+        setLayerPaths(0);
         auto ret = BuildIndexInternalLayer(vectorReader);
         if (ret != ErrorCode::Success)
         {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to build index layer %d.\n", layer);
-            return ret; 
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to build index layer 0.\n");
+            m_options.m_headIDFile = origHeadIDFile;
+            m_options.m_headVectorFile = origHeadVectorFile;
+            m_options.m_headIndexFolder = origHeadIndexFolder;
+            return ret;
         }
-        if (remove((vectorPath + "_tmp").c_str()) != 0) {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to delete vector file: %s\n", (vectorPath + "_tmp").c_str());
+        for (int layer = 1; layer < m_options.m_layers; layer++)
+        {
+            // Load previous layer's head vectors as input for this layer
+            std::string prevHeadVectors = m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile;
+            setLayerPaths(layer);
+
+            vectorReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
+            if (ErrorCode::Success != vectorReader->LoadFile(prevHeadVectors))
+            {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to read headvector file for layer %d from %s.\n", layer, prevHeadVectors.c_str());
+                m_options.m_headIDFile = origHeadIDFile;
+                m_options.m_headVectorFile = origHeadVectorFile;
+                m_options.m_headIndexFolder = origHeadIndexFolder;
+                return ErrorCode::Fail;
+            }
+            auto ret = BuildIndexInternalLayer(vectorReader);
+            if (ret != ErrorCode::Success)
+            {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to build index layer %d.\n", layer);
+                m_options.m_headIDFile = origHeadIDFile;
+                m_options.m_headVectorFile = origHeadVectorFile;
+                m_options.m_headIndexFolder = origHeadIndexFolder;
+                return ret;
+            }
         }
-    }
+
+        // Restore original options
+        m_options.m_headIDFile = origHeadIDFile;
+        m_options.m_headVectorFile = origHeadVectorFile;
+        m_options.m_headIndexFolder = origHeadIndexFolder;
+    } // end of normal vs resume path
+
+    // Clean up last layer's head vector file (not needed at runtime)
     if (fileexists((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str())) 
     {
         if (remove((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str()) != 0)

@@ -225,7 +225,8 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
                                         std::string& pmetaset, std::string& pmetaidx, const std::string &distMethod = "L2",
                                         int searchthread = 2, int insertthread = 2, int layers = 1,
                                         std::shared_ptr<COMMON::IQuantizer> quantizer = nullptr, std::string quantizerFilePath = "quantizer.bin",
-                                        const std::map<std::string, std::string>& ssdOverrides = {})
+                                        const std::map<std::string, std::string>& ssdOverrides = {},
+                                        bool ssdOnly = false)
 {
     auto vecIndex = VectorIndex::CreateInstance(IndexAlgoType::SPANN, GetEnumValueType<T>());
     int maxthreads = std::thread::hardware_concurrency();
@@ -318,6 +319,15 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
     for (const auto &[key, val] : ssdOverrides)
     {
         vecIndex->SetParameter(key.c_str(), val.c_str(), "BuildSSDIndex");
+    }
+
+    // SSD-only mode: skip SelectHead and BuildHead, resume from specified layer
+    if (ssdOnly)
+    {
+        // For multi-layer builds, resume from layer 1 (skip layer 0, rebuild layer 1+ SSD only)
+        // For single-layer builds, resume from layer 0
+        int resumeLayer = (layers > 1) ? 1 : 0;
+        vecIndex->SetParameter("ResumeLayer", std::to_string(resumeLayer).c_str(), "BuildSSDIndex");
     }
 
     if (quantizer)
@@ -575,7 +585,8 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                   int insertVectorCount, int deleteVectorCount, int batches, int topK, int numThreads, int numQueries,
                   const std::string &outputFile = "output.json", const bool rebuild = true, const int resume = -1,
                   const std::string &quantizerFilePath = std::string(""), int quantizedDim = 0, int layers = 1,
-                  const std::map<std::string, std::string>& ssdOverrides = {})
+                  const std::map<std::string, std::string>& ssdOverrides = {},
+                  bool rebuildSsdOnly = false)
 {
     int oldM = M, oldK = K, oldN = N, oldQueries = queries;
     N = baseVectorCount;
@@ -643,8 +654,10 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     
     // Build initial index
     BOOST_TEST_MESSAGE("\n=== Building Index ===");
-    if (rebuild || !direxists(indexPath.c_str())) {
-        std::filesystem::remove_all(indexPath);
+    if (rebuild || rebuildSsdOnly || !direxists(indexPath.c_str())) {
+        if (!rebuildSsdOnly) {
+            std::filesystem::remove_all(indexPath);
+        }
         auto buildstart = std::chrono::high_resolution_clock::now();
 
         if (enableQuantization)
@@ -669,13 +682,13 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                 quantizedBase->Save(pquanvecset);
             }
 
-            index = BuildLargeIndex<uint8_t>(indexPath, pquanvecset, pmeta, pmetaidx, dist, numThreads, numThreads, layers, quantizer, "quantizer.bin", ssdOverrides);
+            index = BuildLargeIndex<uint8_t>(indexPath, pquanvecset, pmeta, pmetaidx, dist, numThreads, numThreads, layers, quantizer, "quantizer.bin", ssdOverrides, rebuildSsdOnly);
             BOOST_REQUIRE(index != nullptr);
             index->SetQuantizerADC(true);
         }
         else
         {
-            index = BuildLargeIndex<T>(indexPath, pvecset, pmeta, pmetaidx, dist, numThreads, numThreads, layers, nullptr, "quantizer.bin", ssdOverrides);
+            index = BuildLargeIndex<T>(indexPath, pvecset, pmeta, pmetaidx, dist, numThreads, numThreads, layers, nullptr, "quantizer.bin", ssdOverrides, rebuildSsdOnly);
             BOOST_REQUIRE(index != nullptr);
         }
 
@@ -1926,6 +1939,7 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     int layers = iniReader.GetParameter("Benchmark", "Layers", 1);
     DistCalcMethod distMethod = iniReader.GetParameter("Benchmark", "DistMethod", DistCalcMethod::L2);
     bool rebuild = iniReader.GetParameter("Benchmark", "Rebuild", true);
+    bool rebuildSsdOnly = iniReader.GetParameter("Benchmark", "RebuildSSDOnly", false);
     int resume = iniReader.GetParameter("Benchmark", "Resume", -1);
 
     // Read storage backend overrides for BuildSSDIndex
@@ -1977,19 +1991,19 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     {
         RunBenchmark<float>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                     insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries, outputFile, 
-                    rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides);
+                    rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly);
     }
     else if (valueType == VectorValueType::Int8)
     {
         RunBenchmark<std::int8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                       insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries,
-                      outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides);
+                      outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly);
     }
     else if (valueType == VectorValueType::UInt8)
     {
         RunBenchmark<std::uint8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                        insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries,
-                       outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides);
+                       outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly);
     }
 
     //std::filesystem::remove_all(indexPath);

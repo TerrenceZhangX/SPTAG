@@ -203,6 +203,7 @@ namespace SPTAG {
 
             // Multi layers
             int m_layers;
+            int m_resumeLayer;
             SizeType m_maxID;
             bool m_shareDB;
 
