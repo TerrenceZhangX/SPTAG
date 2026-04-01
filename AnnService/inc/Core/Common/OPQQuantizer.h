@@ -208,4 +208,4 @@ namespace SPTAG
     }
 }
 
-#endif  _SPTAG_COMMON_OPQQUANTIZER_H_
+#endif  // _SPTAG_COMMON_OPQQUANTIZER_H_

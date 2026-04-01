@@ -11,7 +11,7 @@ namespace SPTAG
 {
     namespace COMMON
     {
-        class Labelset
+        class LabelSet
         {
         public:
             enum class InvalidIDBehavior
@@ -23,10 +23,10 @@ namespace SPTAG
         private:
             std::atomic<SizeType> m_inserted;
             Dataset<std::int8_t> m_data;
-            InvalidIDBehavior m_invalidIDBehaviorSetting;
+            InvalidIDBehavior m_invalidIDBehaviorSetting{};
             
         public:
-            Labelset()
+            LabelSet()
             {
                 m_inserted = 0;
                 m_data.SetName("DeleteID");
@@ -44,12 +44,14 @@ namespace SPTAG
             {
                 if (key >= R())
                 {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "LabelSet::Contains: key %lld out of range %lld\n", (long long)key, (long long)R());
                     switch (m_invalidIDBehaviorSetting)
                     {
                         case InvalidIDBehavior::AlwaysContains:
                             return true;
                         case InvalidIDBehavior::AlwaysNotContains:
                             return false;
+			default: {}
                     }
                 }
 
@@ -60,18 +62,41 @@ namespace SPTAG
             {
                 if (key >= R())
                 {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "LabelSet::Insert: key %lld out of range %lld\n", (long long)key, (long long)R());
                     switch (m_invalidIDBehaviorSetting)
                     {
                         case InvalidIDBehavior::AlwaysContains:
                             return true;
                         case InvalidIDBehavior::AlwaysNotContains:
                             return false;
+			default: {}
                     }
                 }
 
                 char oldvalue = InterlockedExchange8((char*)m_data[key], 1);
                 if (oldvalue == 1) return false;
                 m_inserted++;
+                return true;
+            }
+
+            inline bool Reset(const SizeType& key)
+            {
+                if (key >= R())
+                {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "LabelSet::Insert: key %lld out of range %lld\n",
+                                 (long long)key, (long long)R());
+                    switch (m_invalidIDBehaviorSetting)
+                    {
+                    case InvalidIDBehavior::AlwaysContains:
+                        return true;
+                    case InvalidIDBehavior::AlwaysNotContains:
+                        return false;
+                    default: {}
+                    }
+                }
+                char oldvalue = InterlockedExchange8((char *)m_data[key], -1);
+                if (oldvalue == -1) return false;
+                m_inserted--;
                 return true;
             }
 
