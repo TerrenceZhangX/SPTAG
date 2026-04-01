@@ -8,6 +8,7 @@
 #include <chrono>
 #include <random>
 #include <shared_mutex>
+#include <filesystem>
 
 #include "inc/Core/ResultIterator.h"
 #include "inc/Core/SPANN/SPANNResultIterator.h"
@@ -1364,7 +1365,23 @@ template <typename T> ErrorCode Index<T>::BuildIndexInternal(std::shared_ptr<Hel
         {
             // Load previous layer's head vectors as input for this layer
             std::string prevHeadVectors = m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile;
+            std::string prevHeadIDFile = m_options.m_indexDirectory + FolderSep + m_options.m_headIDFile;
             setLayerPaths(layer);
+
+            // Copy previous layer's headIDFile to current layer's path so that
+            // BuildIndexInternalLayer can load it as localToGlobalID (mapping from
+            // the previous layer's local head IDs to original global vector IDs).
+            // SelectHead will overwrite this file later with the current layer's head IDs.
+            std::string curHeadIDFile = m_options.m_indexDirectory + FolderSep + m_options.m_headIDFile;
+            std::error_code ec;
+            std::filesystem::copy_file(prevHeadIDFile, curHeadIDFile, std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "Could not copy previous layer headIDFile %s to %s: %s\n",
+                             prevHeadIDFile.c_str(), curHeadIDFile.c_str(), ec.message().c_str());
+            } else {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Copied localToGlobalID from %s to %s for layer %d\n",
+                             prevHeadIDFile.c_str(), curHeadIDFile.c_str(), layer);
+            }
 
             vectorReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
             if (ErrorCode::Success != vectorReader->LoadFile(prevHeadVectors))
