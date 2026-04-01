@@ -9,6 +9,7 @@
 #include "Heap.h"
 
 #include <stdarg.h>
+#include <functional>
 
 namespace SPTAG
 {
@@ -18,6 +19,8 @@ namespace SPTAG
         class IWorkSpaceFactory
         {
         public:
+            using Ptr = std::unique_ptr<WorkSpaceType>;
+
             virtual std::unique_ptr<WorkSpaceType> GetWorkSpace() = 0;
             virtual void ReturnWorkSpace(std::unique_ptr<WorkSpaceType> ws) = 0;
         };
@@ -37,7 +40,32 @@ namespace SPTAG
             {
                 m_workspace = std::move(ws);
             }
+        };
 
+	template <typename WorkSpaceType>
+        class SharedPoolWorkSpaceFactory : public IWorkSpaceFactory<WorkSpaceType> {
+        public:
+            virtual std::unique_ptr<WorkSpaceType> GetWorkSpace() override
+	    {
+                std::unique_ptr<WorkSpaceType>  ws;
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (!m_pool.empty()) {
+                    ws = std::move(m_pool.back());
+                    m_pool.pop_back();
+                }
+		return ws;
+	    }
+
+            void ReturnWorkSpace(std::unique_ptr<WorkSpaceType> ws) override {
+                if (ws) {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    m_pool.emplace_back(std::move(ws));
+                }
+            }
+
+        private:
+            std::mutex m_mutex;
+            std::vector<std::unique_ptr<WorkSpaceType>> m_pool;
         };
 
         class OptHashPosVector
@@ -74,7 +102,7 @@ namespace SPTAG
         public:
             OptHashPosVector(): m_secondHash(false), m_exp(2), m_poolSize(8191) {}
 
-            ~OptHashPosVector() {}
+            ~OptHashPosVector() { m_hashTable.reset(); }
 
 
             void Init(SizeType size, int exp)
@@ -173,6 +201,8 @@ namespace SPTAG
         public:
             DistPriorityQueue(): m_size(0), m_length(0), m_count(0) {}
 
+            ~DistPriorityQueue() { m_data.reset(); }
+
             void Resize(int size_) {
                 m_size = size_;
                 m_data.reset(new float[size_ + 1]);
@@ -237,7 +267,7 @@ namespace SPTAG
             }
 
             ~WorkSpace() {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Delete workspace happens!\n");
+                //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Delete workspace happens!\n");
             }
 
             void Initialize(int maxCheck, int hashExp)
@@ -300,12 +330,12 @@ namespace SPTAG
             OptHashPosVector nodeCheckStatus;
 
             // counter for dynamic pivoting
-            int m_iNumOfContinuousNoBetterPropagation;
-            int m_iContinuousLimit;
-            int m_iNumberOfTreeCheckedLeaves;
-            int m_iNumberOfCheckedLeaves;
-            int m_iMaxCheck;
-            bool m_relaxedMono;
+            int m_iNumOfContinuousNoBetterPropagation = 0;
+            int m_iContinuousLimit = 128;
+            int m_iNumberOfTreeCheckedLeaves = 0;
+            int m_iNumberOfCheckedLeaves = 0;
+            int m_iMaxCheck = 8192;
+            bool m_relaxedMono = false;
 
             // Prioriy queue used for neighborhood graph
             Heap<NodeDistPair> m_NGQueue;
@@ -317,6 +347,7 @@ namespace SPTAG
             Heap<NodeDistPair> m_nextBSPTQueue;
 
             DistPriorityQueue m_Results;
+            std::function<bool(const ByteArray&)> m_filterFunc;
         };
     }
 }

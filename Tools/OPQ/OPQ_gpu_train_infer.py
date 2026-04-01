@@ -1,6 +1,10 @@
 import numpy as np
+import math
+import tqdm
+import time
 from struct import pack, unpack, calcsize
 from struct import pack, unpack, calcsize
+from typing import Dict, List
 import heapq
 import argparse
 import copy
@@ -26,7 +30,7 @@ def get_config():
     parser.add_argument('--data_format', type = str, default = "DEFAULT", help='data format')
     parser.add_argument('--task', type = int, default = 0, help='task id')
     parser.add_argument('-log_dir', type = str, default = "", help='debug log dir in cosmos')
-    
+
     parser.add_argument('--T', type = int, default = 32, help="thread number")
     parser.add_argument('--train_samples', type = int, default = 1000000, help='OPQ, PQ training samples')
     parser.add_argument('--quan_type', type = str, default = 'none', help='quantizer type')
@@ -63,7 +67,7 @@ class DataReader:
 
     def norm(self, data):
         square = np.sqrt(np.sum(np.square(data), axis=1))
-        data[square < 1e-6] = 1e-6 / math.sqrt(float(self.featuredim)) 
+        data[square < 1e-6] = 1e-6 / math.sqrt(float(self.featuredim))
         square[square < 1e-6] = 1e-6
         data = data / square.reshape([-1, 1])
         return data
@@ -96,7 +100,7 @@ class DataReader:
         print ('Load batch query size:%r' % (i))
         if self.normalize != 0: return i, self.norm(self.query[0:i])
         return i, self.query[0:i]
-            
+
     def readallbatches(self):
         numQuerys = self.query.shape[0]
         data = []
@@ -156,7 +160,7 @@ def gpusearch(args):
 
         fout = open('truth.txt.%d' % batch, 'w')
         foutd = open('dist.bin.%d' % batch, 'wb')
- 
+
         foutd.write(pack('i', RQ))
         foutd.write(pack('i', args.k))
 
@@ -170,7 +174,7 @@ def gpusearch(args):
 
         fout.close()
         foutd.close()
-    
+
     if args.B <= 0 or args.B >= totaldata: args.B = totaldata
 
     truth = [[] for j in range(RQ)]
@@ -206,34 +210,102 @@ def gpusearch(args):
     fout.close()
     foutd.close()
 
+def search(faiss_index,
+           query_embeddings: np.ndarray,
+           topk: int = 1000,
+           nprobe: int = None,
+           batch_size: int = 64):
+    import faiss
+    if nprobe is not None:
+        if isinstance(faiss_index, faiss.IndexPreTransform):
+            ivf_index = faiss.downcast_index(faiss_index.index)
+            ivf_index.nprobe = nprobe
+        else:
+            faiss_index.nprobe = nprobe
+
+    start_time = time.time()
+    if batch_size:
+        batch_num = math.ceil(len(query_embeddings) / batch_size)
+        all_scores = []
+        all_search_results = []
+        for step in tqdm(range(batch_num)):
+            start = batch_size * step
+            end = min(batch_size * (step + 1), len(query_embeddings))
+            batch_emb = np.array(query_embeddings[start:end])
+            score, batch_results = faiss_index.search(batch_emb, topk)
+            all_search_results.extend([list(x) for x in batch_results])
+            all_scores.extend([list(x) for x in score])
+    else:
+        all_scores, all_search_results = faiss_index.search(query_embeddings, topk)
+    search_time = time.time() - start_time
+    print(
+        f'number of query:{len(query_embeddings)},  searching time per query: {search_time / len(query_embeddings)}')
+    return all_scores, all_search_results
+
+def evaluate(retrieve_results: List[List[int]],
+             ground_truths: Dict[int, List[int]],
+             MRR_cutoffs: List[int] = [10],
+             Recall_cutoffs: List[int] = [5, 10, 50],
+             qids: List[int] = None):
+    """
+    calculate MRR and Recall
+    """
+    MRR = [0.0] * len(MRR_cutoffs)
+    Recall = [0.0] * len(Recall_cutoffs)
+    ranking = []
+    if qids is None:
+        qids = list(range(len(retrieve_results)))
+    for qid, candidate_pid in zip(qids, retrieve_results):
+        if qid in ground_truths:
+            target_pid = ground_truths[qid]
+            ranking.append(-1)
+
+            for i in range(0, max(MRR_cutoffs)):
+                if candidate_pid[i] in target_pid:
+                    ranking.pop()
+                    ranking.append(i + 1)
+                    for inx, cutoff in enumerate(MRR_cutoffs):
+                        if i <= cutoff - 1:
+                            MRR[inx] += 1 / (i + 1)
+                    break
+
+            for i, k in enumerate(Recall_cutoffs):
+                Recall[i] += (len(set.intersection(set(target_pid), set(candidate_pid[:k]))) / len(set(target_pid)))
+
+    if len(ranking) == 0:
+        raise IOError("No matching QIDs found. Are you sure you are scoring the evaluation set?")
+
+    print(f"{len(ranking)} matching queries found")
+    MRR = [x / len(ranking) for x in MRR]
+    for i, k in enumerate(MRR_cutoffs):
+        print(f'MRR@{k}:{MRR[i]}')
+
+    Recall = [x / len(ranking) for x in Recall]
+    for i, k in enumerate(Recall_cutoffs):
+        print(f'Recall@{k}:{Recall[i]}')
+
+    return MRR, Recall
+
 def train_pq(args):
     import faiss
-    from LibVQ.base_index import FaissIndex
 
     output_dir = args.output_dir
 
     datareader = DataReader(args.data_file, args.dim, args.train_samples, args.data_normalize, args.data_type, args.target_type)
-    
+
     print ('train PQ...')
-    
-    index_method = 'pq'
-    ivf_centers_num = -1
+
     subvector_num = args.quan_dim
     subvector_bits = 8
     numData, data = datareader.readbatch()
-    
-    faiss.omp_set_num_threads(args.T)
-    index = FaissIndex(index_method=index_method,
-                       emb_size=len(data[0]),
-                       ivf_centers_num=ivf_centers_num,
-                       subvector_num=subvector_num,
-                       subvector_bits=subvector_bits,
-                       dist_mode='l2')
 
+    faiss.omp_set_num_threads(args.T)
+
+    faiss_index = faiss.index_factory(len(data[0]), f"PQ{subvector_num}x{subvector_bits}", faiss.METRIC_L2)
     print('Training the index with doc embeddings')
 
-    index.fit(data)
-    
+    faiss_index.train(data)
+
     rtype = np.uint8(0)
     if args.data_type == 'uint8':
         rtype = np.uint8(1)
@@ -241,8 +313,7 @@ def train_pq(args):
         rtype = np.uint8(2)
     elif args.data_type == 'float32':
         rtype = np.uint8(3)
-     
-    faiss_index = index.index
+
     ivf_index = faiss.downcast_index(faiss_index)
     centroid_embedings = faiss.vector_to_array(ivf_index.pq.centroids)
     codebooks = centroid_embedings.reshape(ivf_index.pq.M, ivf_index.pq.ksub, ivf_index.pq.dsub)
@@ -260,8 +331,6 @@ def train_pq(args):
 
     if args.quan_test == 0 and len(args.output_quan_vector_file) == 0 and len(args.output_rec_vector_file) == 0:
         os.rename(args.output_truth, os.path.join(output_dir, 'truth.txt' + '.' + str(args.task)))
-        ret = subprocess.run(['ZipKDTree.exe', output_dir, args.output_truth])
-        print (ret)
         return
 
     if len(args.output_quan_vector_file) > 0:
@@ -276,8 +345,8 @@ def train_pq(args):
 
     writeitems = 0
     while numData > 0:
-        if args.quan_test > 0: index.add(data)
-        
+        if args.quan_test > 0: faiss_index.add(data)
+
         codes = ivf_index.pq.compute_codes(data)
 
         print ('codes shape:')
@@ -289,10 +358,10 @@ def train_pq(args):
         if len(args.output_rec_vector_file) > 0:
             reconstructed = ivf_index.pq.decode(codes).astype(args.data_type)
             frec.write(reconstructed.tobytes())
-  
+
         writeitems += numData
         numData, data = datareader.readbatch()
-    
+
     datareader.close()
 
     if len(args.output_quan_vector_file) > 0:
@@ -315,8 +384,6 @@ def train_pq(args):
         os.rename(os.path.join(output_dir, args.output_rec_vector_file + '.' + str(args.task) + '.tmp'), os.path.join(output_dir, args.output_rec_vector_file + '.' + str(args.task)))
 
     os.rename(args.output_truth, os.path.join(output_dir, 'truth.txt' + '.' + str(args.task)))
-    ret = subprocess.run(['ZipKDTree.exe', output_dir, args.output_truth])
-    print (ret)
 
     if args.quan_test > 0:
         queryreader = DataReader(args.query_file, args.dim, -1, args.query_normalize, args.data_type, args.target_type)
@@ -330,37 +397,32 @@ def train_pq(args):
         f.close()
 
         # Test the performance
-        index.test(query, qid2ground_truths, topk=args.k, batch_size=64,
-                   MRR_cutoffs=[5, 10], Recall_cutoffs=[5, 10, 20, 40])
+        scores, retrieve_results = search(faiss_index, query, topk=args.k, nprobe = 1, batch_size=64)
+        evaluate(retrieve_results, qid2ground_truths, MRR_cutoffs=[5, 10], Recall_cutoffs=[5, 10, 20, 40], qids=None)
 
 def train_opq(args):
     import faiss
-    from LibVQ.base_index import FaissIndex
 
     output_dir = args.output_dir
 
     datareader = DataReader(args.data_file, args.dim, args.train_samples, args.data_normalize, args.data_type, args.target_type)
-    
+
     print ('train OPQ...')
-    
+
     index_method = 'opq'
     ivf_centers_num = -1
     subvector_num = args.quan_dim
     subvector_bits = 8
     numData, data = datareader.readbatch()
-    
+    data = data.astype(np.float32)
+    args.data_type = 'float32'
     faiss.omp_set_num_threads(args.T)
-    index = FaissIndex(index_method=index_method,
-                       emb_size=len(data[0]),
-                       ivf_centers_num=ivf_centers_num,
-                       subvector_num=subvector_num,
-                       subvector_bits=subvector_bits,
-                       dist_mode='l2')
+    faiss_index = faiss.index_factory(len(data[0]), f"OPQ{subvector_num},PQ{subvector_num}x{subvector_bits}", faiss.METRIC_L2)
 
     print('Training the index with doc embeddings')
 
-    index.fit(data)
-    
+    faiss_index.train(data)
+
     rtype = np.uint8(0)
     if args.data_type == 'uint8':
         rtype = np.uint8(1)
@@ -368,8 +430,7 @@ def train_opq(args):
         rtype = np.uint8(2)
     elif args.data_type == 'float32':
         rtype = np.uint8(3)
-     
-    faiss_index = index.index
+
     if isinstance(faiss_index, faiss.IndexPreTransform):
         vt = faiss.downcast_VectorTransform(faiss_index.chain.at(0))
         assert isinstance(vt, faiss.LinearTransform)
@@ -395,10 +456,8 @@ def train_opq(args):
             f.write(codebooks.tobytes())
             f.write(rotate_matrix.tobytes())
 
-    if args.quan_test == 0 and len(args.output_quan_vector_file) == 0 and len(args.output_rec_vector_file) == 0: 
+    if args.quan_test == 0 and len(args.output_quan_vector_file) == 0 and len(args.output_rec_vector_file) == 0:
         os.rename(args.output_truth, os.path.join(output_dir, 'truth.txt' + '.' + str(args.task)))
-        ret = subprocess.run(['ZipKDTree.exe', output_dir, args.output_truth])
-        print (ret)
         return
 
     if len(args.output_quan_vector_file) > 0:
@@ -413,8 +472,8 @@ def train_opq(args):
 
     writeitems = 0
     while numData > 0:
-        if args.quan_test > 0: index.add(data)
-        
+        if args.quan_test > 0: faiss_index.add(data)
+
         rdata = np.matmul(data, rotate.T)
         codes = ivf_index.pq.compute_codes(rdata)
 
@@ -427,9 +486,10 @@ def train_opq(args):
             Y = ivf_index.pq.decode(codes)
             reconstructed = np.matmul(Y, rotate).astype(args.data_type)
             frec.write(reconstructed.tobytes())
-  
+
         writeitems += numData
         numData, data = datareader.readbatch()
+        data = data.astype(np.float32)
 
     datareader.close()
 
@@ -454,8 +514,6 @@ def train_opq(args):
         os.rename(os.path.join(output_dir, args.output_rec_vector_file + '.' + str(args.task) + '.tmp'), os.path.join(output_dir, args.output_rec_vector_file + '.' + str(args.task)))
 
     os.rename(args.output_truth, os.path.join(output_dir, 'truth.txt' + '.' + str(args.task)))
-    ret = subprocess.run(['ZipKDTree.exe', output_dir, args.output_truth])
-    print (ret)
 
     if args.quan_test > 0:
         queryreader = DataReader(args.query_file, args.dim, -1, args.query_normalize, args.data_type, args.target_type)
@@ -469,8 +527,8 @@ def train_opq(args):
         f.close()
 
         # Test the performance
-        index.test(query, qid2ground_truths, topk=args.k, batch_size=64,
-                   MRR_cutoffs=[5, 10], Recall_cutoffs=[5, 10, 20, 40])
+        scores, retrieve_results = search(faiss_index, query, topk=args.k, nprobe = 1, batch_size=64)
+        evaluate(retrieve_results, qid2ground_truths, MRR_cutoffs=[5, 10], Recall_cutoffs=[5, 10, 20, 40], qids=None)
 
 def quan_reconstruct_vectors(args):
     import faiss
@@ -508,7 +566,7 @@ def quan_reconstruct_vectors(args):
         if pqtype == 2: f.write(rotate_matrix.tobytes())
         f.close()
 
-    if len(args.output_quan_vector_file) == 0 and len(args.output_rec_vector_file) == 0: 
+    if len(args.output_quan_vector_file) == 0 and len(args.output_rec_vector_file) == 0:
         os.rename(args.output_truth, os.path.join(output_dir, 'truth.txt' + '.' + str(args.task)))
         ret = subprocess.run(['ZipKDTree.exe', output_dir, args.output_truth])
         print (ret)
@@ -566,7 +624,7 @@ def quan_reconstruct_vectors(args):
     writeitems = 0
     while numData > 0:
         print (data[0])
-        if pqtype == 2: 
+        if pqtype == 2:
             data = np.matmul(data, rotate_matrix)
             print ('rotate:')
             print (data[0])
@@ -587,7 +645,7 @@ def quan_reconstruct_vectors(args):
                 print ('rotateback:')
                 print (recY[0])
             frec.write(recY.tobytes())
-  
+
         writeitems += numData
         numData, data = datareader.readbatch()
 
@@ -616,8 +674,6 @@ def quan_reconstruct_vectors(args):
     if os.path.exists(os.path.join(output_dir, 'truth.txt' + '.' + str(args.task))):
         os.remove(os.path.join(output_dir, 'truth.txt' + '.' + str(args.task)))
     os.rename(args.output_truth, os.path.join(output_dir, 'truth.txt' + '.' + str(args.task)))
-    ret = subprocess.run(['ZipKDTree.exe', output_dir, args.output_truth])
-    print (ret)
 
 if __name__ == '__main__':
     args = get_config()
@@ -626,27 +682,9 @@ if __name__ == '__main__':
 
     if not os.path.exists(args.output_dir): os.mkdir(args.output_dir)
 
-    if args.data_format != 'DEFAULT':
-        target = 'PreprocessData.exe' if args.data_format == 'BOND' else 'ProcessData.exe'
-        casttype = 'BYTE'
-        if args.data_type == 'uint8': casttype = 'UBYTE'
-        elif args.data_type == 'int16': casttype = 'SHORT'
-        elif args.data_type == 'float32': casttype = 'FLOAT'
-        ret = subprocess.run([target, args.data_file, os.path.join(args.output_dir, 'vectors.bin.%d' % args.task), os.path.join(args.output_dir, 'meta.bin.%d' % args.task), os.path.join(args.output_dir, 'metaindex.bin.%d' % args.task), str(args.dim), casttype, '0'])
-        args.data_file = os.path.join(args.output_dir, 'vectors.bin.%d' % args.task)
-        print(ret)
-        
-    if args.query_file[-4:] != '.bin':
-        casttype = 'BYTE'
-        if args.data_type == 'uint8': casttype = 'UBYTE'
-        elif args.data_type == 'int16': casttype = 'SHORT'
-        elif args.data_type == 'float32': casttype = 'FLOAT'
-        ret = subprocess.run(['SearchPreprocess.exe', '-q', args.query_file, '-o', args.query_file + '_queryVector.bin', '-v', args.query_file + '_validQuery.bin', '-d', str(args.dim), '-t', casttype, '-n', '0'])
-        args.query_file = args.query_file + '_queryVector.bin'
-        print(ret)
 
-    gpusearch(args)
-    
+    #gpusearch(args)
+
     if args.quan_type != 'none':
         if args.quan_type == 'pq':
             train_pq(args)
@@ -657,5 +695,4 @@ if __name__ == '__main__':
 
     if args.log_dir != '':
         localpath = args.output_truth + '.dist\\dist.bin.' + str(args.task)
-        ret = subprocess.run(['CosmosFolderTransfer.exe', 'uploadStream', localpath.replace('\\', '/'), args.log_dir + '/dist/', 'ap'])
-        print (ret)
+        # upload to cloud storage
