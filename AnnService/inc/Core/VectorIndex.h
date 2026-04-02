@@ -170,6 +170,8 @@ public:
 
     virtual std::shared_ptr<VectorIndex> Clone(std::string p_clone);
 
+    virtual void EnableRouter() {}
+
     virtual std::shared_ptr<std::vector<std::uint64_t>> BufferSize() const = 0;
 
     virtual std::shared_ptr<std::vector<std::string>> GetIndexFiles() const = 0;

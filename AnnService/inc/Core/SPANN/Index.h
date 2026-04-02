@@ -87,6 +87,13 @@ namespace SPTAG
             inline std::shared_ptr<IExtraSearcher> GetDiskIndex(int layer = 0) { if (layer < m_extraSearchers.size()) return m_extraSearchers[layer]; else return nullptr; }
             inline Options* GetOptions() { return &m_options; }
 
+            /// Enable PostingRouter on all extra searchers after LoadIndex.
+            void EnableRouter() override {
+                for (auto& searcher : m_extraSearchers) {
+                    if (searcher) searcher->EnableRouter(m_options);
+                }
+            }
+
             inline SizeType GetNumSamples() const { return GetNumSamples(0); }
             inline SizeType GetNumSamples(int layer) const { if (layer < m_extraSearchers.size()) return m_extraSearchers[layer]->GetNumSamples(); else return m_topIndex->GetNumSamples(); }
             inline DimensionType GetFeatureDim() const { return m_topIndex->GetFeatureDim(); }

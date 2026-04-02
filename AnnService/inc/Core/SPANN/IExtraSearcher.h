@@ -344,6 +344,8 @@ namespace SPTAG {
             virtual void GetIndexStats(int finishedInsert, bool cost, bool reset) { return; }
             virtual void ForceCompaction() { return; }
 
+            virtual void EnableRouter(Options& p_opt) { return; }
+
             virtual ErrorCode CheckPosting(SizeType postingiD, std::vector<std::uint8_t> *visited = nullptr,
                                            ExtraWorkSpace *p_exWorkSpace = nullptr) = 0;
             

@@ -302,6 +302,13 @@ namespace SPTAG::SPANN {
         }
 
     public:
+        virtual void EnableRouter(Options& p_opt) override
+        {
+            if (!m_router && p_opt.m_routerEnabled && !p_opt.m_routerNodeAddrs.empty()) {
+                InitializeRouter(p_opt);
+            }
+        }
+
         virtual bool Available() override
         {
             return db->Available();
