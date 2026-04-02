@@ -1616,9 +1616,11 @@ namespace SPTAG::SPANN {
             SearchStats* p_stats, std::set<SizeType>* truth, std::map<SizeType, std::set<SizeType>>* found) override
         {
             // Use coprocessor search if enabled and storage is TiKV
+#ifdef TIKV
             if (m_opt->m_useCoprocessorSearch && m_opt->m_storage == Storage::TIKVIO) {
                 return SearchIndexWithCoprocessor(p_exWorkSpace, p_queryResults, p_stats, truth, found);
             }
+#endif
 
             if (p_stats) p_stats->m_exSetUpLatency = 0;
 
@@ -1747,6 +1749,7 @@ namespace SPTAG::SPANN {
         // Instead of fetching raw posting data, sends the query vector and
         // posting keys to TiKV, which reads postings locally, computes L2
         // distances, and returns only top-N candidates.
+#ifdef TIKV
         ErrorCode SearchIndexWithCoprocessor(ExtraWorkSpace* p_exWorkSpace,
             QueryResult& p_queryResults,
             SearchStats* p_stats, std::set<SizeType>* truth, std::map<SizeType, std::set<SizeType>>* found)
@@ -1841,6 +1844,7 @@ namespace SPTAG::SPANN {
             queryResults.SetScanned(listElements);
             return ErrorCode::Success;
         }
+#endif // TIKV
 
         virtual ErrorCode SearchIndexWithoutParsing(ExtraWorkSpace* p_exWorkSpace)
         {
