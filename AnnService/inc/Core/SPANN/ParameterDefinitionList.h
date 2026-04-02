@@ -178,6 +178,7 @@ DefineSSDParameter(m_persistentBufferPath, std::string, std::string(""), "Persis
 DefineSSDParameter(m_appendThreadNum, int, 1, "AppendThreadNum") // Mutable
 // Background reassign threadnum
 DefineSSDParameter(m_reassignThreadNum, int, 0, "ReassignThreadNum") // Mutable
+DefineSSDParameter(m_maxBackgroundTaskQueueSize, int, 0, "MaxBackgroundTaskQueueSize") // 0 = unlimited
 // Background process batch size
 DefineSSDParameter(m_batch, int, 1000, "Batch")
 // Total Vector Path

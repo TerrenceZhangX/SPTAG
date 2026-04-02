@@ -575,6 +575,7 @@ namespace SPTAG::SPANN {
                 {
                     int cut = 1;
                     if (m_opt->m_oneClusterCutMax) cut = m_postingSizeLimit;
+                    if (cut > (int)localIndices.size()) cut = (int)localIndices.size();
                     std::string newpostingList(cut * m_vectorInfoSize, '\0');
                     char* ptr = (char*)(newpostingList.c_str());
                     float totaldist = 0.0f;
@@ -1015,7 +1016,7 @@ namespace SPTAG::SPANN {
             // m_splitList.insert(workPair);
             {
                 Helper::Concurrent::ConcurrentMap<SizeType, int>::value_type workPair(headID, postingSize);
-                std::shared_lock<std::shared_timed_mutex> tmplock(m_splitListLock);
+                std::unique_lock<std::shared_timed_mutex> tmplock(m_splitListLock);
                 auto res = m_splitList.insert(workPair);
                 if (!res.second)
                 {
@@ -1046,13 +1047,24 @@ namespace SPTAG::SPANN {
             }
 
             auto* curJob = new MergeAsyncJob(this, headID, headVec, m_opt->m_disableReassign, p_callback);
+            if (m_opt->m_maxBackgroundTaskQueueSize > 0 && m_splitThreadPool->jobsize() >= m_opt->m_maxBackgroundTaskQueueSize) {
+                delete curJob;
+                std::unique_lock<std::shared_timed_mutex> lock(m_mergeListLock);
+                m_mergeList.unsafe_erase(headID);
+                return;
+            }
             m_splitThreadPool->add(curJob);
         }
 
         inline void ReassignAsync(std::shared_ptr<std::string> vectorInfo, SizeType headPrev, std::shared_ptr<std::string> headVec, std::function<void()> p_callback = nullptr)
         {
             auto* curJob = new ReassignAsyncJob(this, std::move(vectorInfo), headPrev, std::move(headVec), p_callback);
-            m_splitThreadPool->add(curJob);
+            auto* pool = (m_reassignThreadPool != nullptr) ? m_reassignThreadPool.get() : m_splitThreadPool.get();
+            if (m_opt->m_maxBackgroundTaskQueueSize > 0 && pool->jobsize() >= m_opt->m_maxBackgroundTaskQueueSize) {
+                delete curJob;
+                return;
+            }
+            pool->add(curJob);
         }
 
         ErrorCode CollectReAssign(ExtraWorkSpace *p_exWorkSpace, SizeType headID, std::shared_ptr<std::string> headVec,
@@ -1227,20 +1239,28 @@ namespace SPTAG::SPANN {
         ErrorCode AsyncAppend(ExtraWorkSpace* p_exWorkSpace, SizeType headID, std::shared_ptr<std::string> headVec, int appendNum, std::string& appendPosting, int reassignThreshold = 0)
         {
             if (m_asyncAppendQueue.size() >= m_opt->m_asyncAppendQueueSize) {
-                std::lock_guard<std::mutex> lock(m_asyncAppendLock);
-                if (m_asyncAppendQueue.size() < m_opt->m_asyncAppendQueueSize) {
-                    m_asyncAppendQueue.push(AppendPair(m_headIndex->GetPriorityID(headID, headVec, m_layer + 1), headID, headVec, appendPosting));
-                    return ErrorCode::Success;
+                std::vector<AppendPair> drainedItems;
+                {
+                    std::lock_guard<std::mutex> lock(m_asyncAppendLock);
+                    if (m_asyncAppendQueue.size() < m_opt->m_asyncAppendQueueSize) {
+                        m_asyncAppendQueue.push(AppendPair(m_headIndex->GetPriorityID(headID, headVec, m_layer + 1), headID, headVec, appendPosting));
+                        return ErrorCode::Success;
+                    }
+                    AppendPair workPair;
+                    while (m_asyncAppendQueue.try_pop(workPair)) {
+                        drainedItems.push_back(std::move(workPair));
+                    }
                 }
-
-                AppendPair workPair;
-                ErrorCode ret;
-                while (m_asyncAppendQueue.try_pop(workPair)) {
-                    if ((ret = Append(p_exWorkSpace, workPair.headID, workPair.headVec, 1, workPair.posting, reassignThreshold)) != ErrorCode::Success) {
-                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "AsyncAppend: Append failed in async queue processing, headID: %d\n", workPair.headID);
+                // Process drained items outside the lock
+                for (auto& item : drainedItems) {
+                    ErrorCode ret;
+                    if ((ret = Append(p_exWorkSpace, item.headID, item.headVec, 1, item.posting, reassignThreshold)) != ErrorCode::Success) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "AsyncAppend: Append failed in async queue processing, headID: %lld\n", (std::int64_t)item.headID);
                         return ret;
                     }
                 }
+                // Now append the current item that triggered the drain
+                return Append(p_exWorkSpace, headID, headVec, appendNum, appendPosting, reassignThreshold);
             } else {
                 m_asyncAppendQueue.push(AppendPair(m_headIndex->GetPriorityID(headID, headVec, m_layer + 1), headID, headVec, appendPosting));
             }
@@ -1295,8 +1315,10 @@ namespace SPTAG::SPANN {
                 if (postingSize + appendNum > (m_postingSizeLimit + m_bufferSizeLimit)) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "After appending, the number of vectors in %lld exceeds the postingsize + buffersize (%d + %d)! Do split now...\n", (std::int64_t)headID, m_postingSizeLimit, m_bufferSizeLimit);
                     ret = Split(p_exWorkSpace, headID, headVec, !m_opt->m_disableReassign, false);
-                    if (ret != ErrorCode::Success)
-                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split %lld failed!\n", (std::int64_t)headID);
+                    if (ret != ErrorCode::Success) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split %lld failed! Returning error instead of retrying.\n", (std::int64_t)headID);
+                        return ret;
+                    }
                     lock.unlock();
                     goto checkDeleted;
                 }
@@ -1482,8 +1504,10 @@ namespace SPTAG::SPANN {
 
                     m_splitThreadPool = std::make_shared<SPDKThreadPool>();
                     m_splitThreadPool->initSPDK(m_opt->m_appendThreadNum, this);
-                    //m_reassignThreadPool = std::make_shared<SPDKThreadPool>();
-                    //m_reassignThreadPool->initSPDK(m_opt->m_reassignThreadNum, this);
+                    if (m_opt->m_reassignThreadNum > 0) {
+                        m_reassignThreadPool = std::make_shared<SPDKThreadPool>();
+                        m_reassignThreadPool->initSPDK(m_opt->m_reassignThreadNum, this);
+                    }
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPFresh: finish initialization\n");
                 }
                 
@@ -2271,11 +2295,16 @@ namespace SPTAG::SPANN {
             return ErrorCode::VectorNotFound;
         }
 
-        bool AllFinished() { return m_splitThreadPool->allClear(); } // && m_reassignThreadPool->allClear(); }
+        bool AllFinished() { 
+            return m_splitThreadPool->allClear() && 
+                   (m_reassignThreadPool == nullptr || m_reassignThreadPool->allClear()); 
+        }
         void ForceCompaction() override { db->ForceCompaction(); }
         void GetDBStats() override { 
             db->GetStat();
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "remain splitJobs: %d, reassignJobs: %d, running split: %d, running reassign: %d\n", m_splitThreadPool->jobsize(), 0, m_splitThreadPool->runningJobs(), 0);
+            int reassignJobs = m_reassignThreadPool ? m_reassignThreadPool->jobsize() : 0;
+            int reassignRunning = m_reassignThreadPool ? m_reassignThreadPool->runningJobs() : 0;
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "remain splitJobs: %d, reassignJobs: %d, running split: %d, running reassign: %d\n", m_splitThreadPool->jobsize(), reassignJobs, m_splitThreadPool->runningJobs(), reassignRunning);
         }
 
         int64_t GetNumBlocks() override

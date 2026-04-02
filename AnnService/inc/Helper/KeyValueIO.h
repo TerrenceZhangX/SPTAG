@@ -10,6 +10,12 @@ namespace SPTAG
 {
     namespace Helper
     {
+        /// Describes which store/shard holds a given key (for distributed routing).
+        struct KeyLocation {
+            uint64_t regionId = 0;
+            std::string leaderStoreAddr;
+        };
+
         class KeyValueIO {
         public:
             KeyValueIO() {}
@@ -65,6 +71,11 @@ namespace SPTAG
             virtual ErrorCode StartToScan(SizeType& key, std::string* value) {return ErrorCode::Undefined;}
 
             virtual ErrorCode NextToScan(SizeType& key, std::string* value) {return ErrorCode::Undefined;}
+
+            // Distributed routing support (TODO2): query which store holds a key.
+            virtual bool GetKeyLocation(SizeType key, KeyLocation& loc) { return false; }
+            virtual bool GetKeyLocations(const std::vector<SizeType>& keys,
+                                         std::vector<KeyLocation>& locs) { return false; }
         };
     }
 }

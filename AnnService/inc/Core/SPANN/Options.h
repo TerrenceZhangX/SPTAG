@@ -208,6 +208,7 @@ namespace SPTAG {
             int m_headBatch;
             int m_asyncAppendQueueSize;
             bool m_allowZeroReplica;
+            int m_maxBackgroundTaskQueueSize;
 
             // Multi layers
             int m_layers;

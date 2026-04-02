@@ -745,6 +745,28 @@ namespace SPTAG::SPANN
             return ErrorCode::Success;
         }
 
+        // ---- TODO2: Distributed routing support ----
+        bool GetKeyLocation(SizeType key, Helper::KeyLocation& loc) override {
+            std::string prefixedKey = MakePrefixedKey(std::to_string(key));
+            RegionInfo region;
+            if (!FindRegionForKey(prefixedKey, region) || region.leaderAddr.empty())
+                return false;
+            loc.regionId = region.regionId;
+            loc.leaderStoreAddr = region.leaderAddr;
+            return true;
+        }
+
+        bool GetKeyLocations(const std::vector<SizeType>& keys,
+                             std::vector<Helper::KeyLocation>& locs) override {
+            locs.resize(keys.size());
+            bool allFound = true;
+            for (size_t i = 0; i < keys.size(); i++) {
+                if (!GetKeyLocation(keys[i], locs[i]))
+                    allFound = false;
+            }
+            return allFound;
+        }
+
     private:
         std::string m_keyPrefix;
         std::vector<std::string> m_pdAddresses;
