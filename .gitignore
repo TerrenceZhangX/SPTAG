@@ -462,3 +462,17 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# Benchmark generated data files
+perftest_*.bin*
+perftest_batchtruth.*
+output_*.json
+benchmark_*.log
+proidx_*/
+truth_*
+
+# TiKV runtime data
+docker/tikv/pd*-data/
+docker/tikv/pd*-logs/
+docker/tikv/tikv*-data/
+docker/tikv/tikv*-logs/
