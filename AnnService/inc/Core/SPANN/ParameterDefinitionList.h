@@ -234,4 +234,10 @@ DefineSSDParameter(m_resumeLayer, int, -1, "ResumeLayer")
 DefineSSDParameter(m_maxID, SizeType,  1000000000, "MaxID")
 DefineSSDParameter(m_shareDB, bool, true, "ShareDB")
 
+// Distributed routing (TODO2)
+DefineSSDParameter(m_routerEnabled, bool, false, "RouterEnabled")
+DefineSSDParameter(m_routerLocalNodeIndex, int, 0, "RouterLocalNodeIndex")
+DefineSSDParameter(m_routerNodeAddrs, std::string, std::string(""), "RouterNodeAddrs")
+DefineSSDParameter(m_routerNodeStores, std::string, std::string(""), "RouterNodeStores")
+
 #endif

@@ -44,6 +44,8 @@ extern "C" bool RocksDbIOUringEnable() { return true; }
 #include "ExtraTiKVController.h"
 #endif
 
+#include "PostingRouter.h"
+
 namespace SPTAG::SPANN {
     template <typename ValueType>
     class ExtraDynamicSearcher : public IExtraSearcher
@@ -186,6 +188,8 @@ namespace SPTAG::SPANN {
              
         std::shared_ptr<Helper::KeyValueIO> db;
 
+        std::unique_ptr<PostingRouter> m_router;
+
         SPANN::Index<ValueType>* m_headIndex;
         std::unique_ptr<COMMON::IVersionMap> m_versionMap;
         Options* m_opt;
@@ -251,10 +255,53 @@ namespace SPTAG::SPANN {
             }
             m_workspaceCount = maxIOThreads;
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Posting size limit: %d, search limit: %f, merge threshold: %d\n", m_postingSizeLimit, p_opt.m_latencyLimit, m_mergeThreshold);
+
+            // Initialize distributed routing if enabled
+            if (p_opt.m_routerEnabled && !p_opt.m_routerNodeAddrs.empty()) {
+                InitializeRouter(p_opt);
+            }
         }
 
         ~ExtraDynamicSearcher() {}
 
+    private:
+        void InitializeRouter(SPANN::Options& p_opt) {
+            // Parse "host1:port1,host2:port2,..." into vector of pairs
+            std::vector<std::pair<std::string, std::string>> nodeAddrs;
+            {
+                auto parts = Helper::StrUtils::SplitString(p_opt.m_routerNodeAddrs, ",");
+                for (auto& part : parts) {
+                    auto hp = Helper::StrUtils::SplitString(part, ":");
+                    if (hp.size() == 2) {
+                        nodeAddrs.emplace_back(hp[0], hp[1]);
+                    }
+                }
+            }
+
+            // Parse "storeAddr1,storeAddr2,..." into vector of strings
+            auto nodeStores = Helper::StrUtils::SplitString(p_opt.m_routerNodeStores, ",");
+
+            m_router.reset(new PostingRouter());
+            if (!m_router->Initialize(db, p_opt.m_routerLocalNodeIndex, nodeAddrs, nodeStores)) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "PostingRouter initialization failed, disabling routing\n");
+                m_router.reset();
+                return;
+            }
+
+            // Set the append callback so incoming remote appends are handled locally
+            m_router->SetAppendCallback(
+                [this](SizeType headID, std::shared_ptr<std::string> headVec,
+                       int appendNum, std::string& appendPosting) -> ErrorCode {
+                    ExtraWorkSpace workSpace;
+                    InitWorkSpace(&workSpace);
+                    return Append(&workSpace, headID, headVec, appendNum, appendPosting);
+                });
+
+            m_router->Start();
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "PostingRouter started for layer %d\n", m_layer);
+        }
+
+    public:
         virtual bool Available() override
         {
             return db->Available();
@@ -2272,6 +2319,19 @@ namespace SPTAG::SPANN {
                     // AppendAsync(selections[i].node, 1, appendPosting_ptr);
                     ErrorCode ret;
                     std::shared_ptr<std::string> headVec = std::make_shared<std::string>((char*)(selections[i].Vec.Data()), m_vectorDataSize);
+
+                    // Distributed routing: check if this headID should go to a remote node
+                    if (m_router && m_router->IsEnabled()) {
+                        auto target = m_router->GetOwner(selections[i].VID);
+                        if (!target.isLocal) {
+                            ret = m_router->SendRemoteAppend(
+                                target.nodeIndex, selections[i].VID, headVec, 1, appendPosting);
+                            if (ret != ErrorCode::Success) return ret;
+                            continue;
+                        }
+                    }
+
+                    // Local path
                     if (m_opt->m_asyncAppendQueueSize > 0) {
                         if ((ret = AsyncAppend(p_exWorkSpace, selections[i].VID, headVec, 1, appendPosting)) != ErrorCode::Success)
                             return ret;
