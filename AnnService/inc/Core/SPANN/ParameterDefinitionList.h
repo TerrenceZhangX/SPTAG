@@ -112,6 +112,12 @@ DefineSSDParameter(m_disableCheckpoint, bool, false, "DisableCheckpoint")
 DefineSSDParameter(m_useCoprocessorSearch, bool, false, "UseCoprocessorSearch")
 DefineSSDParameter(m_coprocessorTopN, int, 100, "CoprocessorTopN")
 
+// Distributed VersionMap
+DefineSSDParameter(m_versionChunkSize, int, 4096, "VersionChunkSize")
+DefineSSDParameter(m_oversampleFactor, float, 0.0f, "OversampleFactor")
+DefineSSDParameter(m_versionCacheTTLMs, int, 0, "VersionCacheTTLMs")
+DefineSSDParameter(m_versionCacheMaxChunks, int, 10000, "VersionCacheMaxChunks")
+
 // GPU Building
 DefineSSDParameter(m_gpuSSDNumTrees, int, 100, "GPUSSDNumTrees")
 DefineSSDParameter(m_gpuSSDLeafSize, int, 200, "GPUSSDLeafSize")

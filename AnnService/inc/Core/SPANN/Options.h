@@ -114,6 +114,12 @@ namespace SPTAG {
             bool m_useCoprocessorSearch;
             int m_coprocessorTopN;
 
+            // Distributed VersionMap
+            int m_versionChunkSize;
+            float m_oversampleFactor;
+            int m_versionCacheTTLMs;
+            int m_versionCacheMaxChunks;
+
             // GPU building
             int m_gpuSSDNumTrees;
             int m_gpuSSDLeafSize;

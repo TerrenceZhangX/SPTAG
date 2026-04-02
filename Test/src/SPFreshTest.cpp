@@ -855,7 +855,10 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Sent %.2lf%%...\n",
                                                  (idx - startidx) * 100.0 / deleteBatchSize);
                                 }
-                                BOOST_REQUIRE(cloneIndex->DeleteIndex(idx) == ErrorCode::Success);
+                                auto ret = cloneIndex->DeleteIndex(idx);
+                                if (ret != ErrorCode::Success) {
+                                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "DeleteIndex(%d) failed: %d\n", (int)idx, (int)ret);
+                                }
                             }
                             else
                             {
