@@ -315,10 +315,18 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
         }
     }
 
-    // Apply BuildSSDIndex overrides (e.g., Storage, TiKV settings)
+    // Apply overrides (e.g., Storage, TiKV settings, SelectHead/BuildHead params)
     for (const auto &[key, val] : ssdOverrides)
     {
-        vecIndex->SetParameter(key.c_str(), val.c_str(), "BuildSSDIndex");
+        // Keys prefixed with "SectionName." are routed to the corresponding section
+        auto dotPos = key.find('.');
+        if (dotPos != std::string::npos) {
+            std::string section = key.substr(0, dotPos);
+            std::string param = key.substr(dotPos + 1);
+            vecIndex->SetParameter(param.c_str(), val.c_str(), section.c_str());
+        } else {
+            vecIndex->SetParameter(key.c_str(), val.c_str(), "BuildSSDIndex");
+        }
     }
 
     // SSD-only mode: skip SelectHead and BuildHead, resume from specified layer
@@ -1961,6 +1969,16 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     auto buildSSDParams = iniReader.GetParameters("BuildSSDIndex");
     for (const auto &[key, val] : buildSSDParams) {
         ssdOverrides[key] = val;
+    }
+
+    // Pass through [SelectHead] and [BuildHead] params as overrides too
+    auto selectHeadParams = iniReader.GetParameters("SelectHead");
+    for (const auto &[key, val] : selectHeadParams) {
+        ssdOverrides["SelectHead." + key] = val;
+    }
+    auto buildHeadParams = iniReader.GetParameters("BuildHead");
+    for (const auto &[key, val] : buildHeadParams) {
+        ssdOverrides["BuildHead." + key] = val;
     }
 
     BOOST_TEST_MESSAGE("=== Benchmark Configuration ===");
