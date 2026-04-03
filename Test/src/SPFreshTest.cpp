@@ -358,7 +358,7 @@ float Search(std::shared_ptr<VectorIndex> &vecIndex, std::shared_ptr<VectorSet> 
 
 template <typename ValueType>
 void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step,
-                   std::shared_ptr<VectorSet> addset, std::shared_ptr<MetadataSet> &metaset, int searchThreads = 0, std::shared_ptr<VectorSet> queryset = nullptr, int numQueries = 0, std::ostream* benchmarkData = nullptr, int start = 0)
+                   std::shared_ptr<VectorSet> addset, std::shared_ptr<MetadataSet> &metaset, int searchThreads = 0, std::shared_ptr<VectorSet> queryset = nullptr, int numQueries = 0, int k = 5, std::ostream* benchmarkData = nullptr, int start = 0)
 {
     p_index->ForceCompaction();
     p_index->GetDBStat();
@@ -407,6 +407,12 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
         std::vector<float> latencies(numQueries);
         std::vector<QueryResult> results(numQueries);
         std::vector<float> duration(searchThreads);
+
+        for (int i = 0; i < numQueries; i++)
+        {
+            results[i] = QueryResult((const ValueType *)queryset->GetVector(i), k, false);
+        }
+
         std::atomic_size_t queriesSent(0);
         auto search = [&](int tid) {
             auto s1 = std::chrono::high_resolution_clock::now();
@@ -843,7 +849,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                     std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<T>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, insertBatchSize);
                     start = std::chrono::high_resolution_clock::now();
                     InsertVectors<T>(static_cast<SPANN::Index<T> *>(cloneIndex.get()), numInsertThreads, insertBatchSize,
-                                     addset, addmetaset, numSearchThreads, queryset, numQueries, &jsonFile, 0);
+                                     addset, addmetaset, numSearchThreads, queryset, numQueries, SearchK, &jsonFile, 0);
                     end = std::chrono::high_resolution_clock::now();
                 }
                 seconds =

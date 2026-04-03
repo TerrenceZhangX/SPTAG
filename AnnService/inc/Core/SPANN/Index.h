@@ -220,7 +220,7 @@ namespace SPTAG
                 return m_extraSearchers[tolayer]->GetContainedIDs(globalIDs);
             }
 
-            std::string GetPriorityID(SizeType headID, std::shared_ptr<std::string> headVec, int tolayer)
+            std::string GetPriorityID(SizeType headID, int tolayer)
             {
                 return std::to_string(headID);
             }
