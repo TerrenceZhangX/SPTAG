@@ -87,10 +87,11 @@ namespace SPTAG
             inline std::shared_ptr<IExtraSearcher> GetDiskIndex(int layer = 0) { if (layer < m_extraSearchers.size()) return m_extraSearchers[layer]; else return nullptr; }
             inline Options* GetOptions() { return &m_options; }
 
-            /// Enable PostingRouter on all extra searchers after LoadIndex.
+            /// Enable PostingRouter on layer 0 extra searcher only after LoadIndex.
+            /// Only layer 0 (base layer) needs distributed routing; upper layers have small postings.
             void EnableRouter() override {
-                for (auto& searcher : m_extraSearchers) {
-                    if (searcher) searcher->EnableRouter(m_options);
+                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    m_extraSearchers[0]->EnableRouter(m_options);
                 }
             }
 

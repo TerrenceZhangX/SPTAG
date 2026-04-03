@@ -256,10 +256,8 @@ namespace SPTAG::SPANN {
             m_workspaceCount = maxIOThreads;
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Posting size limit: %d, search limit: %f, merge threshold: %d\n", m_postingSizeLimit, p_opt.m_latencyLimit, m_mergeThreshold);
 
-            // Initialize distributed routing if enabled
-            if (p_opt.m_routerEnabled && !p_opt.m_routerNodeAddrs.empty()) {
-                InitializeRouter(p_opt);
-            }
+            // Router is initialized later via EnableRouter() call, not during construction.
+            // This avoids port conflicts during Build phase and with multi-layer indices.
         }
 
         ~ExtraDynamicSearcher() {}
