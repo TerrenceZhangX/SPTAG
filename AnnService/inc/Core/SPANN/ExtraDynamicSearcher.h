@@ -224,7 +224,7 @@ namespace SPTAG::SPANN {
             }
 
             // Initialize version map: TiKV-backed or local
-            if (p_opt.m_storage == Storage::TIKVIO) {
+            if (p_opt.m_storage == Storage::TIKVIO && p_opt.m_distributedVersionMap) {
                 auto tikvMap = std::make_unique<COMMON::TiKVVersionMap>();
                 tikvMap->SetDB(db);
                 tikvMap->SetLayer(layer);
@@ -232,8 +232,11 @@ namespace SPTAG::SPANN {
                 tikvMap->SetCacheTTL(p_opt.m_versionCacheTTLMs);
                 tikvMap->SetCacheMaxChunks(p_opt.m_versionCacheMaxChunks);
                 m_versionMap = std::move(tikvMap);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Using distributed TiKV VersionMap (layer=%d, chunkSize=%d, cacheTTL=%d, cacheMax=%d)\n",
+                    layer, p_opt.m_versionChunkSize, p_opt.m_versionCacheTTLMs, p_opt.m_versionCacheMaxChunks);
             } else {
                 m_versionMap = std::make_unique<COMMON::LocalVersionMap>();
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Using local in-memory VersionMap (layer=%d)\n", layer);
             }
 
             

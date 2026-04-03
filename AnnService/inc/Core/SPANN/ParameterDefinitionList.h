@@ -113,6 +113,7 @@ DefineSSDParameter(m_useCoprocessorSearch, bool, false, "UseCoprocessorSearch")
 DefineSSDParameter(m_coprocessorTopN, int, 100, "CoprocessorTopN")
 
 // Distributed VersionMap
+DefineSSDParameter(m_distributedVersionMap, bool, true, "DistributedVersionMap")
 DefineSSDParameter(m_versionChunkSize, int, 4096, "VersionChunkSize")
 DefineSSDParameter(m_oversampleFactor, float, 0.0f, "OversampleFactor")
 DefineSSDParameter(m_versionCacheTTLMs, int, 0, "VersionCacheTTLMs")

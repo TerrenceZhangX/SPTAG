@@ -115,6 +115,7 @@ namespace SPTAG {
             int m_coprocessorTopN;
 
             // Distributed VersionMap
+            bool m_distributedVersionMap;
             int m_versionChunkSize;
             float m_oversampleFactor;
             int m_versionCacheTTLMs;

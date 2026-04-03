@@ -731,11 +731,21 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
         truth = TestUtils::TestDataGenerator<float>::LoadVectorSet(ptruth, K);
     }
 
-    // Benchmark 0: Query performance before insertions
-    BOOST_TEST_MESSAGE("\n=== Benchmark 0: Query Before Insertions ===");
+    // Benchmark 0: Query performance before insertions (round 1 — cold cache)
+    BOOST_TEST_MESSAGE("\n=== Benchmark 0: Query Before Insertions (Round 1) ===");
     BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
                                  numThreads, numQueries, 0, batches, tmpbenchmark);
     jsonFile << "    \"benchmark0_query_before_insert\": ";
+    BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
+                                 numThreads, numQueries, 0, batches, jsonFile);
+    jsonFile << ",\n";
+    jsonFile.flush();
+
+    // Benchmark 0b: Query performance before insertions (round 2 — warm cache)
+    BOOST_TEST_MESSAGE("\n=== Benchmark 0b: Query Before Insertions (Round 2) ===");
+    BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
+                                 numThreads, numQueries, 0, batches, tmpbenchmark);
+    jsonFile << "    \"benchmark0b_query_before_insert_round2\": ";
     BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
                                  numThreads, numQueries, 0, batches, jsonFile);
     jsonFile << ",\n";
@@ -888,6 +898,14 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
 
                 BOOST_TEST_MESSAGE("\n=== Benchmark 2: Query After Insertions and Deletions ===");
                 jsonFile << "        \"search\":";
+                BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount, topK, SearchK, numThreads,
+                                             numQueries, iter + 1, batches, tmpbenchmark, "    ");
+                BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount,
+                                             topK, SearchK, numThreads, numQueries, iter + 1, batches, jsonFile, "    ");
+                jsonFile << ",\n";
+
+                BOOST_TEST_MESSAGE("\n=== Benchmark 2b: Query After Insertions and Deletions (Round 2) ===");
+                jsonFile << "        \"search_round2\":";
                 BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount, topK, SearchK, numThreads,
                                              numQueries, iter + 1, batches, tmpbenchmark, "    ");
                 BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount,

@@ -164,8 +164,8 @@ namespace SPTAG
                 std::lock_guard<std::mutex> lock(ChunkMutex(cid));
                 std::string chunk = ReadChunk(cid);
                 if (chunk.empty()) {
-                    // Create new chunk, all deleted
-                    chunk.assign(m_chunkSize, static_cast<char>(0xfe));
+                    // Create new chunk, uninitialized (matching VersionLabel's 0xff)
+                    chunk.assign(m_chunkSize, static_cast<char>(0xff));
                 }
                 uint8_t oldVal = static_cast<uint8_t>(chunk[offset]);
                 chunk[offset] = static_cast<char>(newVal);
@@ -352,12 +352,12 @@ namespace SPTAG
                 SizeType oldCount = m_count.load();
                 SizeType newCount = oldCount + num;
 
-                // Create any new chunks needed
+                // Create any new chunks needed (init to 0xff = uninitialized, matching VersionLabel)
                 SizeType oldLastChunk = (oldCount > 0) ? ChunkId(oldCount - 1) : -1;
                 SizeType newLastChunk = ChunkId(newCount - 1);
 
                 for (SizeType c = oldLastChunk + 1; c <= newLastChunk; c++) {
-                    std::string newChunk(m_chunkSize, static_cast<char>(0xfe));
+                    std::string newChunk(m_chunkSize, static_cast<char>(0xff));
                     WriteChunk(c, newChunk);
                 }
 
@@ -516,9 +516,28 @@ namespace SPTAG
                     m_count = 0;
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVVersionMap: No count found in TiKV, starting at 0\n");
                 }
-                // Compute delete count by scanning (expensive, but only at startup)
-                // For now, set to 0 and accept it may be inaccurate
-                m_deleted = 0;
+                // Scan all chunks to compute accurate delete count
+                SizeType count = m_count.load();
+                SizeType deleted = 0;
+                if (count > 0) {
+                    SizeType totalChunks = (count + m_chunkSize - 1) / m_chunkSize;
+                    for (SizeType c = 0; c < totalChunks; c++) {
+                        std::string chunk = ReadChunk(c);
+                        if (chunk.empty()) {
+                            // Missing chunk — treat all entries as deleted
+                            SizeType chunkEntries = (c == totalChunks - 1) ? (count - c * m_chunkSize) : m_chunkSize;
+                            deleted += chunkEntries;
+                            continue;
+                        }
+                        SizeType chunkEntries = (c == totalChunks - 1) ? (count - c * m_chunkSize) : m_chunkSize;
+                        for (SizeType i = 0; i < chunkEntries; i++) {
+                            if (static_cast<uint8_t>(chunk[i]) == 0xfe) deleted++;
+                        }
+                    }
+                }
+                m_deleted = deleted;
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "TiKVVersionMap: Scanned %d chunks, deleted=%d/%d\n",
+                             count > 0 ? (count + m_chunkSize - 1) / m_chunkSize : 0, deleted, count);
                 return ErrorCode::Success;
             }
         };
