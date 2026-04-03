@@ -310,6 +310,77 @@ namespace SPTAG::SPANN
             return ErrorCode::Success;
         }
 
+        // ---- BatchPut operation ----
+        // Use RawBatchPut grouped by region for efficient batched writes.
+
+        ErrorCode BatchPut(const std::vector<SizeType>& keys,
+                           const std::vector<std::string>& values,
+                           const std::chrono::microseconds& timeout) override
+        {
+            if (keys.empty()) return ErrorCode::Success;
+            if (keys.size() != values.size()) return ErrorCode::Fail;
+
+            // Build prefixed keys
+            std::vector<std::string> prefixedKeys(keys.size());
+            for (size_t i = 0; i < keys.size(); i++) {
+                std::string k(reinterpret_cast<const char*>(&keys[i]), sizeof(SizeType));
+                prefixedKeys[i] = MakePrefixedKey(k);
+            }
+
+            // Group by (leader address, region id)
+            std::unordered_map<RegionGroupKey, RegionGroup, RegionGroupKeyHash> regionGroups;
+            for (size_t i = 0; i < prefixedKeys.size(); i++) {
+                RegionInfo region;
+                std::string addr;
+                uint64_t rid = 0;
+                if (FindRegionForKey(prefixedKeys[i], region) && !region.leaderAddr.empty()) {
+                    addr = region.leaderAddr;
+                    rid = region.regionId;
+                } else {
+                    addr = GetAnyStoreAddress();
+                }
+                auto& g = regionGroups[{addr, rid}];
+                if (g.keys.empty()) g.region = region;
+                g.keys.push_back({i, prefixedKeys[i]});
+            }
+
+            // Send RawBatchPut per region group
+            std::atomic<int> errorCount{0};
+            std::vector<std::future<void>> futures;
+
+            for (auto& [gkey, rg] : regionGroups) {
+                futures.push_back(std::async(std::launch::async, [&, &gkey = gkey, &rg = rg]() {
+                    auto* stub = GetOrCreateStub(gkey.leaderAddr);
+                    if (!stub) { errorCount++; return; }
+
+                    kvrpcpb::RawBatchPutRequest request;
+                    SetContextFromRegion(request.mutable_context(), rg.region);
+                    for (auto& [idx, pkey] : rg.keys) {
+                        auto* pair = request.add_pairs();
+                        pair->set_key(pkey);
+                        pair->set_value(values[idx]);
+                    }
+
+                    kvrpcpb::RawBatchPutResponse response;
+                    grpc::ClientContext ctx;
+                    SetDeadline(ctx, timeout);
+
+                    auto status = stub->RawBatchPut(&ctx, request, &response);
+                    if (!status.ok() || !response.error().empty()) {
+                        // Fallback: individual puts
+                        for (auto& [idx, pkey] : rg.keys) {
+                            if (Put(keys[idx], values[idx], timeout, nullptr) != ErrorCode::Success) {
+                                errorCount++;
+                            }
+                        }
+                    }
+                }));
+            }
+
+            for (auto& f : futures) f.get();
+            return errorCount == 0 ? ErrorCode::Success : ErrorCode::Fail;
+        }
+
         // ---- Merge (append) operation ----
         // TiKV does not have native merge; we implement read-modify-write with
         // a simple get-append-put pattern.
@@ -336,6 +407,42 @@ namespace SPTAG::SPANN
             existingValue.append(value);
             size = static_cast<int>(existingValue.size());
             return Put(key, existingValue, timeout, reqs);
+        }
+
+        // ---- BatchMerge: batch read-modify-write ----
+        // Reduces N individual Merge calls (2N serial gRPC round-trips) to
+        // 1 MultiGet + 1 BatchPut (2 batch gRPC round-trips).
+
+        ErrorCode BatchMerge(const std::vector<SizeType>& keys,
+                             const std::vector<std::string>& values,
+                             const std::chrono::microseconds& timeout,
+                             std::vector<int>& sizes) override
+        {
+            if (keys.empty()) return ErrorCode::Success;
+            if (keys.size() != values.size()) return ErrorCode::Fail;
+
+            sizes.resize(keys.size(), 0);
+
+            // Step 1: MultiGet all existing values (1 batch RPC)
+            std::vector<std::string> existingVals;
+            MultiGet(keys, &existingVals, timeout, nullptr);
+
+            // Step 2: Merge in memory
+            std::vector<SizeType> putKeys(keys.size());
+            std::vector<std::string> putValues(keys.size());
+            for (size_t i = 0; i < keys.size(); i++) {
+                putKeys[i] = keys[i];
+                if (i < existingVals.size() && !existingVals[i].empty()) {
+                    putValues[i] = std::move(existingVals[i]);
+                    putValues[i].append(values[i]);
+                } else {
+                    putValues[i] = values[i];
+                }
+                sizes[i] = static_cast<int>(putValues[i].size());
+            }
+
+            // Step 3: BatchPut all merged values (1 batch RPC)
+            return BatchPut(putKeys, putValues, timeout);
         }
 
         // ---- MultiGet operations ----

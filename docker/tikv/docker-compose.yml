@@ -13,12 +13,12 @@
 
 services:
   pd1:
-    image: pingcap/pd:nightly
+    image: pingcap/pd:v8.5.5
     container_name: tikv-pd1
     network_mode: host
     volumes:
-      - ./pd1-data:/data
-      - ./pd1-logs:/logs
+      - /mnt/nvme/tikv/pd1-data:/data
+      - /mnt/nvme/tikv/pd1-logs:/logs
     command:
       - --name=pd1
       - --client-urls=http://0.0.0.0:23791
@@ -36,12 +36,12 @@ services:
       start_period: 40s
 
   pd2:
-    image: pingcap/pd:nightly
+    image: pingcap/pd:v8.5.5
     container_name: tikv-pd2
     network_mode: host
     volumes:
-      - ./pd2-data:/data
-      - ./pd2-logs:/logs
+      - /mnt/nvme/tikv/pd2-data:/data
+      - /mnt/nvme/tikv/pd2-logs:/logs
     command:
       - --name=pd2
       - --client-urls=http://0.0.0.0:23792
@@ -53,12 +53,12 @@ services:
       - --log-file=/logs/pd.log
 
   pd3:
-    image: pingcap/pd:nightly
+    image: pingcap/pd:v8.5.5
     container_name: tikv-pd3
     network_mode: host
     volumes:
-      - ./pd3-data:/data
-      - ./pd3-logs:/logs
+      - /mnt/nvme/tikv/pd3-data:/data
+      - /mnt/nvme/tikv/pd3-logs:/logs
     command:
       - --name=pd3
       - --client-urls=http://0.0.0.0:23793
@@ -70,12 +70,12 @@ services:
       - --log-file=/logs/pd.log
 
   tikv1:
-    image: pingcap/tikv:nightly
+    image: pingcap/tikv:v8.5.5
     container_name: tikv-tikv1
     network_mode: host
     volumes:
-      - ./tikv1-data:/data
-      - ./tikv1-logs:/logs
+      - /mnt/nvme/tikv/tikv1-data:/data
+      - /mnt/nvme/tikv/tikv1-logs:/logs
       - ./tikv.toml:/etc/tikv/tikv.toml:ro
     command:
       - --config=/etc/tikv/tikv.toml
@@ -90,12 +90,12 @@ services:
         condition: service_healthy
 
   tikv2:
-    image: pingcap/tikv:nightly
+    image: pingcap/tikv:v8.5.5
     container_name: tikv-tikv2
     network_mode: host
     volumes:
-      - ./tikv2-data:/data
-      - ./tikv2-logs:/logs
+      - /mnt/nvme/tikv/tikv2-data:/data
+      - /mnt/nvme/tikv/tikv2-logs:/logs
       - ./tikv.toml:/etc/tikv/tikv.toml:ro
     command:
       - --config=/etc/tikv/tikv.toml
@@ -110,12 +110,12 @@ services:
         condition: service_healthy
 
   tikv3:
-    image: pingcap/tikv:nightly
+    image: pingcap/tikv:v8.5.5
     container_name: tikv-tikv3
     network_mode: host
     volumes:
-      - ./tikv3-data:/data
-      - ./tikv3-logs:/logs
+      - /mnt/nvme/tikv/tikv3-data:/data
+      - /mnt/nvme/tikv/tikv3-logs:/logs
       - ./tikv.toml:/etc/tikv/tikv.toml:ro
     command:
       - --config=/etc/tikv/tikv.toml

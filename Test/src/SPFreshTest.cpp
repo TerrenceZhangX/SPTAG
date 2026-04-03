@@ -437,10 +437,17 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
         thread.join();
     }
 
+    auto insertDone = std::chrono::high_resolution_clock::now();
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "InsertVectors: insert phase done, waiting AllFinished...\n");
+
     while (!p_index->AllFinished())
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+
+    auto allDone = std::chrono::high_resolution_clock::now();
+    double waitSec = std::chrono::duration_cast<std::chrono::milliseconds>(allDone - insertDone).count() / 1000.0;
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "InsertVectors: AllFinished wait took %.2lfs\n", waitSec);
 }
 
 

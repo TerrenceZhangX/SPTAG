@@ -44,6 +44,35 @@ namespace SPTAG
                                     const std::chrono::microseconds &timeout,
                                     std::vector<Helper::AsyncReadRequest> *reqs, int& size) = 0;
 
+            /// Batch put multiple key-value pairs in one round-trip.
+            virtual ErrorCode BatchPut(const std::vector<SizeType>& keys,
+                                       const std::vector<std::string>& values,
+                                       const std::chrono::microseconds& timeout) {
+                // Default: fall back to individual Puts
+                for (size_t i = 0; i < keys.size(); i++) {
+                    auto ret = Put(keys[i], values[i], timeout, nullptr);
+                    if (ret != ErrorCode::Success) return ret;
+                }
+                return ErrorCode::Success;
+            }
+
+            /// Batch merge (read-modify-write) multiple keys in one round-trip.
+            /// Reads all keys via MultiGet, appends values in memory, writes
+            /// back via BatchPut.  Reduces 2N serial RPCs to 2 batch RPCs.
+            /// @param[out] sizes  Resulting posting sizes after merge.
+            virtual ErrorCode BatchMerge(const std::vector<SizeType>& keys,
+                                         const std::vector<std::string>& values,
+                                         const std::chrono::microseconds& timeout,
+                                         std::vector<int>& sizes) {
+                // Default: fall back to individual Merges
+                sizes.resize(keys.size());
+                for (size_t i = 0; i < keys.size(); i++) {
+                    auto ret = Merge(keys[i], values[i], timeout, nullptr, sizes[i]);
+                    if (ret != ErrorCode::Success) return ret;
+                }
+                return ErrorCode::Success;
+            }
+
             virtual ErrorCode Delete(SizeType key) = 0;
 
             virtual ErrorCode DeleteRange(SizeType start, SizeType end) {return ErrorCode::Undefined;}

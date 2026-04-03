@@ -1,0 +1,103 @@
+sequenceDiagram
+    autonumber
+    participant Test as SPFreshTest
+    participant Idx as SPANN::Index
+    participant Extra as ExtraDynamicSearcher
+    participant Router as PostingRouter
+    participant PD as TiKV PD
+    participant Pool as splitThreadPool
+    participant Worker as Worker Node
+    participant TiKV as TiKV Store
+
+    Note over Test,TiKV: === Insert 一个 Vector 的完整流程 ===
+    
+    Test->>Idx: AddIndex(vectorSet)
+    Idx->>Extra: AddIndex(vector, VID)
+    
+    Extra->>Extra: RNGSelection() → 选出 head replicas<br/>[headID_1, headID_2, ...]
+    
+    Note over Extra,TiKV: --- 对每个 replica headID ---
+    
+    rect rgb(255, 243, 205)
+        Note over Extra,Router: ★ PostingRouter 介入点
+        Extra->>Router: GetOwner(headID)
+        Router->>PD: GetKeyLocation(headID)
+        PD-->>Router: KeyLocation{regionId, leaderStoreAddr}
+        Router->>Router: 匹配 leaderStoreAddr<br/>→ NodeStores 数组
+        
+        alt isLocal = true (leader 在本 Node 绑定的 Store)
+            Router-->>Extra: RouteTarget{isLocal=true}
+            Extra->>Extra: AsyncAppend(headID, posting)
+            Extra->>TiKV: db->Get(headID) 读当前 posting
+            TiKV-->>Extra: currentPosting
+            Extra->>Extra: 拼接 newPosting = current + append
+            Extra->>TiKV: db->Put(headID, newPosting)
+        else isLocal = false (leader 在其他 Node 的 Store)
+            Router-->>Extra: RouteTarget{nodeIndex=1}
+            Extra->>Router: SendRemoteAppend(nodeIndex=1, headID, posting)
+            Router->>Worker: Socket RPC: RemoteAppendRequest
+            Worker->>Worker: appendCallback → Append()
+            Worker->>TiKV: db->Get + db->Put
+            Worker-->>Router: RemoteAppendResponse{Success}
+            Router-->>Extra: ErrorCode::Success
+        end
+    end
+    
+    Note over Extra,TiKV: === Append 后的级联操作 ===
+    
+    alt postingSize > postingSizeLimit + bufferSizeLimit
+        Extra->>Extra: 同步 Split()
+    else postingSize > postingSizeLimit
+        Extra->>Pool: SplitAsync(headID)
+        
+        Note over Pool,TiKV: --- Split 执行 ---
+        Pool->>TiKV: db->Get(headID) 读 posting
+        Pool->>Pool: KMeans 聚类 → 2 个新 posting
+        Pool->>Extra: HeadIndex.AddIndex(newHead1, newHead2)
+        Pool->>TiKV: db->Put(newHead1, posting1)
+        Pool->>TiKV: db->Put(newHead2, posting2)
+        Pool->>TiKV: db->Delete(oldHeadID)
+        Pool->>Extra: HeadIndex.DeleteIndex(oldHeadID)
+        
+        Note over Pool,TiKV: --- Split 后 Reassign ---
+        loop 每个散落向量 v
+            Pool->>Pool: CheckIsNeedReassign(v)
+            alt v 离新 head 太远
+                Pool->>Pool: ReassignAsync(v, headPrev)
+                Pool->>Pool: RNGSelection(v) → 找更近的 head
+                Pool->>Extra: Append(newHeadID, v)<br/>⚠️ 本地执行，不经过 Router
+                Extra->>TiKV: db->Get + db->Put
+            end
+        end
+    end
+    
+    alt postingSize < mergeThreshold
+        Extra->>Pool: MergeAsync(headID)
+        
+        Note over Pool,TiKV: --- Merge 执行 ---
+        Pool->>Extra: SearchHeadIndex() → 找邻近 head
+        Pool->>TiKV: db->Get(neighborHead) 读邻近 posting
+        Pool->>Pool: 合并两个 posting
+        Pool->>TiKV: db->Put(survivor, mergedPosting)
+        Pool->>TiKV: db->Delete(victim)
+        Pool->>Extra: HeadIndex.DeleteIndex(victim)
+        
+        Note over Pool,TiKV: --- Merge 后 Reassign ---
+        loop 被合并 posting 中每个向量 v
+            alt v 离存活 head 比被删 head 远
+                Pool->>Pool: ReassignAsync(v, survivorHead)
+                Pool->>Pool: RNGSelection(v) → 找新 head
+                Pool->>Extra: Append(newHead, v)<br/>⚠️ 本地执行
+            end
+        end
+    end
+    
+    Note over Test,TiKV: === SaveIndex / Checkpoint ===
+    Test->>Idx: SaveIndex()
+    Idx->>Extra: Checkpoint()
+    loop 每 20ms
+        Extra->>Pool: AllFinished()?
+        Pool-->>Extra: jobsize / currentJobs
+    end
+    Note over Extra: 等待所有 Split/Merge/Reassign 完成
+    Extra->>TiKV: 保存 VersionMap

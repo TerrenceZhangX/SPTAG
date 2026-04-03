@@ -18,9 +18,7 @@
 #endif
 
 #ifdef ROCKSDB
-#include "ExtraRocksDBController.h"
-// enable rocksdb io_uring
-extern "C" bool RocksDbIOUringEnable() { return true; }
+#include "inc/Core/SPANN/ExtraRocksDBController.h"
 #endif
 
 #ifdef TIKV

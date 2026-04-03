@@ -1133,6 +1133,7 @@ namespace SPTAG::SPANN {
                     ReassignAsync(vectorinfo, -1, headVec);
                 }
             }
+
             std::vector<float> newHeadsDist;
             std::set<SizeType> reAssignVectorsTopK;
             newHeadsDist.push_back(m_headIndex->ComputeDistance(headVec->data(), newHeadsVec[0]->data()));
@@ -1144,7 +1145,6 @@ namespace SPTAG::SPANN {
                 for (int j = 0; j < postVectorNum; j++) {
                     uint8_t* vectorId = postingP + j * m_vectorInfoSize;
                     SizeType vid = *(reinterpret_cast<SizeType*>(vectorId));
-                    // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "VID: %d, Head: %d\n", vid, newHeadsID[i]);
                     uint8_t version = *(reinterpret_cast<uint8_t*>(vectorId + sizeof(SizeType)));
                     ValueType* vector = reinterpret_cast<ValueType*>(vectorId + m_metaDataSize);
                     if (reAssignVectorsTopK.find(vid) == reAssignVectorsTopK.end() && !m_versionMap->Deleted(vid) && m_versionMap->GetVersion(vid) == version) {
@@ -1209,7 +1209,6 @@ namespace SPTAG::SPANN {
                     for (int j = 0; j < postVectorNum; j++) {
                         uint8_t* vectorId = postingP + j * m_vectorInfoSize;
                         SizeType vid = *(reinterpret_cast<SizeType*>(vectorId));
-                        // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "%d: VID: %d, Head: %d, size:%d/%d\n", i, vid, HeadPrevTopK[i], postingLists.size(), HeadPrevTopK.size());
                         uint8_t version = *(reinterpret_cast<uint8_t*>(vectorId + sizeof(SizeType)));
                         ValueType* vector = reinterpret_cast<ValueType*>(vectorId + m_metaDataSize);
                         if (reAssignVectorsTopK.find(vid) == reAssignVectorsTopK.end() && !m_versionMap->Deleted(vid) && m_versionMap->GetVersion(vid) == version) {
@@ -2212,7 +2211,14 @@ namespace SPTAG::SPANN {
                     p_headGlobaltoLocal[*(p_headToLocal[i])] = i;
                 } 
             }
-            if (ErrorCode::Success != WriteDownAllPostingToDB(selections, fullVectors, postingListSize, p_headToLocal, p_localToGlobal)) return false;
+            {
+                auto writeStart = std::chrono::high_resolution_clock::now();
+                if (ErrorCode::Success != WriteDownAllPostingToDB(selections, fullVectors, postingListSize, p_headToLocal, p_localToGlobal)) return false;
+                auto writeEnd = std::chrono::high_resolution_clock::now();
+                double writeSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(writeEnd - writeStart).count() / 1000.0;
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WriteDownAllPostingToDB: %.2lf seconds (%d postings, %d threads)\n",
+                             writeSeconds, (int)postingListSize.size(), m_opt->m_iSSDNumberOfThreads);
+            }
 
             if (m_opt->m_update && !m_opt->m_allowZeroReplica && zeroReplicaSet.size() > 0)
             {
@@ -2225,13 +2231,15 @@ namespace SPTAG::SPANN {
                 InitWorkSpace(&workSpace);
                 for (SizeType it : zeroReplicaSet)
                 {
-                    std::shared_ptr<VectorSet> vectorSet(new BasicVectorSet(ByteArray((std::uint8_t*)fullVectors->GetVector(it), m_vectorDataSize, false),
+                    std::shared_ptr<VectorSet> vectorSet(new
+BasicVectorSet(ByteArray((std::uint8_t*)fullVectors->GetVector(it), m_vectorDataSize, false),
                         GetEnumValueType<ValueType>(), m_opt->m_dim, 1));
                     if (AddIndex(&workSpace, vectorSet, it) != ErrorCode::Success) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to add index for zero replica ID: %d\n", it);
                         return false;
                     }
                 }
+
                 while (!AllFinished())
                 {
                     std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -2255,56 +2263,78 @@ namespace SPTAG::SPANN {
 
         ErrorCode WriteDownAllPostingToDB(Selection& p_postingSelections, std::shared_ptr<VectorSet> p_fullVectors, std::vector<std::atomic_int>& postingSizes, COMMON::Dataset<SizeType>& p_headToGlobal, COMMON::Dataset<SizeType>& p_localToGlobal) {
 
+            size_t numPostings = postingSizes.size();
+
+            // Phase 1: Serialize all postings in parallel (CPU-bound work)
+            std::vector<SizeType> postingIDs(numPostings);
+            std::vector<std::string> postingLists(numPostings);
             std::vector<std::thread> threads;
             std::atomic<SizeType> vectorsSent(0);
             ErrorCode ret = ErrorCode::Success;
-            auto func = [&]()
+
+            auto serializeFunc = [&]()
             {
-                ExtraWorkSpace workSpace;
-                InitWorkSpace(&workSpace);
                 SizeType index = 0;
                 while (true)
                 {
                     index = vectorsSent.fetch_add(1);
-                    if (index < postingSizes.size()) {
-                        std::string postinglist(m_vectorInfoSize * postingSizes[index].load(), '\0');
-                        char* ptr = (char*)postinglist.c_str();
-			            std::size_t selectIdx = p_postingSelections.lower_bound(index);
-                        for (int j = 0; j < postingSizes[index].load(); ++j)
-                        {
-                            if (p_postingSelections[selectIdx].node != index) {
-                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Selection ID NOT MATCH\n");
-                                ret = ErrorCode::Fail;
-                                return;
-                            }
-                            SizeType localID = p_postingSelections[selectIdx++].tonode;
-                            SizeType fullID = (p_localToGlobal.R() > 0) ? *(p_localToGlobal[localID]) : localID;
-                            // if (id == 0) SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ID: %d\n", fullID);
-                            uint8_t version = m_versionMap->GetVersion(fullID);
-                            // First Vector ID, then version, then Vector
-                            Serialize(ptr, fullID, version, p_fullVectors->GetVector(localID));
-                            ptr += m_vectorInfoSize;
-                        }
-                        ErrorCode tmp;
-                        SizeType postingID = *(p_headToGlobal[index]);
-                        if ((tmp = db->Put(DBKey(postingID), postinglist, MaxTimeout, &(workSpace.m_diskRequests))) !=
-                            ErrorCode::Success)
-                        {
-                            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[WriteDB] Put %lld fail!\n", (std::int64_t)index);
-                            ret = tmp;
+                    if (index >= (SizeType)numPostings) return;
+
+                    std::string postinglist(m_vectorInfoSize * postingSizes[index].load(), '\0');
+                    char* ptr = (char*)postinglist.c_str();
+                    std::size_t selectIdx = p_postingSelections.lower_bound(index);
+                    for (int j = 0; j < postingSizes[index].load(); ++j)
+                    {
+                        if (p_postingSelections[selectIdx].node != index) {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Selection ID NOT MATCH\n");
+                            ret = ErrorCode::Fail;
                             return;
                         }
+                        SizeType localID = p_postingSelections[selectIdx++].tonode;
+                        SizeType fullID = (p_localToGlobal.R() > 0) ? *(p_localToGlobal[localID]) : localID;
+                        uint8_t version = m_versionMap->GetVersion(fullID);
+                        Serialize(ptr, fullID, version, p_fullVectors->GetVector(localID));
+                        ptr += m_vectorInfoSize;
                     }
-                    else
-                    {
-                        return;
+                    postingIDs[index] = DBKey(*(p_headToGlobal[index]));
+                    postingLists[index] = std::move(postinglist);
+                }
+            };
+
+            for (int j = 0; j < m_opt->m_iSSDNumberOfThreads; j++) { threads.emplace_back(serializeFunc); }
+            for (auto& thread : threads) { thread.join(); }
+
+            if (ret != ErrorCode::Success) return ret;
+
+            // Phase 2: BatchPut all postings (parallel batched gRPC calls)
+            const size_t batchChunk = 512;
+            const int numBatchThreads = m_opt->m_iSSDNumberOfThreads;
+            std::atomic<size_t> batchIdx(0);
+            std::atomic<int> batchErrors(0);
+            size_t totalChunks = (numPostings + batchChunk - 1) / batchChunk;
+
+            auto batchPutFunc = [&]() {
+                while (true) {
+                    size_t ci = batchIdx.fetch_add(1);
+                    if (ci >= totalChunks) return;
+                    size_t start = ci * batchChunk;
+                    size_t end = std::min(start + batchChunk, numPostings);
+                    std::vector<SizeType> batchKeys(postingIDs.begin() + start, postingIDs.begin() + end);
+                    std::vector<std::string> batchVals(postingLists.begin() + start, postingLists.begin() + end);
+                    auto tmp = db->BatchPut(batchKeys, batchVals, MaxTimeout);
+                    if (tmp != ErrorCode::Success) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[WriteDB] BatchPut chunk %zu-%zu fail!\n", start, end);
+                        batchErrors++;
                     }
                 }
             };
 
-            for (int j = 0; j < m_opt->m_iSSDNumberOfThreads; j++) { threads.emplace_back(func); }
-            for (auto& thread : threads) { thread.join(); }
-	        return ret;
+            std::vector<std::thread> batchThreads;
+            for (int j = 0; j < numBatchThreads; j++) { batchThreads.emplace_back(batchPutFunc); }
+            for (auto& t : batchThreads) { t.join(); }
+
+            if (batchErrors > 0) return ErrorCode::Fail;
+            return ErrorCode::Success;
         }
 
         ErrorCode AddIndex(ExtraWorkSpace* p_exWorkSpace, std::shared_ptr<VectorSet>& p_vectorSet,
