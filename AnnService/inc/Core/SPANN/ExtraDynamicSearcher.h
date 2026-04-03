@@ -2340,6 +2340,9 @@ BasicVectorSet(ByteArray((std::uint8_t*)fullVectors->GetVector(it), m_vectorData
         ErrorCode AddIndex(ExtraWorkSpace* p_exWorkSpace, std::shared_ptr<VectorSet>& p_vectorSet,
             SizeType begin) override {
 
+            // Collect remote appends per target node for batch sending
+            std::unordered_map<int, std::vector<RemoteAppendRequest>> remoteBatches;
+
             for (int v = 0; v < p_vectorSet->Count(); v++) {
                 SizeType VID = begin + v;
                 if (m_versionMap->Deleted(VID)) m_versionMap->SetVersion(VID, -1);
@@ -2363,9 +2366,13 @@ BasicVectorSet(ByteArray((std::uint8_t*)fullVectors->GetVector(it), m_vectorData
                     if (m_router && m_router->IsEnabled()) {
                         auto target = m_router->GetOwner(selections[i].VID);
                         if (!target.isLocal) {
-                            ret = m_router->SendRemoteAppend(
-                                target.nodeIndex, selections[i].VID, headVec, 1, appendPosting);
-                            if (ret != ErrorCode::Success) return ret;
+                            // Collect into per-node batch instead of sending immediately
+                            RemoteAppendRequest req;
+                            req.m_headID = selections[i].VID;
+                            req.m_headVec = *headVec;
+                            req.m_appendNum = 1;
+                            req.m_appendPosting = appendPosting;
+                            remoteBatches[target.nodeIndex].push_back(std::move(req));
                             continue;
                         }
                     }
@@ -2381,6 +2388,18 @@ BasicVectorSet(ByteArray((std::uint8_t*)fullVectors->GetVector(it), m_vectorData
                     }
                 }
             }
+
+            // Flush all remote batches — one round-trip per target node
+            for (auto& kv : remoteBatches) {
+                ErrorCode ret = m_router->SendBatchRemoteAppend(kv.first, kv.second);
+                if (ret != ErrorCode::Success) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                        "AddIndex: Batch remote append to node %d failed (%d items), skipping\n",
+                        kv.first, (int)kv.second.size());
+                    // Continue instead of aborting — partial routing is better than crash
+                }
+            }
+
             return ErrorCode::Success;
         }
 

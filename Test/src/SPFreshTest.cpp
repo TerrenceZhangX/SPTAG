@@ -598,15 +598,19 @@ ErrorCode QuantizeVectors(const std::shared_ptr<COMMON::IQuantizer>& quantizer,
 void ApplyRouterParams(std::shared_ptr<VectorIndex>& index,
                        const std::map<std::string, std::string>& ssdOverrides)
 {
-    static const std::vector<std::string> routerKeys = {
-        "RouterEnabled", "RouterLocalNodeIndex", "RouterNodeAddrs", "RouterNodeStores"
+    // IniReader lowercases all keys, so look up with lowercase keys
+    static const std::vector<std::pair<std::string, std::string>> routerKeys = {
+        {"routerenabled", "RouterEnabled"},
+        {"routerlocalnodeindex", "RouterLocalNodeIndex"},
+        {"routernodeaddrs", "RouterNodeAddrs"},
+        {"routernodestores", "RouterNodeStores"}
     };
     bool hasRouter = false;
-    for (const auto& key : routerKeys) {
-        auto it = ssdOverrides.find(key);
+    for (const auto& [lowerKey, paramName] : routerKeys) {
+        auto it = ssdOverrides.find(lowerKey);
         if (it != ssdOverrides.end() && !it->second.empty()) {
-            index->SetParameter(key.c_str(), it->second.c_str(), "BuildSSDIndex");
-            if (key == "RouterEnabled" && it->second == "true") hasRouter = true;
+            index->SetParameter(paramName.c_str(), it->second.c_str(), "BuildSSDIndex");
+            if (lowerKey == "routerenabled" && it->second == "true") hasRouter = true;
         }
     }
     if (hasRouter) {
@@ -2122,8 +2126,8 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
     // Enable PostingRouter (must have RouterEnabled=true in [BuildSSDIndex])
     ApplyRouterParams(index, ssdOverrides);
 
-    int nodeIndex = std::stoi(ssdOverrides.count("RouterLocalNodeIndex")
-        ? ssdOverrides.at("RouterLocalNodeIndex") : "0");
+    int nodeIndex = std::stoi(ssdOverrides.count("routerlocalnodeindex")
+        ? ssdOverrides.at("routerlocalnodeindex") : "0");
     BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Router started, waiting for requests...");
 
     // Wait until stop signal file appears or timeout
