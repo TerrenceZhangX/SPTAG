@@ -793,6 +793,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
         BOOST_REQUIRE(VectorIndex::LoadIndex(indexPath, index) == ErrorCode::Success);
         BOOST_REQUIRE(index != nullptr);
         ApplyRouterParams(index, ssdOverrides);
+        index->SetHeadSyncCallback();
     }
 
     auto queryset = TestUtils::TestDataGenerator<T>::LoadVectorSet(pqueryset, M);
@@ -891,6 +892,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
 
                 // Enable distributed routing on the cloned index
                 ApplyRouterParams(cloneIndex, ssdOverrides);
+                cloneIndex->SetHeadSyncCallback();
                 
                 ErrorCode cloneret = cloneIndex->Check();
                 BOOST_REQUIRE(cloneret == ErrorCode::Success);
@@ -2178,6 +2180,9 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
 
     // Enable PostingRouter (must have RouterEnabled=true in [BuildSSDIndex])
     ApplyRouterParams(index, ssdOverrides);
+
+    // Set the head sync callback so this worker can apply head index changes from peers
+    index->SetHeadSyncCallback();
 
     // Set the InsertCallback so this worker can handle distributed insert batches
     // (head search + appends done locally on the worker)

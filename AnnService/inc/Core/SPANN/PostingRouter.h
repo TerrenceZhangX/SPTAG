@@ -248,6 +248,51 @@ namespace SPTAG::SPANN {
         }
     };
 
+    /// Entry in a head sync broadcast: one add or delete of a head node.
+    struct HeadSyncEntry {
+        enum class Op : std::uint8_t { Add = 0, Delete = 1 };
+        Op op;
+        SizeType headVID;
+        std::string headVector;  // only for Add; empty for Delete
+
+        size_t EstimateBufferSize() const {
+            return sizeof(std::uint8_t)   // op
+                 + sizeof(SizeType)       // headVID
+                 + sizeof(std::uint32_t)  // headVector length
+                 + headVector.size();
+        }
+
+        std::uint8_t* Write(std::uint8_t* p_buffer) const {
+            using namespace Socket::SimpleSerialization;
+            p_buffer = SimpleWriteBuffer(static_cast<std::uint8_t>(op), p_buffer);
+            p_buffer = SimpleWriteBuffer(headVID, p_buffer);
+            std::uint32_t vecLen = static_cast<std::uint32_t>(headVector.size());
+            p_buffer = SimpleWriteBuffer(vecLen, p_buffer);
+            if (vecLen > 0) {
+                memcpy(p_buffer, headVector.data(), vecLen);
+                p_buffer += vecLen;
+            }
+            return p_buffer;
+        }
+
+        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
+            using namespace Socket::SimpleSerialization;
+            std::uint8_t rawOp = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, rawOp);
+            op = static_cast<Op>(rawOp);
+            p_buffer = SimpleReadBuffer(p_buffer, headVID);
+            std::uint32_t vecLen = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, vecLen);
+            if (vecLen > 0) {
+                headVector.assign(reinterpret_cast<const char*>(p_buffer), vecLen);
+                p_buffer += vecLen;
+            } else {
+                headVector.clear();
+            }
+            return p_buffer;
+        }
+    };
+
     /// Distributed routing layer for SPFRESH posting writes.
     ///
     /// Architecture: N compute nodes, each with a full head index replica,
@@ -274,6 +319,11 @@ namespace SPTAG::SPANN {
             const std::string& vectorData,
             SizeType startVID,
             std::uint32_t count)>;
+
+        /// Callback to apply a head sync entry on the local head index.
+        /// For Add: call AddHeadIndex with (vectorData, headVID, dim).
+        /// For Delete: call DeleteIndex with (headVID, layer).
+        using HeadSyncCallback = std::function<void(const HeadSyncEntry& entry)>;
 
         PostingRouter()
             : m_enabled(false), m_localNodeIndex(-1) {}
@@ -322,6 +372,11 @@ namespace SPTAG::SPANN {
             m_insertCallback = std::move(cb);
         }
 
+        /// Set the callback for applying head sync entries on the local head index.
+        void SetHeadSyncCallback(HeadSyncCallback cb) {
+            m_headSyncCallback = std::move(cb);
+        }
+
         /// Start the router server (listens for incoming remote appends)
         /// and connect client to all peer nodes.
         bool Start() {
@@ -340,6 +395,10 @@ namespace SPTAG::SPANN {
             serverHandlers->emplace(Socket::PacketType::InsertBatchRequest,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
                     HandleInsertBatchRequest(connID, std::move(packet));
+                });
+            serverHandlers->emplace(Socket::PacketType::HeadSyncRequest,
+                [this](Socket::ConnectionID connID, Socket::Packet packet) {
+                    HandleHeadSyncRequest(connID, std::move(packet));
                 });
 
             const auto& localAddr = m_nodeAddrs[m_localNodeIndex];
@@ -974,6 +1033,73 @@ namespace SPTAG::SPANN {
                 ? ErrorCode::Success : ErrorCode::Fail);
         }
 
+        /// Handle an incoming head sync request (fire-and-forget, no response sent).
+        void HandleHeadSyncRequest(Socket::ConnectionID connID, Socket::Packet packet) {
+            if (!m_headSyncCallback) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "PostingRouter: HeadSyncRequest received but no callback set\n");
+                return;
+            }
+
+            const std::uint8_t* buf = packet.Body();
+            std::uint32_t entryCount = 0;
+            buf = Socket::SimpleSerialization::SimpleReadBuffer(buf, entryCount);
+
+            for (std::uint32_t i = 0; i < entryCount; i++) {
+                HeadSyncEntry entry;
+                buf = entry.Read(buf);
+                if (!buf) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                        "PostingRouter: HeadSyncRequest parse error at entry %u/%u\n", i, entryCount);
+                    break;
+                }
+                m_headSyncCallback(entry);
+            }
+        }
+
+        /// Broadcast head sync entries to all peer nodes (fire-and-forget).
+        void BroadcastHeadSync(const std::vector<HeadSyncEntry>& entries) {
+            if (!m_enabled || entries.empty()) return;
+
+            // Compute total body size
+            size_t bodySize = sizeof(std::uint32_t); // entry count
+            for (const auto& e : entries) bodySize += e.EstimateBufferSize();
+
+            for (int i = 0; i < static_cast<int>(m_nodeAddrs.size()); i++) {
+                if (i == m_localNodeIndex) continue;
+
+                Socket::ConnectionID connID = GetPeerConnection(i);
+                if (connID == Socket::c_invalidConnectionID) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                        "PostingRouter: Cannot broadcast head sync to node %d (no connection)\n", i);
+                    continue;
+                }
+
+                Socket::Packet pkt;
+                pkt.Header().m_packetType = Socket::PacketType::HeadSyncRequest;
+                pkt.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+                pkt.Header().m_connectionID = Socket::c_invalidConnectionID;
+                pkt.Header().m_resourceID = 0;
+                pkt.Header().m_bodyLength = static_cast<std::uint32_t>(bodySize);
+                pkt.AllocateBuffer(static_cast<std::uint32_t>(bodySize));
+
+                std::uint8_t* buf = pkt.Body();
+                buf = Socket::SimpleSerialization::SimpleWriteBuffer(
+                    static_cast<std::uint32_t>(entries.size()), buf);
+                for (const auto& e : entries) buf = e.Write(buf);
+
+                pkt.Header().WriteBuffer(pkt.HeaderBuffer());
+
+                m_client->SendPacket(connID, std::move(pkt),
+                    [i](bool success) {
+                        if (!success) {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Debug,
+                                "PostingRouter: Head sync send to node %d failed\n", i);
+                        }
+                    });
+            }
+        }
+
     private:
         bool m_enabled;
         int m_localNodeIndex;
@@ -1002,6 +1128,9 @@ namespace SPTAG::SPANN {
 
         // Insert callback for distributed insert (head search + append on worker)
         InsertCallback m_insertCallback;
+
+        // Head sync callback (set by ExtraDynamicSearcher)
+        HeadSyncCallback m_headSyncCallback;
 
         // Batched remote append queue (queue items from multiple AddIndex calls, flush once)
         std::mutex m_appendQueueMutex;

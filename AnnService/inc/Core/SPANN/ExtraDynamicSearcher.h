@@ -658,6 +658,7 @@ namespace SPTAG::SPANN {
                 SizeType newHeadVID = -1;
                 int first = 0;                
                 newPostingLists.resize(2);
+                std::vector<HeadSyncEntry> headSyncEntries;
                 for (int k = 0; k < 2; k++) {
                     if (args.counts[k] == 0)	continue;
 
@@ -799,6 +800,15 @@ namespace SPTAG::SPANN {
                             auto updateHeadEnd = std::chrono::high_resolution_clock::now();
                             elapsedMSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(updateHeadEnd - updateHeadBegin).count();
                             m_stat.m_updateHeadCost += elapsedMSeconds;
+
+                            // Record for broadcast to peers
+                            if (m_router && m_router->IsEnabled()) {
+                                HeadSyncEntry entry;
+                                entry.op = HeadSyncEntry::Op::Add;
+                                entry.headVID = newHeadVID;
+                                entry.headVector.assign((const char*)(args.centers + k * args._D), m_vectorDataSize);
+                                headSyncEntries.push_back(std::move(entry));
+                            }
                             
                             if (m_opt->m_excludehead) m_versionMap->IncVersion(newHeadVID, &version, version);
                         }
@@ -808,11 +818,25 @@ namespace SPTAG::SPANN {
                 }
                 if (!theSameHead) {
                     m_headIndex->DeleteIndex(headID, m_layer + 1);
+
+                    // Record delete for broadcast
+                    if (m_router && m_router->IsEnabled()) {
+                        HeadSyncEntry entry;
+                        entry.op = HeadSyncEntry::Op::Delete;
+                        entry.headVID = headID;
+                        headSyncEntries.push_back(std::move(entry));
+                    }
+
                     if ((ret=db->Delete(DBKey(headID))) != ErrorCode::Success)
                     {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to delete old posting in Split\n");
                         return ret;
                     }
+                }
+
+                // Broadcast head changes to all peer nodes (fire-and-forget)
+                if (m_router && m_router->IsEnabled() && !headSyncEntries.empty()) {
+                    m_router->BroadcastHeadSync(headSyncEntries);
                 }
 
                 {
@@ -2420,6 +2444,22 @@ BasicVectorSet(ByteArray((std::uint8_t*)fullVectors->GetVector(it), m_vectorData
                 return m_router->GetNumNodes();
             }
             return 1;
+        }
+
+        void SetHeadSyncCallback() override {
+            if (m_router && m_router->IsEnabled()) {
+                auto* headIndex = m_headIndex;
+                int layer = m_layer;
+                m_router->SetHeadSyncCallback([headIndex, layer](const HeadSyncEntry& entry) {
+                    if (entry.op == HeadSyncEntry::Op::Add) {
+                        headIndex->AddHeadIndex(entry.headVector.data(), entry.headVID, 0,
+                            static_cast<DimensionType>(entry.headVector.size() / sizeof(ValueType)),
+                            layer + 1, nullptr);
+                    } else {
+                        headIndex->DeleteIndex(entry.headVID, layer + 1);
+                    }
+                });
+            }
         }
 
         ErrorCode DeleteIndex(SizeType p_id) override {

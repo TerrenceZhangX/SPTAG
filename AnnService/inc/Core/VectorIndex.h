@@ -175,6 +175,7 @@ public:
     virtual ErrorCode SendInsertBatch(int targetNode, const void* data, int startVID, int count, size_t dataSize) { return ErrorCode::Undefined; }
     virtual void SetInsertCallback(std::function<ErrorCode(const std::string&, int, unsigned int)> cb) {}
     virtual int GetNumNodes() const { return 1; }
+    virtual void SetHeadSyncCallback() {}
 
     virtual std::shared_ptr<std::vector<std::uint64_t>> BufferSize() const = 0;
 

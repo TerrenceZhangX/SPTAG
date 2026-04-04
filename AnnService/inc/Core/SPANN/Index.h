@@ -122,6 +122,12 @@ namespace SPTAG
                 return 1;
             }
 
+            void SetHeadSyncCallback() override {
+                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    m_extraSearchers[0]->SetHeadSyncCallback();
+                }
+            }
+
             inline SizeType GetNumSamples() const { return GetNumSamples(0); }
             inline SizeType GetNumSamples(int layer) const { if (layer < m_extraSearchers.size()) return m_extraSearchers[layer]->GetNumSamples(); else return m_topIndex->GetNumSamples(); }
             inline DimensionType GetFeatureDim() const { return m_topIndex->GetFeatureDim(); }

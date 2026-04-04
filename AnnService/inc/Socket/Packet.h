@@ -33,6 +33,8 @@ enum class PacketType : std::uint8_t
 
     InsertBatchRequest = 0x06,
 
+    HeadSyncRequest = 0x07,
+
     ResponseMask = 0x80,
 
     HeartbeatResponse = ResponseMask | HeartbeatRequest,

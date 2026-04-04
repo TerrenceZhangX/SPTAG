@@ -349,6 +349,7 @@ namespace SPTAG {
             virtual ErrorCode SendInsertBatch(int targetNode, const void* data, int startVID, int count, size_t dataSize) { return ErrorCode::Undefined; }
             virtual void SetInsertCallback(std::function<ErrorCode(const std::string&, int, unsigned int)> cb) {}
             virtual int GetNumNodes() const { return 1; }
+            virtual void SetHeadSyncCallback() {}
 
             virtual ErrorCode CheckPosting(SizeType postingiD, std::vector<std::uint8_t> *visited = nullptr,
                                            ExtraWorkSpace *p_exWorkSpace = nullptr) = 0;
