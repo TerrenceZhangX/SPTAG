@@ -748,11 +748,13 @@ break;
                                             result.childCenters.push_back(cid);
                                         }
                                     } else {
-                                        // K-means clustering - use thread-local args with 1 thread
-                                        // (parallelism is at the node level, not within k-means)
+                                        // K-means clustering - dynamically allocate threads per node
+                                        // When few nodes at this level, give more threads to each k-means;
+                                        // when many nodes, use 1 thread per k-means (parallelism at node level).
                                         // IMPORTANT: Must use full dataset size because KmeansAssign uses absolute indices
                                         // (args.label[i] where i ranges from first to last, not 0 to rangeSize)
-                                        KmeansArgs<T> localArgs(m_iBKTKmeansK, data.C(), (SizeType)localindices.size(), 1, distMethod, m_pQuantizer);
+                                        int threadsPerNode = std::max(1, numOfThreads / (int)levelSize);
+                                        KmeansArgs<T> localArgs(m_iBKTKmeansK, data.C(), (SizeType)localindices.size(), threadsPerNode, distMethod, m_pQuantizer);
 
                                         int dk = m_iBKTKmeansK;
                                         if (dynamicK) {
@@ -791,8 +793,11 @@ break;
                         };
 
                         std::vector<std::thread> mythreads;
-                        mythreads.reserve(numOfThreads);
-                        for (int tid = 0; tid < numOfThreads; tid++)
+                        // When nodes are few, each k-means uses multiple threads internally,
+                        // so limit outer parallelism to avoid thread over-subscription.
+                        int outerThreads = std::min(numOfThreads, (int)levelSize);
+                        mythreads.reserve(outerThreads);
+                        for (int tid = 0; tid < outerThreads; tid++)
                         {
                             mythreads.emplace_back(func);
                         }
