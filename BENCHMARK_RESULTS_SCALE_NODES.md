@@ -1,4 +1,4 @@
-# SPTAG Distributed Insert — 100k Scale Benchmark Results
+# SPTAG Distributed Insert — Scale Benchmark Results
 
 ## Overview
 
@@ -7,6 +7,22 @@ cluster. Each node holds a full head-index replica; the driver partitions the in
 batch across nodes for independent **head search + posting append**. After splits, head
 index changes are broadcast to all peers via fire-and-forget **HeadSyncRequest** packets.
 
+All data collected with MultiGet region error retry fix, clean TiKV restart per phase.
+
+---
+
+## 1. Throughput Summary (All Scales)
+
+| Scale | Base Vectors | Insert/Batch | 1-node (vec/s) | 2-node (vec/s) | 2n Speedup | 3-node (vec/s) | 3n Speedup |
+|-------|-------------|-------------|----------------|----------------|------------|----------------|------------|
+| 100k | 99,000 | 100 | 103.6 | 202.9 | 1.96× | 310.1 | 2.99× |
+| 1M | 990,000 | 1,000 | 142.4 | 134.5 | 0.94× | 184.2 | 1.29× |
+| 10M | 9,900,000 | 10,000 | 145.8 | 147.7 | 1.01× | 306.5 | 2.10× |
+
+---
+
+## 2. 100k Detail
+
 ### Configuration
 
 | Parameter | Value |
@@ -14,42 +30,10 @@ index changes are broadcast to all peers via fire-and-forget **HeadSyncRequest**
 | Base vectors | 99,000 |
 | Insert vectors / batch | 100 |
 | Batches | 10 |
-| Total inserts | 1,000 |
 | PostingPageLimit | 12 |
 | BufferLength | 8 |
-| ValueType | UInt8 |
-| Dimension | 128 |
-| Insert threads / node | 16 |
-| Query threads | 16 |
-| Queries per round | 200 |
-| TiKV stores | 3 |
-| Head sync broadcast | Enabled |
 
-Data from Run 9 (MultiGet region error retry fix, clean TiKV restart per phase).
-
----
-
-## 1. Insert Throughput Summary
-
-| Nodes | Avg (vec/s) | Speedup | Batch 1 | Batch 2 | Batch 3 | Batch 4 | Batch 5 | Batch 6 | Batch 7 | Batch 8 | Batch 9 | Batch 10 |
-|-------|------------|---------|---------|---------|---------|---------|---------|---------|---------|---------|---------|----------|
-| 1 | **103.6** | 1.00× | 109.0 | 91.3 | 86.5 | 91.7 | 116.9 | 96.9 | 117.3 | 101.5 | 128.3 | 96.8 |
-| 2 | **202.9** | 1.96× | 183.5 | 170.3 | 248.7 | 188.2 | 238.2 | 155.6 | 190.8 | 238.7 | 193.7 | 221.7 |
-| 3 | **310.1** | 2.99× | 166.9 | 301.3 | 348.0 | 397.3 | 364.0 | 275.3 | 247.1 | 272.9 | 348.7 | 379.8 |
-
----
-
-## 2. Query Before Insert (Baseline)
-
-Measured on the freshly built index (99k vectors), before any inserts.
-
-| Nodes | QPS | Mean (ms) | P50 | P99 | Recall@5 |
-|-------|-----|-----------|-----|-----|----------|
-| 1 | 560 | 27.9 | 27.9 | 38.5 | 0.677 |
-| 2 | 351 | 46.8 | 46.8 | 58.8 | 0.666 |
-| 3 | 550 | 27.6 | 26.8 | 50.5 | 0.671 |
-
-**Round 2** (warm cache):
+### Query Before Insert (Baseline)
 
 | Nodes | QPS | Mean (ms) | P50 | P99 | Recall@5 |
 |-------|-----|-----------|-----|-----|----------|
@@ -57,90 +41,217 @@ Measured on the freshly built index (99k vectors), before any inserts.
 | 2 | 373 | 40.4 | 40.4 | 56.0 | 0.666 |
 | 3 | 632 | 24.0 | 22.6 | 39.2 | 0.671 |
 
-> **Note**: 2-node QPS is lower than 1-node because queries run only on the driver
-> node, and TiKV is shared with a worker process. Queries are NOT distributed.
+### Per-Batch — 1 Node (avg 103.6 vec/s)
+
+| Batch | Throughput | Recall@5 | Search2 QPS |
+|-------|------------|----------|-------------|
+| 1 | 109.0 | 0.679 | 686 |
+| 2 | 91.3 | 0.679 | 654 |
+| 3 | 86.5 | 0.677 | 637 |
+| 4 | 91.7 | 0.677 | 481 |
+| 5 | 116.9 | 0.677 | 545 |
+| 6 | 96.9 | 0.681 | 557 |
+| 7 | 117.3 | 0.681 | 548 |
+| 8 | 101.5 | 0.679 | 464 |
+| 9 | 128.3 | 0.679 | 501 |
+| 10 | 96.8 | 0.681 | 494 |
+
+### Per-Batch — 2 Nodes (avg 202.9 vec/s, 1.96×)
+
+| Batch | Throughput | Recall@5 | Search2 QPS |
+|-------|------------|----------|-------------|
+| 1 | 183.5 | 0.665 | 560 |
+| 2 | 170.3 | 0.666 | 591 |
+| 3 | 248.7 | 0.665 | 613 |
+| 4 | 188.2 | 0.665 | 600 |
+| 5 | 238.2 | 0.665 | 593 |
+| 6 | 155.6 | 0.665 | 352 |
+| 7 | 190.8 | 0.666 | 357 |
+| 8 | 238.7 | 0.665 | 366 |
+| 9 | 193.7 | 0.665 | 353 |
+| 10 | 221.7 | 0.665 | 348 |
+
+### Per-Batch — 3 Nodes (avg 310.1 vec/s, 2.99×)
+
+| Batch | Throughput | Recall@5 | Search2 QPS |
+|-------|------------|----------|-------------|
+| 1 | 166.9 | 0.672 | 894 |
+| 2 | 301.3 | 0.672 | 911 |
+| 3 | 348.0 | 0.671 | 948 |
+| 4 | 397.3 | 0.670 | 920 |
+| 5 | 364.0 | 0.671 | 949 |
+| 6 | 275.3 | 0.671 | 422 |
+| 7 | 247.1 | 0.671 | 536 |
+| 8 | 272.9 | 0.670 | 531 |
+| 9 | 348.7 | 0.671 | 484 |
+| 10 | 379.8 | 0.671 | 483 |
+
+> Recall stable across all batches and node counts. Zero anomalies.
+> MultiGet region error retry triggered 6 times during 3-node — fix working as designed.
 
 ---
 
-## 3. Per-Batch Detail — 1 Node
+## 3. 1M Detail
 
-| Batch | Throughput | Search QPS | Search P50 (ms) | Search P99 | Search Recall@5 | Search2 QPS | Search2 P50 | Search2 P99 | Search2 Recall@5 |
-|-------|------------|------------|-----------------|------------|-----------------|-------------|-------------|-------------|------------------|
-| 1 | 109.0 | 671 | 22.8 | 35.8 | 0.679 | 686 | 22.4 | 33.7 | 0.679 |
-| 2 | 91.3 | 617 | 24.8 | 35.1 | 0.679 | 654 | 23.5 | 33.3 | 0.679 |
-| 3 | 86.5 | 576 | 27.4 | 38.2 | 0.677 | 637 | 24.2 | 35.0 | 0.677 |
-| 4 | 91.7 | 511 | 29.6 | 43.8 | 0.677 | 481 | 32.2 | 46.2 | 0.677 |
-| 5 | 116.9 | 549 | 26.5 | 49.2 | 0.677 | 545 | 28.4 | 38.2 | 0.677 |
-| 6 | 96.9 | 518 | 29.2 | 47.1 | 0.681 | 557 | 28.1 | 37.2 | 0.681 |
-| 7 | 117.3 | 505 | 30.6 | 47.5 | 0.681 | 548 | 28.5 | 40.8 | 0.681 |
-| 8 | 101.5 | 383 | 40.6 | 62.7 | 0.679 | 464 | 32.6 | 48.7 | 0.679 |
-| 9 | 128.3 | 501 | 29.7 | 49.3 | 0.679 | 501 | 29.5 | 59.6 | 0.679 |
-| 10 | 96.8 | 460 | 32.2 | 67.5 | 0.681 | 494 | 31.2 | 45.2 | 0.681 |
+### Configuration
 
-> Recall stable at 0.677–0.681 across all batches. Zero anomalies.
+| Parameter | Value |
+|---|---|
+| Base vectors | 990,000 |
+| Insert vectors / batch | 1,000 |
+| Batches | 10 |
+| PostingPageLimit | 12 |
+| BufferLength | 8 |
+
+### Per-Batch — 1 Node (avg 142.4 vec/s)
+
+| Batch | Throughput | Time (s) | Recall@5 | Search2 QPS |
+|-------|------------|----------|----------|-------------|
+| 1 | 152.5 | 6.56 | 0.444 | 374 |
+| 2 | 171.6 | 5.83 | 0.444 | 410 |
+| 3 | 155.0 | 6.45 | 0.443 | 380 |
+| 4 | 158.1 | 6.33 | 0.441 | 393 |
+| 5 | 140.1 | 7.14 | 0.442 | 350 |
+| 6 | 121.6 | 8.22 | 0.444 | 399 |
+| 7 | 146.5 | 6.83 | 0.443 | 365 |
+| 8 | 140.9 | 7.10 | 0.441 | 328 |
+| 9 | 93.1 | 10.75 | 0.440 | 368 |
+| 10 | 144.7 | 6.91 | 0.436 | 389 |
+
+### Per-Batch — 2 Nodes (avg 134.5 vec/s, 0.94×)
+
+| Batch | Throughput | Time (s) | Recall@5 | Search2 QPS |
+|-------|------------|----------|----------|-------------|
+| 1 | 94.6 | 10.57 | 0.405 | 286 |
+| 2 | 164.4 | 6.08 | 0.404 | 313 |
+| 3 | 87.7 | 11.40 | 0.401 | 344 |
+| 4 | 149.6 | 6.69 | 0.401 | 371 |
+| 5 | 122.1 | 8.19 | 0.401 | 363 |
+| 6 | 173.2 | 5.77 | 0.402 | 364 |
+| 7 | 145.6 | 6.87 | 0.403 | 353 |
+| 8 | 133.3 | 7.50 | 0.402 | 380 |
+| 9 | 140.1 | 7.14 | 0.402 | 379 |
+| 10 | 134.3 | 7.44 | 0.404 | 370 |
+
+### Per-Batch — 3 Nodes (avg 184.2 vec/s, 1.29×)
+
+| Batch | Throughput | Time (s) | Recall@5 | Search2 QPS |
+|-------|------------|----------|----------|-------------|
+| 1 | 93.3 | 10.72 | 0.428 | 283 |
+| 2 | 223.7 | 4.47 | 0.428 | 326 |
+| 3 | 232.3 | 4.31 | 0.429 | 272 |
+| 4 | 137.4 | 7.28 | 0.428 | 356 |
+| 5 | 170.1 | 5.88 | 0.429 | 390 |
+| 6 | 168.7 | 5.93 | 0.429 | 408 |
+| 7 | 167.9 | 5.96 | 0.428 | 355 |
+| 8 | 214.8 | 4.66 | 0.426 | 374 |
+| 9 | 204.9 | 4.88 | 0.427 | 334 |
+| 10 | 228.7 | 4.37 | 0.426 | 345 |
+
+> Scaling significantly weaker at 1M. 2-node shows NO speedup (0.94×).
+> 3-node shows modest 1.29× gain. Suggests TiKV I/O becomes the bottleneck
+> at this scale, limiting parallelism gains from additional compute nodes.
+> Recall also lower in multi-node configs (1-node 0.44 vs 2-node 0.40 vs 3-node 0.43).
 
 ---
 
-## 4. Per-Batch Detail — 2 Nodes
+## 4. 10M Detail
 
-| Batch | Throughput | Search QPS | Search P50 (ms) | Search P99 | Search Recall@5 | Search2 QPS | Search2 P50 | Search2 P99 | Search2 Recall@5 |
-|-------|------------|------------|-----------------|------------|-----------------|-------------|-------------|-------------|------------------|
-| 1 | 183.5 | 542 | 28.8 | 47.0 | 0.665 | 560 | 26.6 | 43.9 | 0.665 |
-| 2 | 170.3 | 594 | 25.9 | 38.1 | 0.666 | 591 | 25.5 | 43.2 | 0.666 |
-| 3 | 248.7 | 595 | 25.6 | 43.9 | 0.665 | 613 | 25.2 | 37.8 | 0.665 |
-| 4 | 188.2 | 583 | 26.4 | 38.3 | 0.665 | 600 | 25.5 | 37.8 | 0.665 |
-| 5 | 238.2 | 585 | 26.5 | 38.9 | 0.665 | 593 | 26.1 | 35.1 | 0.665 |
-| 6 | 155.6 | 341 | 45.6 | 92.0 | 0.665 | 352 | 46.6 | 55.0 | 0.665 |
-| 7 | 190.8 | 346 | 45.8 | 61.0 | 0.666 | 357 | 44.6 | 55.0 | 0.666 |
-| 8 | 238.7 | 353 | 46.2 | 57.7 | 0.665 | 366 | 44.3 | 57.1 | 0.665 |
-| 9 | 193.7 | 359 | 44.5 | 61.0 | 0.665 | 353 | 46.0 | 56.1 | 0.665 |
-| 10 | 221.7 | 341 | 46.7 | 67.7 | 0.665 | 348 | 46.0 | 57.6 | 0.665 |
+### Configuration
 
-> Recall stable at 0.665–0.666 across all batches. Zero anomalies.
+| Parameter | Value |
+|---|---|
+| Base vectors | 9,900,000 |
+| Insert vectors / batch | 10,000 |
+| Batches | 10 |
+| PostingPageLimit | 12 |
+| BufferLength | 8 |
+
+### Per-Batch — 1 Node (avg 145.8 vec/s)
+
+| Batch | Throughput | Time (s) | Recall@5 | Search2 QPS |
+|-------|------------|----------|----------|-------------|
+| 1 | 155.6 | 64.3 | 0.240 | 289 |
+| 2 | 133.5 | 74.9 | 0.239 | 288 |
+| 3 | 150.5 | 66.4 | 0.241 | 301 |
+| 4 | 152.1 | 65.7 | 0.241 | 298 |
+| 5 | 139.8 | 71.5 | 0.242 | 265 |
+| 6 | 151.0 | 66.2 | 0.243 | 249 |
+| 7 | 122.3 | 81.8 | 0.242 | 284 |
+| 8 | 152.1 | 65.7 | 0.242 | 255 |
+| 9 | 146.9 | 68.1 | 0.242 | 266 |
+| 10 | 154.3 | 64.8 | 0.243 | 262 |
+
+### Per-Batch — 2 Nodes (avg 147.7 vec/s, 1.01×)
+
+| Batch | Throughput | Time (s) | Recall@5 | Search2 QPS |
+|-------|------------|----------|----------|-------------|
+| 1 | 143.4 | 69.8 | 0.278 | 259 |
+| 2 | 206.0 | 48.5 | 0.276 | 279 |
+| 3 | 336.3 | 29.7 | 0.278 | 282 |
+| 4 | 246.1 | 40.6 | 0.277 | 185 |
+| 5 | 236.6 | 42.3 | 0.277 | 173 |
+| 6 | 111.1 | 90.0 | 0.278 | 169 |
+| 7 | **44.6** | 224.0 | 0.277 | 185 |
+| 8 | **52.6** | 189.9 | 0.278 | 188 |
+| 9 | **48.2** | 207.3 | 0.277 | 182 |
+| 10 | **52.5** | 190.4 | 0.277 | 183 |
+
+> ⚠️ Severe throughput degradation in batches 7–10 (~50 vec/s vs ~250 early).
+> Likely TiKV contention or split cascade at 2-node scale with 10M dataset.
+
+### Per-Batch — 3 Nodes (avg 306.5 vec/s, 2.10×)
+
+| Batch | Throughput | Time (s) | Recall@5 | Search2 QPS |
+|-------|------------|----------|----------|-------------|
+| 1 | 226.7 | 44.1 | 0.250 | 269 |
+| 2 | 327.8 | 30.5 | 0.249 | 229 |
+| 3 | 335.9 | 29.8 | 0.251 | 187 |
+| 4 | 262.1 | 38.2 | 0.251 | 169 |
+| 5 | 363.2 | 27.5 | 0.252 | 174 |
+| 6 | 281.2 | 35.6 | 0.251 | 171 |
+| 7 | 323.2 | 30.9 | 0.251 | 172 |
+| 8 | 346.6 | 28.9 | 0.252 | 164 |
+| 9 | 310.7 | 32.2 | 0.251 | 164 |
+| 10 | 287.8 | 34.7 | 0.253 | 165 |
+
+> 3-node shows consistent throughput across all batches — no degradation.
+> Recall stable at 0.249–0.253.
 
 ---
 
-## 5. Per-Batch Detail — 3 Nodes
+## 5. Key Observations
 
-| Batch | Throughput | Search QPS | Search P50 (ms) | Search P99 | Search Recall@5 | Search2 QPS | Search2 P50 | Search2 P99 | Search2 Recall@5 |
-|-------|------------|------------|-----------------|------------|-----------------|-------------|-------------|-------------|------------------|
-| 1 | 166.9 | 889 | 16.8 | 31.8 | 0.672 | 894 | 16.8 | 27.1 | 0.672 |
-| 2 | 301.3 | 881 | 17.2 | 31.3 | 0.672 | 911 | 16.5 | 28.3 | 0.672 |
-| 3 | 348.0 | 918 | 16.6 | 25.5 | 0.671 | 948 | 16.1 | 26.2 | 0.671 |
-| 4 | 397.3 | 910 | 16.7 | 27.4 | 0.670 | 920 | 16.5 | 25.7 | 0.670 |
-| 5 | 364.0 | 927 | 16.5 | 28.0 | 0.671 | 949 | 16.2 | 26.8 | 0.671 |
-| 6 | 275.3 | 808 | 19.1 | 28.7 | 0.671 | 422 | 28.9 | 137.1 | 0.671 |
-| 7 | 247.1 | 521 | 30.5 | 42.5 | 0.671 | 536 | 29.2 | 41.4 | 0.671 |
-| 8 | 272.9 | 546 | 29.4 | 41.0 | 0.670 | 531 | 30.4 | 40.4 | 0.670 |
-| 9 | 348.7 | 504 | 30.9 | 42.8 | 0.671 | 484 | 32.3 | 44.7 | 0.671 |
-| 10 | 379.8 | 523 | 30.0 | 42.9 | 0.671 | 483 | 32.3 | 49.5 | 0.671 |
+1. **100k: Near-linear scaling** — 1.96× at 2-node, 2.99× at 3-node. At this scale
+   the bottleneck is head search + posting append (CPU-bound), which parallelizes well.
 
-> Recall stable at 0.670–0.672 across all batches. Zero anomalies.
-> MultiGet region error retry triggered 6 times during this run — fix working as designed.
+2. **1M: Scaling collapses** — 2-node shows no speedup (0.94×), 3-node only 1.29×.
+   At 1M the bottleneck shifts to TiKV I/O (larger postings, more splits/merges).
+   Adding compute nodes can't help when all nodes contend on the same TiKV cluster.
 
----
+3. **10M: Mixed results** — 2-node shows no average speedup (1.01×) with severe
+   late-batch degradation (batches 7–10 drop to ~50 vec/s). 3-node shows good
+   scaling (2.10×) with consistent throughput. The 2-node degradation pattern
+   (fine early, collapses later) suggests resource exhaustion or split cascading
+   under sustained load with exactly 2 nodes.
 
-## 6. Key Observations
+4. **Recall stability**: Zero anomalies across all scales after MultiGet region error
+   fix. Recall values differ by scale (100k: 0.67, 1M: 0.44, 10M: 0.24) due to
+   index structure and posting density.
 
-1. **Insert scaling**: Near-linear throughput scaling across node counts:
-   - 1-node: 103.6 vec/s (baseline)
-   - 2-node: 202.9 vec/s (1.96×)
-   - 3-node: 310.1 vec/s (2.99×)
+5. **1M/10M multi-node recall variation**: 2-node recall sometimes higher than 1-node
+   at 10M (0.277 vs 0.242). Different TiKV data layout after distributed inserts
+   may affect posting quality.
 
-2. **Recall stability**: Recall@5 stays at 0.665–0.681 across all batches and node
-   counts. **Zero anomalies** after fixing MultiGet region error handling. Previously
-   recall would sporadically drop to 0.14 due to silent empty posting reads.
+6. **Root cause of previous recall anomaly**: `TiKVIO::MultiGet` silently returned
+   empty buffers on region errors. Fixed by falling back to individual `Get` calls
+   with 10-retry logic.
 
-3. **Root cause of previous recall anomaly**: `TiKVIO::MultiGet` did not check
-   `response.has_region_error()` or per-pair `has_error()`. During TiKV region
-   events, batch reads returned empty buffers silently. Fixed by falling back to
-   individual `Get` calls (which have 10-retry logic) on any region/pair error.
-
-4. **Search QPS regression over batches**: QPS drops from ~670 → ~460 (1-node),
-   ~595 → ~341 (2-node), and ~920 → ~483 (3-node) across batches. Expected as
-   TiKV accumulates data.
-
-5. **Head sync broadcast**: No measurable overhead. Fire-and-forget after splits.
+7. **Scaling bottleneck analysis**:
+   - 100k (100 vec/batch): Compute-bound → scales linearly
+   - 1M (1k vec/batch): TiKV I/O starts to dominate → scaling limited
+   - 10M (10k vec/batch): Split cascades dominate at 2-node; 3-node distributes
+     split load more evenly, recovering scaling
 
 ---
 
@@ -178,5 +289,7 @@ Measured on the freshly built index (99k vectors), before any inserts.
 
 ```bash
 cd /mnt/nvme/SPTAG/build && make -j8 SPTAGTest
-./run_scale_benchmarks.sh 100k
+./run_scale_benchmarks.sh 100k   # ~20 min
+./run_scale_benchmarks.sh 1m     # ~90 min
+./run_scale_benchmarks.sh 10m    # ~8 hours
 ```
