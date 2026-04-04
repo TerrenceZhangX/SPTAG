@@ -21,6 +21,7 @@
 #include <future>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <sstream>
 #include <chrono>
 #include <thread>
@@ -486,11 +487,26 @@ namespace SPTAG::SPANN
             std::vector<std::future<void>> futures;
             std::mutex resultMutex;
 
+            auto fallbackGet = [&](size_t idx) {
+                std::string val;
+                if (Get(keys[idx], &val, timeout, reqs) == ErrorCode::Success && !val.empty()) {
+                    std::lock_guard<std::mutex> lock(resultMutex);
+                    if (val.size() > values[idx].GetPageSize()) {
+                        values[idx].ReservePageBuffer(val.size());
+                    }
+                    memcpy(values[idx].GetBuffer(), val.data(), val.size());
+                    values[idx].SetAvailableSize(static_cast<int>(val.size()));
+                }
+            };
+
             for (auto& [gkey, rg] : regionGroups) {
                 futures.push_back(std::async(std::launch::async, [&, &gkey, &rg]() {
                     auto& group = rg.keys;
                     auto* stub = GetOrCreateStub(gkey.leaderAddr);
-                    if (!stub) return;
+                    if (!stub) {
+                        for (auto& [idx, pkey] : group) fallbackGet(idx);
+                        return;
+                    }
 
                     kvrpcpb::RawBatchGetRequest request;
                     SetContextFromRegion(request.mutable_context(), rg.region);
@@ -503,12 +519,41 @@ namespace SPTAG::SPANN
                     SetDeadline(ctx, timeout);
 
                     auto status = stub->RawBatchGet(&ctx, request, &response);
-                    if (!status.ok()) {
-                        // Fallback: individual gets for this group
+                    if (!status.ok() || response.has_region_error()) {
+                        if (!status.ok()) {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO: RawBatchGet gRPC error (%s), retrying %zu keys individually\n",
+                                status.error_message().c_str(), group.size());
+                        } else {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO: RawBatchGet region error, retrying %zu keys individually\n", group.size());
+                        }
                         for (auto& [idx, pkey] : group) {
-                            std::string val;
-                            auto ret = Get(keys[idx], &val, timeout, reqs);
-                            if (ret == ErrorCode::Success && !val.empty()) {
+                            InvalidateRegionCache(pkey);
+                            fallbackGet(idx);
+                        }
+                        return;
+                    }
+
+                    // Build result map; collect keys with per-pair errors for retry
+                    std::unordered_map<std::string, std::string> resultMap;
+                    std::unordered_set<std::string> errorKeys;
+                    for (int p = 0; p < response.pairs_size(); p++) {
+                        const auto& pair = response.pairs(p);
+                        if (pair.has_error()) {
+                            errorKeys.insert(pair.key());
+                        } else if (!pair.value().empty()) {
+                            resultMap[pair.key()] = pair.value();
+                        }
+                    }
+
+                    // Copy results to output buffers; retry failed keys individually
+                    for (auto& [idx, pkey] : group) {
+                        if (errorKeys.count(pkey)) {
+                            InvalidateRegionCache(pkey);
+                            fallbackGet(idx);
+                        } else {
+                            auto it = resultMap.find(pkey);
+                            if (it != resultMap.end()) {
+                                const auto& val = it->second;
                                 std::lock_guard<std::mutex> lock(resultMutex);
                                 if (val.size() > values[idx].GetPageSize()) {
                                     values[idx].ReservePageBuffer(val.size());
@@ -517,31 +562,6 @@ namespace SPTAG::SPANN
                                 values[idx].SetAvailableSize(static_cast<int>(val.size()));
                             }
                         }
-                        return;
-                    }
-
-                    // Build a map from prefixed key -> response value
-                    std::unordered_map<std::string, std::string> resultMap;
-                    for (int p = 0; p < response.pairs_size(); p++) {
-                        const auto& pair = response.pairs(p);
-                        if (!pair.has_error() && !pair.value().empty()) {
-                            resultMap[pair.key()] = pair.value();
-                        }
-                    }
-
-                    // Copy results to output buffers
-                    std::lock_guard<std::mutex> lock(resultMutex);
-                    for (auto& [idx, pkey] : group) {
-                        auto it = resultMap.find(pkey);
-                        if (it != resultMap.end()) {
-                            const auto& val = it->second;
-                            if (val.size() > values[idx].GetPageSize()) {
-                                values[idx].ReservePageBuffer(val.size());
-                            }
-                            memcpy(values[idx].GetBuffer(), val.data(), val.size());
-                            values[idx].SetAvailableSize(static_cast<int>(val.size()));
-                        }
-                        // else: remains empty (SetAvailableSize(0)), tolerating missing keys
                     }
                 }));
             }
@@ -590,7 +610,14 @@ namespace SPTAG::SPANN
             for (auto& [gkey, rg] : regionGroups) {
                 auto& group = rg.keys;
                 auto* stub = GetOrCreateStub(gkey.leaderAddr);
-                if (!stub) continue;
+                if (!stub) {
+                    for (auto& [idx, pkey] : group) {
+                        std::string val;
+                        if (Get(keys[idx], &val, timeout, reqs) == ErrorCode::Success)
+                            (*values)[idx] = std::move(val);
+                    }
+                    continue;
+                }
 
                 kvrpcpb::RawBatchGetRequest request;
                 SetContextFromRegion(request.mutable_context(), rg.region);
@@ -603,29 +630,45 @@ namespace SPTAG::SPANN
                 SetDeadline(ctx, timeout);
 
                 auto status = stub->RawBatchGet(&ctx, request, &response);
-                if (!status.ok()) {
-                    // Fallback to individual gets
+                if (!status.ok() || response.has_region_error()) {
+                    if (!status.ok()) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO: RawBatchGet gRPC error (%s), retrying %zu keys individually\n",
+                            status.error_message().c_str(), group.size());
+                    } else {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO: RawBatchGet region error, retrying %zu keys individually\n", group.size());
+                    }
                     for (auto& [idx, pkey] : group) {
+                        InvalidateRegionCache(pkey);
                         std::string val;
-                        if (Get(keys[idx], &val, timeout, reqs) == ErrorCode::Success) {
+                        if (Get(keys[idx], &val, timeout, reqs) == ErrorCode::Success)
                             (*values)[idx] = std::move(val);
-                        }
                     }
                     continue;
                 }
 
+                // Build result map; collect keys with per-pair errors for retry
                 std::unordered_map<std::string, std::string> resultMap;
+                std::unordered_set<std::string> errorKeys;
                 for (int p = 0; p < response.pairs_size(); p++) {
                     const auto& pair = response.pairs(p);
-                    if (!pair.has_error() && !pair.value().empty()) {
+                    if (pair.has_error()) {
+                        errorKeys.insert(pair.key());
+                    } else if (!pair.value().empty()) {
                         resultMap[pair.key()] = pair.value();
                     }
                 }
 
                 for (auto& [idx, pkey] : group) {
-                    auto it = resultMap.find(pkey);
-                    if (it != resultMap.end()) {
-                        (*values)[idx] = std::move(it->second);
+                    if (errorKeys.count(pkey)) {
+                        InvalidateRegionCache(pkey);
+                        std::string val;
+                        if (Get(keys[idx], &val, timeout, reqs) == ErrorCode::Success)
+                            (*values)[idx] = std::move(val);
+                    } else {
+                        auto it = resultMap.find(pkey);
+                        if (it != resultMap.end()) {
+                            (*values)[idx] = std::move(it->second);
+                        }
                     }
                 }
             }

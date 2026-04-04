@@ -1682,11 +1682,13 @@ namespace SPTAG::SPANN {
 
             const auto postingListCount = static_cast<uint32_t>(p_exWorkSpace->m_postingIDs.size());
             bool isTiKV = (m_opt->m_storage == Storage::TIKVIO);
+            int emptyPostings = 0;
             for (uint32_t pi = 0; pi < postingListCount; ++pi) {
                 auto curPostingID = p_exWorkSpace->m_postingIDs[pi];
                 auto& buffer = (p_exWorkSpace->m_pageBuffers[pi]);
                 char* p_postingListFullData = (char*)(buffer.GetBuffer());
                 int vectorNum = (int)(buffer.GetAvailableSize() / m_vectorInfoSize);
+                if (vectorNum == 0) { emptyPostings++; }
 
                 diskIO += int((buffer.GetAvailableSize() + PageSize - 1) >> PageSizeEx);
                 diskRead += (int)(buffer.GetAvailableSize());
@@ -1727,6 +1729,11 @@ namespace SPTAG::SPANN {
                             (*found)[curPostingID].insert(vectorID);
                     }
                 }
+            }
+
+            if (emptyPostings > 0) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "[SearchIndex] %d/%d posting reads returned empty (TiKV read timeout or failure)\n",
+                    emptyPostings, postingListCount);
             }
 
             // For TiKV mode: post-heap version check via BatchGetVersions
