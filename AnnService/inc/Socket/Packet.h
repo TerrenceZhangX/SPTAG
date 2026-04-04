@@ -31,6 +31,8 @@ enum class PacketType : std::uint8_t
 
     BatchAppendRequest = 0x05,
 
+    InsertBatchRequest = 0x06,
+
     ResponseMask = 0x80,
 
     HeartbeatResponse = ResponseMask | HeartbeatRequest,
@@ -41,7 +43,9 @@ enum class PacketType : std::uint8_t
 
     AppendResponse = ResponseMask | AppendRequest,
 
-    BatchAppendResponse = ResponseMask | BatchAppendRequest
+    BatchAppendResponse = ResponseMask | BatchAppendRequest,
+
+    InsertBatchResponse = ResponseMask | InsertBatchRequest
 };
 
 

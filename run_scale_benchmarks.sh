@@ -74,7 +74,103 @@ restart_tikv() {
     cd "$SPTAG_DIR"
 }
 
-# ─── Phase Functions ───
+# Helper: rebalance TiKV region leaders evenly across stores
+rebalance_tikv_leaders() {
+    # Usage: rebalance_tikv_leaders [target_store_addrs...]
+    # If target store addresses are given (e.g. 127.0.0.1:20161 127.0.0.1:20162),
+    # only those stores get leaders; others are drained to 0.
+    # If no args, balance across all stores.
+    local TARGET_STORES="$*"
+    echo "Rebalancing TiKV region leaders... targets=[${TARGET_STORES:-all}]"
+    python3 -c "
+import json, urllib.request, time, sys
+
+target_addrs = '${TARGET_STORES}'.split() if '${TARGET_STORES}' else []
+
+def api_get(path):
+    return json.loads(urllib.request.urlopen('http://127.0.0.1:23791/pd/api/v1/' + path).read())
+
+def api_post(path, data):
+    req = urllib.request.Request('http://127.0.0.1:23791/pd/api/v1/' + path,
+                                data=json.dumps(data).encode(),
+                                headers={'Content-Type': 'application/json'})
+    return json.loads(urllib.request.urlopen(req).read())
+
+stores_data = api_get('stores')
+store_info = {}
+for s in stores_data.get('stores', []):
+    si = s['store']
+    if si.get('state_name') == 'Up':
+        store_info[si['id']] = si['address']
+store_ids = sorted(store_info.keys())
+print(f'  Stores: {store_info}')
+
+# Determine target store IDs (those that should hold leaders)
+if target_addrs:
+    target_ids = [sid for sid in store_ids if store_info[sid] in target_addrs]
+    print(f'  Target stores (by address): {[store_info[s] for s in target_ids]}')
+else:
+    target_ids = list(store_ids)
+
+if len(target_ids) < 1:
+    print(f'  No target stores found, skipping')
+    sys.exit(0)
+
+regions = api_get('regions')['regions']
+if not regions:
+    print('  No regions')
+    sys.exit(0)
+
+from collections import Counter
+leader_counts = Counter({sid: 0 for sid in store_ids})
+for r in regions:
+    sid = r.get('leader', {}).get('store_id')
+    if sid in leader_counts: leader_counts[sid] += 1
+
+print(f'  Before: {dict(leader_counts)} ({len(regions)} regions)')
+target_per_store = len(regions) // len(target_ids)
+
+transfers = 0
+expected = dict(leader_counts)
+for r in regions:
+    src = r.get('leader', {}).get('store_id')
+    # Transfer if src is NOT a target store, or if src has too many leaders
+    if src in target_ids and expected.get(src, 0) <= target_per_store:
+        continue
+    dst = min(target_ids, key=lambda s: expected[s])
+    if dst == src:
+        continue
+    if expected[dst] >= target_per_store + 1:
+        continue
+    peers = [p.get('store_id') for p in r.get('peers', [])]
+    if dst not in peers:
+        continue
+    try:
+        api_post('operators', {'name': 'transfer-leader', 'region_id': r['id'], 'to_store_id': dst})
+        expected[src] -= 1; expected[dst] += 1; transfers += 1
+    except Exception as e:
+        print(f'  Transfer region {r[\"id\"]} failed: {e}')
+
+if transfers == 0:
+    print(f'  Already balanced')
+    sys.exit(0)
+
+print(f'  Expected: {expected} ({transfers} transfers)')
+
+for attempt in range(15):
+    time.sleep(2)
+    regions2 = api_get('regions')['regions']
+    lc2 = Counter({sid: 0 for sid in store_ids})
+    for r in regions2:
+        sid = r.get('leader', {}).get('store_id')
+        if sid in lc2: lc2[sid] += 1
+    if dict(lc2) == expected:
+        print(f'  Verified after {(attempt+1)*2}s: {dict(lc2)}')
+        sys.exit(0)
+
+print(f'  Warning: after 30s actual={dict(lc2)}, expected={expected}')
+" 2>&1
+}
 
 run_1node() {
     local SCALE=$1
@@ -129,6 +225,8 @@ run_2node() {
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_2node_build.log"
 
     echo "${SCALE} 2-node build done: $(date)"
+    # Only balance leaders to the 2 stores mapped by RouterNodeStores
+    rebalance_tikv_leaders 127.0.0.1:20161 127.0.0.1:20162
 
     # Copy head index to n1
     echo "Copying head index to n1..."
@@ -141,7 +239,7 @@ run_2node() {
       $BINARY --run_test=SPFreshTest/WorkerNode \
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_2node_worker1.log" &
     WORKER1_PID=$!
-    sleep 8
+    sleep 12
 
     # Run driver n0 with Rebuild=false
     sed 's/^Rebuild=true/Rebuild=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_2node_n0_run.ini"
@@ -185,6 +283,7 @@ run_3node() {
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_3node_build.log"
 
     echo "${SCALE} 3-node build done: $(date)"
+    rebalance_tikv_leaders
 
     # Copy head index to n1, n2
     echo "Copying head index to n1, n2..."
@@ -205,7 +304,7 @@ run_3node() {
       $BINARY --run_test=SPFreshTest/WorkerNode \
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_3node_worker2.log" &
     WORKER2_PID=$!
-    sleep 8
+    sleep 12
 
     # Run driver n0 with Rebuild=false
     sed 's/^Rebuild=true/Rebuild=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_3node_n0_run.ini"

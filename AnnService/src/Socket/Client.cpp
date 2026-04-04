@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #include "inc/Socket/Client.h"
+#include "inc/Core/Common.h"
 
 #include <limits>
 
@@ -45,6 +46,9 @@ ConnectionID Client::ConnectToServer(const std::string &p_address, const std::st
     auto endPoints = resolver.resolve(p_address, p_port, errCode);
     if (errCode || endPoints.empty())
     {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+            "Client::ConnectToServer: resolve(%s:%s) failed: %s\n",
+            p_address.c_str(), p_port.c_str(), errCode.message().c_str());
         p_ec = ErrorCode::Socket_FailedResolveEndPoint;
         return c_invalidConnectionID;
     }
@@ -59,6 +63,11 @@ ConnectionID Client::ConnectToServer(const std::string &p_address, const std::st
             break;
         }
 
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+            "Client::ConnectToServer: connect(%s:%s ep=%s) failed: %s\n",
+            p_address.c_str(), p_port.c_str(),
+            ep.endpoint().address().to_string().c_str(),
+            errCode.message().c_str());
         socket.close(errCode);
     }
 

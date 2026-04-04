@@ -854,7 +854,8 @@ namespace SPTAG::SPANN
 
         // ---- TODO2: Distributed routing support ----
         bool GetKeyLocation(SizeType key, Helper::KeyLocation& loc) override {
-            std::string prefixedKey = MakePrefixedKey(std::to_string(key));
+            std::string k(reinterpret_cast<const char*>(&key), sizeof(SizeType));
+            std::string prefixedKey = MakePrefixedKey(k);
             RegionInfo region;
             if (!FindRegionForKey(prefixedKey, region) || region.leaderAddr.empty())
                 return false;

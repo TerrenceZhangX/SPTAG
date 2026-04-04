@@ -171,6 +171,10 @@ public:
     virtual std::shared_ptr<VectorIndex> Clone(std::string p_clone);
 
     virtual void EnableRouter() {}
+    virtual ErrorCode FlushRemoteAppends() { return ErrorCode::Success; }
+    virtual ErrorCode SendInsertBatch(int targetNode, const void* data, int startVID, int count, size_t dataSize) { return ErrorCode::Undefined; }
+    virtual void SetInsertCallback(std::function<ErrorCode(const std::string&, int, unsigned int)> cb) {}
+    virtual int GetNumNodes() const { return 1; }
 
     virtual std::shared_ptr<std::vector<std::uint64_t>> BufferSize() const = 0;
 

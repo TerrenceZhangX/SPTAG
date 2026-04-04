@@ -28,6 +28,18 @@
 #include <ctime>
 #include <tuple>
 #include <vector>
+#include <signal.h>
+#include <execinfo.h>
+#include <unistd.h>
+
+static void segfault_handler(int sig) {
+    void *array[64];
+    int size = backtrace(array, 64);
+    fprintf(stderr, "\n=== SIGSEGV caught (signal %d) ===\n", sig);
+    backtrace_symbols_fd(array, size, STDERR_FILENO);
+    fprintf(stderr, "=== END BACKTRACE ===\n");
+    _exit(1);
+}
 
 using namespace SPTAG;
 
@@ -389,18 +401,51 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
     p_index->ForceCompaction();
     p_index->GetDBStat();
 
-    std::vector<std::thread> threads;
+    int numNodes = p_index->GetNumNodes();
+    int localStart = start;
+    int localEnd = start + step;
+    std::vector<std::thread> remoteInsertThreads;
 
-    int printstep = step / 50;
-    std::atomic_size_t vectorsSent(start);
+    // If multiple nodes, distribute insert work across them
+    if (numNodes > 1) {
+        int perNode = step / numNodes;
+        int remainder = step % numNodes;
+        // Node 0 (driver) gets the first partition; others get subsequent partitions
+        localEnd = start + perNode + (remainder > 0 ? 1 : 0);
+        int offset = localEnd;
+        for (int n = 1; n < numNodes; n++) {
+            int nodeCount = perNode + (n < remainder ? 1 : 0);
+            if (nodeCount <= 0) continue;
+            int nodeStart = offset;
+            size_t dataSize = static_cast<size_t>(nodeCount) * addset->PerVectorDataSize();
+            const void* dataPtr = addset->GetVector(nodeStart);
+            remoteInsertThreads.emplace_back([p_index, n, dataPtr, nodeStart, nodeCount, dataSize]() {
+                ErrorCode ret = p_index->SendInsertBatch(n, dataPtr, nodeStart, nodeCount, dataSize);
+                if (ret != ErrorCode::Success) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                        "InsertVectors: SendInsertBatch to node %d failed\n", n);
+                }
+            });
+            offset += nodeCount;
+        }
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+            "InsertVectors: Distributed %d vectors across %d nodes (local: %d-%d, %d vectors)\n",
+            step, numNodes, localStart, localEnd - 1, localEnd - localStart);
+    }
+
+    // Process local partition with insert threads
+    std::vector<std::thread> threads;
+    int localStep = localEnd - localStart;
+    int printstep = max(localStep / 50, 1);
+    std::atomic_size_t vectorsSent(localStart);
     auto func = [&]() {
-        size_t index = start;
+        size_t index = localStart;
         while (true)
         {
             index = vectorsSent.fetch_add(1);
-            if (index < start + step)
+            if (index < (size_t)localEnd)
             {
-                if ((index % (printstep - 1)) == 0)
+                if (printstep > 1 && (index % printstep) == 0)
                 {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Sent %.2lf%%...\n", index * 100.0 / step);
                 }
@@ -436,6 +481,12 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
     {
         thread.join();
     }
+
+    // Wait for remote insert batches to complete
+    for (auto& t : remoteInsertThreads) t.join();
+
+    // Flush any pending remote appends accumulated across all insert threads
+    p_index->FlushRemoteAppends();
 
     auto insertDone = std::chrono::high_resolution_clock::now();
     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "InsertVectors: insert phase done, waiting AllFinished...\n");
@@ -1955,6 +2006,8 @@ BOOST_AUTO_TEST_CASE(IterativeSearchPerf)
 
 BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
 {
+    signal(SIGSEGV, segfault_handler);
+    signal(SIGABRT, segfault_handler);
     using namespace SPFreshTest;
 
     // Check if benchmark config is provided via environment variable
@@ -2125,6 +2178,51 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
 
     // Enable PostingRouter (must have RouterEnabled=true in [BuildSSDIndex])
     ApplyRouterParams(index, ssdOverrides);
+
+    // Set the InsertCallback so this worker can handle distributed insert batches
+    // (head search + appends done locally on the worker)
+    std::string vectorPath = iniReader.GetParameter("Benchmark", "VectorPath", std::string(""));
+    int dimension = std::stoi(iniReader.GetParameter("Benchmark", "Dimension", std::string("128")));
+    index->SetInsertCallback([&index, dimension](const std::string& vectorData, int startVID, unsigned int count) -> ErrorCode {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+            "WorkerNode: Processing insert batch of %u vectors starting at VID %d\n", count, startVID);
+        int insertThreads = 16;
+        int dimBytes = dimension;
+        std::vector<std::thread> threads;
+        std::atomic<int> errors{0};
+        std::atomic<size_t> nextIdx(0);
+        int numThreads = std::min(insertThreads, static_cast<int>(count));
+        for (int t = 0; t < numThreads; t++) {
+            threads.emplace_back([&]() {
+                while (true) {
+                    size_t idx = nextIdx.fetch_add(1);
+                    if (idx >= count) break;
+                    SizeType VID = startVID + static_cast<SizeType>(idx);
+                    const void* vecData = vectorData.data() + idx * dimBytes;
+                    // Create minimal metadata
+                    std::string metaStr = std::to_string(VID);
+                    ByteArray metaBytes = ByteArray::Alloc(metaStr.size());
+                    memcpy(metaBytes.Data(), metaStr.data(), metaStr.size());
+                    std::uint64_t offsets[2] = {0, metaStr.size()};
+                    std::shared_ptr<MetadataSet> meta(new MemMetadataSet(
+                        metaBytes, ByteArray((std::uint8_t*)new std::uint64_t[2]{0, metaStr.size()},
+                                             2 * sizeof(std::uint64_t), true), 1));
+                    ErrorCode ret = index->AddIndex(vecData, 1, dimBytes, meta, true);
+                    if (ret != ErrorCode::Success) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                            "WorkerNode: AddIndex failed for VID %d\n", VID);
+                        errors++;
+                    }
+                }
+            });
+        }
+        for (auto& t : threads) t.join();
+        // Flush any remote appends queued during inserts
+        index->FlushRemoteAppends();
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+            "WorkerNode: Insert batch done (%u vectors, %d errors)\n", count, errors.load());
+        return errors > 0 ? ErrorCode::Fail : ErrorCode::Success;
+    });
 
     int nodeIndex = std::stoi(ssdOverrides.count("routerlocalnodeindex")
         ? ssdOverrides.at("routerlocalnodeindex") : "0");

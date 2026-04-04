@@ -17,6 +17,7 @@
 #include <atomic>
 #include <future>
 #include <functional>
+#include <thread>
 
 namespace SPTAG::SPANN {
 
@@ -175,6 +176,78 @@ namespace SPTAG::SPANN {
         }
     };
 
+    /// Request to have a remote node perform full insert (head search + append) for a batch of vectors.
+    struct InsertBatchRequest {
+        static constexpr std::uint16_t MajorVersion() { return 1; }
+        static constexpr std::uint16_t MirrorVersion() { return 0; }
+
+        SizeType m_startVID = 0;
+        std::uint32_t m_count = 0;
+        std::string m_vectorData;  // raw bytes: count * dimension * sizeof(ValueType)
+
+        std::size_t EstimateBufferSize() const {
+            return sizeof(std::uint16_t) * 2 + sizeof(SizeType) + sizeof(std::uint32_t)
+                   + sizeof(std::uint32_t) + m_vectorData.size();
+        }
+
+        std::uint8_t* Write(std::uint8_t* p_buffer) const {
+            using namespace Socket::SimpleSerialization;
+            p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(m_startVID, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_count, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_vectorData, p_buffer);
+            return p_buffer;
+        }
+
+        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
+            using namespace Socket::SimpleSerialization;
+            std::uint16_t majorVer = 0, mirrorVer = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, majorVer);
+            p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
+            if (majorVer != MajorVersion()) return nullptr;
+            p_buffer = SimpleReadBuffer(p_buffer, m_startVID);
+            p_buffer = SimpleReadBuffer(p_buffer, m_count);
+            p_buffer = SimpleReadBuffer(p_buffer, m_vectorData);
+            return p_buffer;
+        }
+    };
+
+    struct InsertBatchResponse {
+        static constexpr std::uint16_t MajorVersion() { return 1; }
+        static constexpr std::uint16_t MirrorVersion() { return 0; }
+
+        enum class Status : std::uint8_t { Success = 0, Failed = 1 };
+        Status m_status = Status::Failed;
+        std::uint32_t m_insertedCount = 0;
+
+        std::size_t EstimateBufferSize() const {
+            return sizeof(std::uint16_t) * 2 + sizeof(std::uint8_t) + sizeof(std::uint32_t);
+        }
+
+        std::uint8_t* Write(std::uint8_t* p_buffer) const {
+            using namespace Socket::SimpleSerialization;
+            p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(static_cast<std::uint8_t>(m_status), p_buffer);
+            p_buffer = SimpleWriteBuffer(m_insertedCount, p_buffer);
+            return p_buffer;
+        }
+
+        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
+            using namespace Socket::SimpleSerialization;
+            std::uint16_t majorVer = 0, mirrorVer = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, majorVer);
+            p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
+            if (majorVer != MajorVersion()) return nullptr;
+            std::uint8_t s = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, s);
+            m_status = static_cast<Status>(s);
+            p_buffer = SimpleReadBuffer(p_buffer, m_insertedCount);
+            return p_buffer;
+        }
+    };
+
     /// Distributed routing layer for SPFRESH posting writes.
     ///
     /// Architecture: N compute nodes, each with a full head index replica,
@@ -185,16 +258,22 @@ namespace SPTAG::SPANN {
     ///
     /// This guarantees that the same headID always routes to the same compute
     /// node, preserving VersionMap consistency and Merge atomicity.
+
     class PostingRouter {
     public:
         /// Callback type for handling a local append.
-        /// Params: headID, headVec, appendNum, appendPosting
-        /// Returns ErrorCode.
         using AppendCallback = std::function<ErrorCode(
             SizeType headID,
             std::shared_ptr<std::string> headVec,
             int appendNum,
             std::string& appendPosting)>;
+
+        /// Callback type for handling a distributed insert batch (head search + append).
+        /// Params: vectorData (raw bytes), startVID, count
+        using InsertCallback = std::function<ErrorCode(
+            const std::string& vectorData,
+            SizeType startVID,
+            std::uint32_t count)>;
 
         PostingRouter()
             : m_enabled(false), m_localNodeIndex(-1) {}
@@ -238,6 +317,11 @@ namespace SPTAG::SPANN {
             m_appendCallback = std::move(cb);
         }
 
+        /// Set the callback for handling full insert batches (head search + append).
+        void SetInsertCallback(InsertCallback cb) {
+            m_insertCallback = std::move(cb);
+        }
+
         /// Start the router server (listens for incoming remote appends)
         /// and connect client to all peer nodes.
         bool Start() {
@@ -252,6 +336,10 @@ namespace SPTAG::SPANN {
             serverHandlers->emplace(Socket::PacketType::BatchAppendRequest,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
                     HandleBatchAppendRequest(connID, std::move(packet));
+                });
+            serverHandlers->emplace(Socket::PacketType::InsertBatchRequest,
+                [this](Socket::ConnectionID connID, Socket::Packet packet) {
+                    HandleInsertBatchRequest(connID, std::move(packet));
                 });
 
             const auto& localAddr = m_nodeAddrs[m_localNodeIndex];
@@ -271,13 +359,18 @@ namespace SPTAG::SPANN {
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
                     HandleBatchAppendResponse(connID, std::move(packet));
                 });
+            clientHandlers->emplace(Socket::PacketType::InsertBatchResponse,
+                [this](Socket::ConnectionID connID, Socket::Packet packet) {
+                    HandleInsertBatchResponse(connID, std::move(packet));
+                });
 
             m_client.reset(new Socket::Client(clientHandlers, 2, 30));
 
             m_peerConnections.resize(m_nodeAddrs.size(), Socket::c_invalidConnectionID);
             for (int i = 0; i < static_cast<int>(m_nodeAddrs.size()); i++) {
                 if (i == m_localNodeIndex) continue;
-                ConnectToPeer(i);
+                // Try once; lazy reconnect via GetPeerConnection handles failures
+                ConnectToPeer(i, 3, 500);
             }
 
             return true;
@@ -289,26 +382,49 @@ namespace SPTAG::SPANN {
             target.isLocal = true;
             target.nodeIndex = m_localNodeIndex;
 
-            if (!m_enabled || !m_db) return target;
+            if (!m_enabled || !m_db) {
+                m_routeStats.disabled++;
+                return target;
+            }
 
             Helper::KeyLocation loc;
             if (!m_db->GetKeyLocation(headID, loc)) {
-                // Storage doesn't support location queries; default to local
+                m_routeStats.keyMiss++;
                 return target;
             }
 
             auto it = m_storeToNode.find(loc.leaderStoreAddr);
             if (it == m_storeToNode.end()) {
-                // Leader is on a store with no nearby compute node; keep local
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Debug,
-                    "PostingRouter: No node mapped to store %s for headID %lld, using local\n",
-                    loc.leaderStoreAddr.c_str(), (std::int64_t)headID);
+                m_routeStats.noMapping++;
                 return target;
             }
 
             target.nodeIndex = it->second;
             target.isLocal = (target.nodeIndex == m_localNodeIndex);
+
+            if (target.isLocal) m_routeStats.local++;
+            else m_routeStats.remote++;
+
             return target;
+        }
+
+        int GetNumNodes() const { return static_cast<int>(m_nodeAddrs.size()); }
+        int GetLocalNodeIndex() const { return m_localNodeIndex; }
+
+        void LogRouteStats(const char* context = "") {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "PostingRouter stats%s: local=%d remote=%d disabled=%d keyMiss=%d noMapping=%d\n",
+                context, (int)m_routeStats.local, (int)m_routeStats.remote,
+                (int)m_routeStats.disabled, (int)m_routeStats.keyMiss,
+                (int)m_routeStats.noMapping);
+        }
+
+        void ResetRouteStats() {
+            m_routeStats.local.store(0);
+            m_routeStats.remote.store(0);
+            m_routeStats.disabled.store(0);
+            m_routeStats.keyMiss.store(0);
+            m_routeStats.noMapping.store(0);
         }
 
         /// Send an append request to a remote compute node and wait for the response.
@@ -630,17 +746,30 @@ namespace SPTAG::SPANN {
             SPTAGLIB_LOG(Helper::LogLevel::LL_Debug,
                 "PostingRouter: Received batch of %u appends\n", batchReq.m_count);
 
-            std::uint32_t successCount = 0, failCount = 0;
-            for (auto& req : batchReq.m_items) {
-                ErrorCode result = ErrorCode::Fail;
-                if (m_appendCallback) {
-                    auto headVec = std::make_shared<std::string>(std::move(req.m_headVec));
-                    result = m_appendCallback(
-                        req.m_headID, headVec, req.m_appendNum, req.m_appendPosting);
-                }
-                if (result == ErrorCode::Success) successCount++;
-                else failCount++;
+            // Process appends in parallel using worker threads
+            std::atomic<std::uint32_t> successCount(0), failCount(0);
+            std::vector<std::thread> workers;
+            std::atomic<size_t> nextItem(0);
+            int numWorkers = std::min(static_cast<int>(batchReq.m_items.size()), 16);
+            workers.reserve(numWorkers);
+            for (int w = 0; w < numWorkers; w++) {
+                workers.emplace_back([&]() {
+                    while (true) {
+                        size_t idx = nextItem.fetch_add(1);
+                        if (idx >= batchReq.m_items.size()) break;
+                        auto& req = batchReq.m_items[idx];
+                        ErrorCode result = ErrorCode::Fail;
+                        if (m_appendCallback) {
+                            auto headVec = std::make_shared<std::string>(std::move(req.m_headVec));
+                            result = m_appendCallback(
+                                req.m_headID, headVec, req.m_appendNum, req.m_appendPosting);
+                        }
+                        if (result == ErrorCode::Success) successCount.fetch_add(1);
+                        else failCount.fetch_add(1);
+                    }
+                });
             }
+            for (auto& t : workers) t.join();
 
             SendBatchAppendResponse(packet, successCount, failCount);
         }
@@ -699,6 +828,152 @@ namespace SPTAG::SPANN {
             promise.set_value(resp.m_failCount == 0 ? ErrorCode::Success : ErrorCode::Fail);
         }
 
+    public:
+        /// Send an insert batch to a remote node for distributed head search + append.
+        ErrorCode SendInsertBatch(int targetNodeIndex,
+            const void* vectorData, SizeType startVID, std::uint32_t count, size_t dataSize)
+        {
+            Socket::ConnectionID connID = GetPeerConnection(targetNodeIndex);
+            if (connID == Socket::c_invalidConnectionID) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "PostingRouter: Cannot connect to node %d for insert batch\n", targetNodeIndex);
+                return ErrorCode::Fail;
+            }
+
+            InsertBatchRequest req;
+            req.m_startVID = startVID;
+            req.m_count = count;
+            req.m_vectorData.assign(reinterpret_cast<const char*>(vectorData), dataSize);
+
+            Socket::Packet packet;
+            packet.Header().m_packetType = Socket::PacketType::InsertBatchRequest;
+            packet.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+            packet.Header().m_connectionID = Socket::c_invalidConnectionID;
+
+            Socket::ResourceID resID = m_nextResourceId.fetch_add(1);
+            packet.Header().m_resourceID = resID;
+
+            std::promise<ErrorCode> promise;
+            std::future<ErrorCode> future = promise.get_future();
+            {
+                std::lock_guard<std::mutex> lock(m_pendingMutex);
+                m_pendingResponses.emplace(resID, std::move(promise));
+            }
+
+            auto bodySize = static_cast<std::uint32_t>(req.EstimateBufferSize());
+            packet.Header().m_bodyLength = bodySize;
+            packet.AllocateBuffer(bodySize);
+            req.Write(packet.Body());
+            packet.Header().WriteBuffer(packet.HeaderBuffer());
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "PostingRouter: Sending insert batch of %u vectors to node %d (startVID=%d)\n",
+                count, targetNodeIndex, startVID);
+
+            m_client->SendPacket(connID, std::move(packet),
+                [resID, this](bool success) {
+                    if (!success) {
+                        std::lock_guard<std::mutex> lock(m_pendingMutex);
+                        auto it = m_pendingResponses.find(resID);
+                        if (it != m_pendingResponses.end()) {
+                            it->second.set_value(ErrorCode::Fail);
+                            m_pendingResponses.erase(it);
+                        }
+                    }
+                });
+
+            return future.get();
+        }
+
+        /// Handle an incoming InsertBatchRequest from a peer node.
+        void HandleInsertBatchRequest(Socket::ConnectionID connID, Socket::Packet packet) {
+            if (packet.Header().m_bodyLength == 0) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "PostingRouter: Empty InsertBatchRequest received\n");
+                return;
+            }
+
+            if (Socket::c_invalidConnectionID == packet.Header().m_connectionID) {
+                packet.Header().m_connectionID = connID;
+            }
+
+            InsertBatchRequest req;
+            if (req.Read(packet.Body()) == nullptr) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "PostingRouter: InsertBatchRequest version mismatch\n");
+                SendInsertBatchResponse(packet, InsertBatchResponse::Status::Failed, 0);
+                return;
+            }
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "PostingRouter: Received insert batch of %u vectors (startVID=%d)\n",
+                req.m_count, req.m_startVID);
+
+            ErrorCode result = ErrorCode::Fail;
+            if (m_insertCallback) {
+                result = m_insertCallback(req.m_vectorData, req.m_startVID, req.m_count);
+            }
+
+            auto status = (result == ErrorCode::Success)
+                ? InsertBatchResponse::Status::Success
+                : InsertBatchResponse::Status::Failed;
+            SendInsertBatchResponse(packet, status, req.m_count);
+        }
+
+        void SendInsertBatchResponse(Socket::Packet& srcPacket,
+            InsertBatchResponse::Status status, std::uint32_t insertedCount) {
+            InsertBatchResponse resp;
+            resp.m_status = status;
+            resp.m_insertedCount = insertedCount;
+
+            Socket::Packet ret;
+            ret.Header().m_packetType = Socket::PacketType::InsertBatchResponse;
+            ret.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+            ret.Header().m_connectionID = srcPacket.Header().m_connectionID;
+            ret.Header().m_resourceID = srcPacket.Header().m_resourceID;
+
+            auto bodySize = static_cast<std::uint32_t>(resp.EstimateBufferSize());
+            ret.Header().m_bodyLength = bodySize;
+            ret.AllocateBuffer(bodySize);
+            resp.Write(ret.Body());
+            ret.Header().WriteBuffer(ret.HeaderBuffer());
+
+            m_server->SendPacket(srcPacket.Header().m_connectionID, std::move(ret),
+                [](bool) {});
+        }
+
+        void HandleInsertBatchResponse(Socket::ConnectionID connID, Socket::Packet packet) {
+            Socket::ResourceID resID = packet.Header().m_resourceID;
+
+            std::promise<ErrorCode> promise;
+            {
+                std::lock_guard<std::mutex> lock(m_pendingMutex);
+                auto it = m_pendingResponses.find(resID);
+                if (it == m_pendingResponses.end()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                        "PostingRouter: Received InsertBatchResponse for unknown resourceID %u\n",
+                        resID);
+                    return;
+                }
+                promise = std::move(it->second);
+                m_pendingResponses.erase(it);
+            }
+
+            if (packet.Header().m_processStatus != Socket::PacketProcessStatus::Ok) {
+                promise.set_value(ErrorCode::Fail);
+                return;
+            }
+
+            InsertBatchResponse resp;
+            if (resp.Read(packet.Body()) == nullptr) {
+                promise.set_value(ErrorCode::Fail);
+                return;
+            }
+
+            promise.set_value(resp.m_status == InsertBatchResponse::Status::Success
+                ? ErrorCode::Success : ErrorCode::Fail);
+        }
+
     private:
         bool m_enabled;
         int m_localNodeIndex;
@@ -724,6 +999,55 @@ namespace SPTAG::SPANN {
 
         // Append callback (set by ExtraDynamicSearcher)
         AppendCallback m_appendCallback;
+
+        // Insert callback for distributed insert (head search + append on worker)
+        InsertCallback m_insertCallback;
+
+        // Batched remote append queue (queue items from multiple AddIndex calls, flush once)
+        std::mutex m_appendQueueMutex;
+        std::unordered_map<int, std::vector<RemoteAppendRequest>> m_appendQueue;
+
+        // Routing statistics
+        struct RouteStats {
+            std::atomic<int> local{0};
+            std::atomic<int> remote{0};
+            std::atomic<int> disabled{0};
+            std::atomic<int> keyMiss{0};
+            std::atomic<int> noMapping{0};
+        } m_routeStats;
+
+    public:
+        /// Queue a remote append for batched sending (thread-safe).
+        void QueueRemoteAppend(int nodeIndex, RemoteAppendRequest req) {
+            std::lock_guard<std::mutex> lock(m_appendQueueMutex);
+            m_appendQueue[nodeIndex].push_back(std::move(req));
+        }
+
+        /// Flush all queued remote appends, sending one batch per target node in parallel.
+        ErrorCode FlushRemoteAppends() {
+            std::unordered_map<int, std::vector<RemoteAppendRequest>> toSend;
+            {
+                std::lock_guard<std::mutex> lock(m_appendQueueMutex);
+                toSend.swap(m_appendQueue);
+            }
+            if (toSend.empty()) return ErrorCode::Success;
+
+            std::atomic<int> errors{0};
+            std::vector<std::thread> threads;
+            for (auto& [nodeIdx, items] : toSend) {
+                threads.emplace_back([this, &errors, nodeIdx, &items]() {
+                    ErrorCode ret = SendBatchRemoteAppend(nodeIdx, items);
+                    if (ret != ErrorCode::Success) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                            "FlushRemoteAppends: batch to node %d failed (%d items)\n",
+                            nodeIdx, (int)items.size());
+                        errors++;
+                    }
+                });
+            }
+            for (auto& t : threads) t.join();
+            return errors > 0 ? ErrorCode::Fail : ErrorCode::Success;
+        }
     };
 
 } // namespace SPTAG::SPANN

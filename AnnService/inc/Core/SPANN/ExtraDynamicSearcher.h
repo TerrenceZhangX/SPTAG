@@ -190,6 +190,8 @@ namespace SPTAG::SPANN {
 
         std::unique_ptr<PostingRouter> m_router;
 
+        PostingRouter* GetRouter() { return m_router.get(); }
+
         SPANN::Index<ValueType>* m_headIndex;
         std::unique_ptr<COMMON::IVersionMap> m_versionMap;
         Options* m_opt;
@@ -692,12 +694,14 @@ namespace SPTAG::SPANN {
                         if (m_rwLocks.hash_func(newHeadVID) != m_rwLocks.hash_func(headID))
                         {
                             int retry = 0;
-                            while (!anotherLock.try_lock() && retry < 20)
+                            while (!anotherLock.try_lock() && retry < 100)
                             {
-                                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                                             "Split: new head VID %lld is being locked. Wait for lock and do "
-                                             "merging after getting lock... (attempt %d)\n",
-                                             (std::int64_t)(newHeadVID), retry + 1);
+                                if (retry % 20 == 0) {
+                                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                                 "Split: new head VID %lld is being locked. Wait for lock and do "
+                                                 "merging after getting lock... (attempt %d)\n",
+                                                 (std::int64_t)(newHeadVID), retry + 1);
+                                }
                                 retry++;
                                 std::this_thread::sleep_for(std::chrono::milliseconds(3 * retry));
                             }
@@ -2340,9 +2344,6 @@ BasicVectorSet(ByteArray((std::uint8_t*)fullVectors->GetVector(it), m_vectorData
         ErrorCode AddIndex(ExtraWorkSpace* p_exWorkSpace, std::shared_ptr<VectorSet>& p_vectorSet,
             SizeType begin) override {
 
-            // Collect remote appends per target node for batch sending
-            std::unordered_map<int, std::vector<RemoteAppendRequest>> remoteBatches;
-
             for (int v = 0; v < p_vectorSet->Count(); v++) {
                 SizeType VID = begin + v;
                 if (m_versionMap->Deleted(VID)) m_versionMap->SetVersion(VID, -1);
@@ -2358,49 +2359,67 @@ BasicVectorSet(ByteArray((std::uint8_t*)fullVectors->GetVector(it), m_vectorData
                 }
                 for (int i = 0; i < replicaCount; i++)
                 {
-                    // AppendAsync(selections[i].node, 1, appendPosting_ptr);
-                    ErrorCode ret;
                     std::shared_ptr<std::string> headVec = std::make_shared<std::string>((char*)(selections[i].Vec.Data()), m_vectorDataSize);
 
-                    // Distributed routing: check if this headID should go to a remote node
                     if (m_router && m_router->IsEnabled()) {
                         auto target = m_router->GetOwner(selections[i].VID);
                         if (!target.isLocal) {
-                            // Collect into per-node batch instead of sending immediately
+                            // Queue for batched remote flush (no TCP round-trip per vector)
                             RemoteAppendRequest req;
                             req.m_headID = selections[i].VID;
                             req.m_headVec = *headVec;
                             req.m_appendNum = 1;
                             req.m_appendPosting = appendPosting;
-                            remoteBatches[target.nodeIndex].push_back(std::move(req));
+                            m_router->QueueRemoteAppend(target.nodeIndex, std::move(req));
                             continue;
                         }
                     }
 
-                    // Local path
+                    // Local append
+                    ErrorCode ret;
                     if (m_opt->m_asyncAppendQueueSize > 0) {
-                        if ((ret = AsyncAppend(p_exWorkSpace, selections[i].VID, headVec, 1, appendPosting)) != ErrorCode::Success)
-                            return ret;
+                        ret = AsyncAppend(p_exWorkSpace, selections[i].VID, headVec, 1, appendPosting);
                     } else {
-                        if ((ret = Append(p_exWorkSpace, selections[i].VID, headVec, 1, appendPosting)) !=
-                            ErrorCode::Success)
-                            return ret;
+                        ret = Append(p_exWorkSpace, selections[i].VID, headVec, 1, appendPosting);
+                    }
+                    if (ret != ErrorCode::Success) {
+                        return ret;
                     }
                 }
             }
 
-            // Flush all remote batches — one round-trip per target node
-            for (auto& kv : remoteBatches) {
-                ErrorCode ret = m_router->SendBatchRemoteAppend(kv.first, kv.second);
-                if (ret != ErrorCode::Success) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                        "AddIndex: Batch remote append to node %d failed (%d items), skipping\n",
-                        kv.first, (int)kv.second.size());
-                    // Continue instead of aborting — partial routing is better than crash
-                }
-            }
-
             return ErrorCode::Success;
+        }
+
+        /// Flush any pending remote appends (call after a batch of AddIndex calls).
+        ErrorCode FlushRemoteAppends() override {
+            if (m_router && m_router->IsEnabled()) {
+                ErrorCode ret = m_router->FlushRemoteAppends();
+                m_router->LogRouteStats(" (batch flush)");
+                m_router->ResetRouteStats();
+                return ret;
+            }
+            return ErrorCode::Success;
+        }
+
+        ErrorCode SendInsertBatch(int targetNode, const void* data, int startVID, int count, size_t dataSize) override {
+            if (m_router && m_router->IsEnabled()) {
+                return m_router->SendInsertBatch(targetNode, data, startVID, count, dataSize);
+            }
+            return ErrorCode::Undefined;
+        }
+
+        void SetInsertCallback(std::function<ErrorCode(const std::string&, int, unsigned int)> cb) override {
+            if (m_router && m_router->IsEnabled()) {
+                m_router->SetInsertCallback(cb);
+            }
+        }
+
+        int GetNumNodes() const override {
+            if (m_router && m_router->IsEnabled()) {
+                return m_router->GetNumNodes();
+            }
+            return 1;
         }
 
         ErrorCode DeleteIndex(SizeType p_id) override {

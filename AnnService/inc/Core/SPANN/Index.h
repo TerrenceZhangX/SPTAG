@@ -95,6 +95,33 @@ namespace SPTAG
                 }
             }
 
+            ErrorCode FlushRemoteAppends() override {
+                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    return m_extraSearchers[0]->FlushRemoteAppends();
+                }
+                return ErrorCode::Success;
+            }
+
+            ErrorCode SendInsertBatch(int targetNode, const void* data, int startVID, int count, size_t dataSize) override {
+                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    return m_extraSearchers[0]->SendInsertBatch(targetNode, data, startVID, count, dataSize);
+                }
+                return ErrorCode::Undefined;
+            }
+
+            void SetInsertCallback(std::function<ErrorCode(const std::string&, int, unsigned int)> cb) override {
+                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    m_extraSearchers[0]->SetInsertCallback(cb);
+                }
+            }
+
+            int GetNumNodes() const override {
+                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    return m_extraSearchers[0]->GetNumNodes();
+                }
+                return 1;
+            }
+
             inline SizeType GetNumSamples() const { return GetNumSamples(0); }
             inline SizeType GetNumSamples(int layer) const { if (layer < m_extraSearchers.size()) return m_extraSearchers[layer]->GetNumSamples(); else return m_topIndex->GetNumSamples(); }
             inline DimensionType GetFeatureDim() const { return m_topIndex->GetFeatureDim(); }
