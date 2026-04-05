@@ -354,15 +354,26 @@ namespace SPTAG::SPANN {
             m_nodeAddrs = nodeAddrs;
             m_nodeStores = nodeStores;
 
-            // Build store address → node index mapping (round-robin)
+            // Build store → node list mapping (sub-partitioned)
+            // Each node is assigned to one store round-robin, so multiple nodes
+            // can share a store. Within a store, headID % nodesPerStore picks the owner.
             int numNodes = static_cast<int>(nodeAddrs.size());
-            for (int i = 0; i < static_cast<int>(nodeStores.size()); i++) {
-                m_storeToNode[nodeStores[i]] = i % numNodes;
+            int numStores = static_cast<int>(nodeStores.size());
+            for (int nodeIdx = 0; nodeIdx < numNodes; nodeIdx++) {
+                int storeIdx = nodeIdx % numStores;
+                m_storeToNodes[nodeStores[storeIdx]].push_back(nodeIdx);
             }
 
+            for (auto& [store, nodes] : m_storeToNodes) {
+                std::string nodeList;
+                for (int n : nodes) { nodeList += std::to_string(n) + " "; }
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                    "PostingRouter: store %s → nodes [%s] (%d nodes)\n",
+                    store.c_str(), nodeList.c_str(), (int)nodes.size());
+            }
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "PostingRouter: %d stores mapped to %d nodes (round-robin)\n",
-                (int)nodeStores.size(), numNodes);
+                "PostingRouter: %d stores mapped to %d nodes (sub-partitioned)\n",
+                numStores, numNodes);
 
             m_enabled = true;
             return true;
@@ -458,13 +469,15 @@ namespace SPTAG::SPANN {
                 return target;
             }
 
-            auto it = m_storeToNode.find(loc.leaderStoreAddr);
-            if (it == m_storeToNode.end()) {
+            auto it = m_storeToNodes.find(loc.leaderStoreAddr);
+            if (it == m_storeToNodes.end()) {
                 m_routeStats.noMapping++;
                 return target;
             }
 
-            target.nodeIndex = it->second;
+            const auto& nodes = it->second;
+            // Sub-partition within store: use headID to pick one of the assigned nodes
+            target.nodeIndex = nodes[static_cast<unsigned>(headID) % nodes.size()];
             target.isLocal = (target.nodeIndex == m_localNodeIndex);
 
             if (target.isLocal) m_routeStats.local++;
@@ -1136,7 +1149,7 @@ namespace SPTAG::SPANN {
         // Node configuration
         std::vector<std::pair<std::string, std::string>> m_nodeAddrs;  // host:port per node
         std::vector<std::string> m_nodeStores;  // TiKV store addr per node
-        std::unordered_map<std::string, int> m_storeToNode;  // store addr → node index
+        std::unordered_map<std::string, std::vector<int>> m_storeToNodes;  // store addr → node indices (sub-partitioned)
 
         // Server (receives remote append requests)
         std::unique_ptr<Socket::Server> m_server;
@@ -1200,6 +1213,7 @@ namespace SPTAG::SPANN {
             std::atomic<int> errors{0};
             std::vector<std::thread> threads;
             for (auto& [nodeIdx, items] : toSend) {
+                if (items.empty()) continue;
                 threads.emplace_back([this, &errors, nodeIdx, &items]() {
                     ErrorCode ret = SendBatchRemoteAppend(nodeIdx, items);
                     if (ret != ErrorCode::Success) {

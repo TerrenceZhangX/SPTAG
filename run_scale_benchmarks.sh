@@ -319,6 +319,65 @@ run_3node() {
     echo "${SCALE} 3-node done: $(date)"
 }
 
+run_6node() {
+    local SCALE=$1
+    local INI_N0="Test/benchmark_${SCALE}_6node_n0.ini"
+    # Check all 6 ini files exist
+    for i in 0 1 2 3 4 5; do
+        if [ ! -f "Test/benchmark_${SCALE}_6node_n${i}.ini" ]; then
+            echo "  SKIP 6-node: Test/benchmark_${SCALE}_6node_n${i}.ini not found"
+            return
+        fi
+    done
+
+    echo ""
+    echo "--- ${SCALE}: 6-node distributed ---"
+    echo "Start: $(date)"
+
+    restart_tikv
+
+    # Build index with n0 (router disabled)
+    rm -rf "proidx_${SCALE}_6node_n"{0,1,2,3,4,5} "truth_${SCALE}_6node" "output_${SCALE}_6node"*.json
+    mkdir -p "proidx_${SCALE}_6node_n0/spann_index"
+
+    sed 's/^RouterEnabled=true/RouterEnabled=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_6node_n0_build.ini"
+
+    BENCHMARK_CONFIG="/tmp/benchmark_${SCALE}_6node_n0_build.ini" \
+    BENCHMARK_OUTPUT="output_${SCALE}_6node_build.json" \
+      $BINARY --run_test=SPFreshTest/BenchmarkFromConfig \
+      2>&1 | tee "$LOGDIR/benchmark_${SCALE}_6node_build.log"
+
+    echo "${SCALE} 6-node build done: $(date)"
+    rebalance_tikv_leaders
+
+    # Copy head index to n1-n5
+    echo "Copying head index to n1-n5..."
+    for i in 1 2 3 4 5; do
+        mkdir -p "proidx_${SCALE}_6node_n${i}/spann_index"
+        cp -r "proidx_${SCALE}_6node_n0/spann_index/"* "proidx_${SCALE}_6node_n${i}/spann_index/"
+    done
+
+    # Start workers n1-n5
+    echo "Starting workers n1-n5..."
+    for i in 1 2 3 4 5; do
+        BENCHMARK_CONFIG="Test/benchmark_${SCALE}_6node_n${i}.ini" \
+          $BINARY --run_test=SPFreshTest/WorkerNode \
+          2>&1 | tee "$LOGDIR/benchmark_${SCALE}_6node_worker${i}.log" &
+    done
+    sleep 15
+
+    # Run driver n0 with Rebuild=false
+    sed 's/^Rebuild=true/Rebuild=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_6node_n0_run.ini"
+
+    BENCHMARK_CONFIG="/tmp/benchmark_${SCALE}_6node_n0_run.ini" \
+    BENCHMARK_OUTPUT="output_${SCALE}_6node.json" \
+      $BINARY --run_test=SPFreshTest/BenchmarkFromConfig \
+      2>&1 | tee "$LOGDIR/benchmark_${SCALE}_6node_driver.log"
+
+    stop_workers
+    echo "${SCALE} 6-node done: $(date)"
+}
+
 # ─── Run all phases for one scale ───
 
 run_scale() {
@@ -332,12 +391,13 @@ run_scale() {
     run_1node "$SCALE"
     run_2node "$SCALE"
     run_3node "$SCALE"
+    run_6node "$SCALE"
 
     echo ""
     echo "------------------------------------------"
     echo " ${SCALE} complete: $(date)"
     echo " Results:"
-    for f in "output_${SCALE}_1node.json" "output_${SCALE}_2node.json" "output_${SCALE}_3node.json"; do
+    for f in "output_${SCALE}_1node.json" "output_${SCALE}_2node.json" "output_${SCALE}_3node.json" "output_${SCALE}_6node.json"; do
         if [ -f "$f" ]; then
             echo "   $f"
         fi

@@ -103,18 +103,27 @@ reconnect on send failure). Clean TiKV restart per scale/node-count phase.
    silently dropped ~50% of worker→driver remote appends from batch 2 onwards. With
    the `AdoptRouter` fix, all appends are properly delivered, giving true scaling numbers.
 
-2. **3-node sub-linear scaling**: With 3 TiKV stores round-robin mapped to 3 nodes,
-   each vector's ~8 replica heads span all 3 stores. Each node must send ~2/3 of its
-   appends to remote nodes (double-hop problem). This overhead limits 3-node scaling
-   to ~2.4× rather than the theoretical 3×.
+2. **2-node store imbalance**: Round-robin with 3 stores → 2 nodes gives node 0 two
+   stores (0, 2) and node 1 one store (1). Node 1 must send ~2/3 of its appends
+   remotely, while node 0 sends only ~1/3. This asymmetry means node 1 is bottlenecked
+   on the remote flush RPC, dragging overall throughput below the ideal 2×.
+   Additionally, `HandleBatchAppendRequest` on the receiving end spawns 16 threads for
+   TiKV writes — when these arrive while the receiver is still doing its own AddIndex,
+   32 threads contend on TiKV simultaneously.
 
-3. **Query performance stable**: Recall values consistent across node counts (±0.01).
+3. **3-node sub-linear scaling**: With 3 stores perfectly mapped 1:1 to 3 nodes, each
+   node owns 1/3 of heads (local append) but each vector's ~8 replica heads still span
+   all 3 stores. Each node must send ~2/3 of its appends to remote nodes (double-hop
+   problem). This overhead limits 3-node scaling to ~2.4× rather than the theoretical 3×.
+
+4. **Query performance stable**: Recall values consistent across node counts (±0.01).
    3-node shows better search QPS (800–900) than 1-node (450–600) due to TiKV cache
    warming from the build phase across all stores.
 
-4. **1M and 10M**: Previous results were collected with the PostingRouter reconnection
-   bug (worker→driver appends silently lost from batch 2+). Re-run pending with the
-   `AdoptRouter` fix to get accurate scaling numbers.
+5. **Scaling strategy**: To achieve good store-to-node balance, the number of compute
+   nodes should be a multiple of the number of TiKV stores (3). Testing with 1, 3, 6
+   nodes avoids the imbalance problem. 2-node results are retained as a reference for
+   the imbalance effect.
 
 ---
 
