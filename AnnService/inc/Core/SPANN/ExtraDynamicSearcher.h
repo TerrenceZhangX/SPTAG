@@ -309,6 +309,26 @@ namespace SPTAG::SPANN {
             }
         }
 
+        // Take ownership of the router from another ExtraDynamicSearcher,
+        // rebinding the append callback to this instance. Avoids destroying
+        // and recreating the server socket / peer connections.
+        virtual void AdoptRouter(IExtraSearcher* source) override
+        {
+            auto* src = dynamic_cast<ExtraDynamicSearcher*>(source);
+            if (!src || !src->m_router) return;
+
+            m_router = std::move(src->m_router);
+            m_router->SetAppendCallback(
+                [this](SizeType headID, std::shared_ptr<std::string> headVec,
+                       int appendNum, std::string& appendPosting) -> ErrorCode {
+                    ExtraWorkSpace workSpace;
+                    InitWorkSpace(&workSpace);
+                    return Append(&workSpace, headID, headVec, appendNum, appendPosting);
+                });
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "PostingRouter adopted from previous index (layer %d)\n", m_layer);
+        }
+
         virtual bool Available() override
         {
             return db->Available();
@@ -2431,6 +2451,13 @@ BasicVectorSet(ByteArray((std::uint8_t*)fullVectors->GetVector(it), m_vectorData
                 return ret;
             }
             return ErrorCode::Success;
+        }
+
+        size_t GetRemoteQueueSize() const override {
+            if (m_router && m_router->IsEnabled()) {
+                return m_router->GetRemoteQueueSize();
+            }
+            return 0;
         }
 
         ErrorCode SendInsertBatch(int targetNode, const void* data, int startVID, int count, size_t dataSize) override {

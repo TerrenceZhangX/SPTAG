@@ -332,7 +332,8 @@ namespace SPTAG::SPANN {
         /// @param p_db         The KeyValueIO backend (for GetKeyLocation).
         /// @param localNodeIdx Index of this node in the compute node list.
         /// @param nodeAddrs    "host:port" pairs for all compute nodes' router ports.
-        /// @param nodeStores   TiKV store address nearest each compute node.
+        /// @param nodeStores   TiKV store addresses. Can be >= nodeAddrs.size();
+        ///                     stores are assigned to nodes round-robin.
         bool Initialize(
             std::shared_ptr<Helper::KeyValueIO> p_db,
             int localNodeIdx,
@@ -341,7 +342,7 @@ namespace SPTAG::SPANN {
         {
             if (nodeAddrs.empty() || localNodeIdx < 0 ||
                 localNodeIdx >= static_cast<int>(nodeAddrs.size()) ||
-                nodeAddrs.size() != nodeStores.size()) {
+                nodeStores.empty()) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
                     "PostingRouter::Initialize invalid config: %d nodes, localIdx=%d, %d stores\n",
                     (int)nodeAddrs.size(), localNodeIdx, (int)nodeStores.size());
@@ -353,10 +354,15 @@ namespace SPTAG::SPANN {
             m_nodeAddrs = nodeAddrs;
             m_nodeStores = nodeStores;
 
-            // Build store address → node index mapping
+            // Build store address → node index mapping (round-robin)
+            int numNodes = static_cast<int>(nodeAddrs.size());
             for (int i = 0; i < static_cast<int>(nodeStores.size()); i++) {
-                m_storeToNode[nodeStores[i]] = i;
+                m_storeToNode[nodeStores[i]] = i % numNodes;
             }
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "PostingRouter: %d stores mapped to %d nodes (round-robin)\n",
+                (int)nodeStores.size(), numNodes);
 
             m_enabled = true;
             return true;
@@ -573,66 +579,82 @@ namespace SPTAG::SPANN {
         {
             if (items.empty()) return ErrorCode::Success;
 
-            Socket::ConnectionID connID = GetPeerConnection(targetNodeIndex);
-            if (connID == Socket::c_invalidConnectionID) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: Cannot connect to node %d for batch append (%d items)\n",
-                    targetNodeIndex, (int)items.size());
-                return ErrorCode::Fail;
-            }
+            // Retry once on connection failure (handles driver PostingRouter re-init)
+            for (int attempt = 0; attempt < 2; attempt++) {
+                Socket::ConnectionID connID = GetPeerConnection(targetNodeIndex);
+                if (connID == Socket::c_invalidConnectionID) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                        "PostingRouter: Cannot connect to node %d for batch append (%d items, attempt %d)\n",
+                        targetNodeIndex, (int)items.size(), attempt + 1);
+                    if (attempt == 0) continue; // retry after GetPeerConnection reconnects
+                    return ErrorCode::Fail;
+                }
 
-            BatchRemoteAppendRequest batchReq;
-            batchReq.m_count = static_cast<std::uint32_t>(items.size());
-            batchReq.m_items = std::move(items);
+                BatchRemoteAppendRequest batchReq;
+                batchReq.m_count = static_cast<std::uint32_t>(items.size());
+                batchReq.m_items = std::move(items); // move in for serialization
 
-            Socket::Packet packet;
-            packet.Header().m_packetType = Socket::PacketType::BatchAppendRequest;
-            packet.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
-            packet.Header().m_connectionID = Socket::c_invalidConnectionID;
+                Socket::Packet packet;
+                packet.Header().m_packetType = Socket::PacketType::BatchAppendRequest;
+                packet.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+                packet.Header().m_connectionID = Socket::c_invalidConnectionID;
 
-            Socket::ResourceID resID = m_nextResourceId.fetch_add(1);
-            packet.Header().m_resourceID = resID;
+                Socket::ResourceID resID = m_nextResourceId.fetch_add(1);
+                packet.Header().m_resourceID = resID;
 
-            std::promise<ErrorCode> promise;
-            std::future<ErrorCode> future = promise.get_future();
-            {
-                std::lock_guard<std::mutex> lock(m_pendingMutex);
-                m_pendingResponses.emplace(resID, std::move(promise));
-            }
+                std::promise<ErrorCode> promise;
+                std::future<ErrorCode> future = promise.get_future();
+                {
+                    std::lock_guard<std::mutex> lock(m_pendingMutex);
+                    m_pendingResponses.emplace(resID, std::move(promise));
+                }
 
-            auto bodySize = static_cast<std::uint32_t>(batchReq.EstimateBufferSize());
-            packet.Header().m_bodyLength = bodySize;
-            packet.AllocateBuffer(bodySize);
-            batchReq.Write(packet.Body());
-            packet.Header().WriteBuffer(packet.HeaderBuffer());
+                auto bodySize = static_cast<std::uint32_t>(batchReq.EstimateBufferSize());
+                packet.Header().m_bodyLength = bodySize;
+                packet.AllocateBuffer(bodySize);
+                batchReq.Write(packet.Body());
+                // Move items back after serialization so they're available for retry
+                items = std::move(batchReq.m_items);
+                packet.Header().WriteBuffer(packet.HeaderBuffer());
 
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Debug,
-                "PostingRouter: Sending batch of %u appends to node %d (resID=%u, bodySize=%u)\n",
-                batchReq.m_count, targetNodeIndex, resID, bodySize);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Debug,
+                    "PostingRouter: Sending batch of %u appends to node %d (resID=%u, bodySize=%u, attempt=%d)\n",
+                    batchReq.m_count, targetNodeIndex, resID, bodySize, attempt + 1);
 
-            m_client->SendPacket(connID, std::move(packet),
-                [resID, this](bool success) {
-                    if (!success) {
-                        std::lock_guard<std::mutex> lock(m_pendingMutex);
-                        auto it = m_pendingResponses.find(resID);
-                        if (it != m_pendingResponses.end()) {
-                            it->second.set_value(ErrorCode::Fail);
-                            m_pendingResponses.erase(it);
+                m_client->SendPacket(connID, std::move(packet),
+                    [resID, this](bool success) {
+                        if (!success) {
+                            std::lock_guard<std::mutex> lock(m_pendingMutex);
+                            auto it = m_pendingResponses.find(resID);
+                            if (it != m_pendingResponses.end()) {
+                                it->second.set_value(ErrorCode::Fail);
+                                m_pendingResponses.erase(it);
+                            }
                         }
-                    }
-                });
+                    });
 
-            auto status = future.wait_for(std::chrono::seconds(60));
-            if (status == std::future_status::timeout) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: Timeout waiting for batch append response from node %d\n",
-                    targetNodeIndex);
-                std::lock_guard<std::mutex> lock(m_pendingMutex);
-                m_pendingResponses.erase(resID);
-                return ErrorCode::Fail;
+                auto status = future.wait_for(std::chrono::seconds(60));
+                if (status == std::future_status::timeout) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                        "PostingRouter: Timeout waiting for batch append response from node %d\n",
+                        targetNodeIndex);
+                    std::lock_guard<std::mutex> lock(m_pendingMutex);
+                    m_pendingResponses.erase(resID);
+                    InvalidatePeerConnection(targetNodeIndex);
+                    if (attempt == 0) continue; // retry
+                    return ErrorCode::Fail;
+                }
+
+                ErrorCode result = future.get();
+                if (result == ErrorCode::Success) return ErrorCode::Success;
+
+                // Send failed — invalidate connection and retry
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "PostingRouter: Batch append to node %d failed (attempt %d), reconnecting...\n",
+                    targetNodeIndex, attempt + 1);
+                InvalidatePeerConnection(targetNodeIndex);
             }
-
-            return future.get();
+            return ErrorCode::Fail;
         }
 
     private:
@@ -690,6 +712,12 @@ namespace SPTAG::SPANN {
                 return m_peerConnections[nodeIndex];
             }
             return Socket::c_invalidConnectionID;
+        }
+
+        /// Invalidate a cached peer connection so the next GetPeerConnection reconnects.
+        void InvalidatePeerConnection(int nodeIndex) {
+            std::lock_guard<std::mutex> lock(m_connMutex);
+            m_peerConnections[nodeIndex] = Socket::c_invalidConnectionID;
         }
 
         /// Handle an incoming AppendRequest from a peer node.
@@ -1133,8 +1161,9 @@ namespace SPTAG::SPANN {
         HeadSyncCallback m_headSyncCallback;
 
         // Batched remote append queue (queue items from multiple AddIndex calls, flush once)
-        std::mutex m_appendQueueMutex;
+        mutable std::mutex m_appendQueueMutex;
         std::unordered_map<int, std::vector<RemoteAppendRequest>> m_appendQueue;
+        std::atomic<size_t> m_remoteQueueSize{0};
 
         // Routing statistics
         struct RouteStats {
@@ -1150,6 +1179,12 @@ namespace SPTAG::SPANN {
         void QueueRemoteAppend(int nodeIndex, RemoteAppendRequest req) {
             std::lock_guard<std::mutex> lock(m_appendQueueMutex);
             m_appendQueue[nodeIndex].push_back(std::move(req));
+            m_remoteQueueSize.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        /// Get total number of queued remote appends (lock-free).
+        size_t GetRemoteQueueSize() const {
+            return m_remoteQueueSize.load(std::memory_order_relaxed);
         }
 
         /// Flush all queued remote appends, sending one batch per target node in parallel.
@@ -1158,6 +1193,7 @@ namespace SPTAG::SPANN {
             {
                 std::lock_guard<std::mutex> lock(m_appendQueueMutex);
                 toSend.swap(m_appendQueue);
+                m_remoteQueueSize.store(0, std::memory_order_relaxed);
             }
             if (toSend.empty()) return ErrorCode::Success;
 

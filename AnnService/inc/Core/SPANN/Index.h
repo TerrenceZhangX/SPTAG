@@ -95,11 +95,27 @@ namespace SPTAG
                 }
             }
 
+            void AdoptRouter(VectorIndex* source) {
+                auto* srcSpann = dynamic_cast<Index*>(source);
+                if (!srcSpann) return;
+                if (!m_extraSearchers.empty() && m_extraSearchers[0] &&
+                    !srcSpann->m_extraSearchers.empty() && srcSpann->m_extraSearchers[0]) {
+                    m_extraSearchers[0]->AdoptRouter(srcSpann->m_extraSearchers[0].get());
+                }
+            }
+
             ErrorCode FlushRemoteAppends() override {
                 if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
                     return m_extraSearchers[0]->FlushRemoteAppends();
                 }
                 return ErrorCode::Success;
+            }
+
+            size_t GetRemoteQueueSize() const override {
+                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    return m_extraSearchers[0]->GetRemoteQueueSize();
+                }
+                return 0;
             }
 
             ErrorCode SendInsertBatch(int targetNode, const void* data, int startVID, int count, size_t dataSize) override {

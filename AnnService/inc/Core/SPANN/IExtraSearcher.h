@@ -345,7 +345,9 @@ namespace SPTAG {
             virtual void ForceCompaction() { return; }
 
             virtual void EnableRouter(Options& p_opt) { return; }
+            virtual void AdoptRouter(IExtraSearcher* source) { }
             virtual ErrorCode FlushRemoteAppends() { return ErrorCode::Success; }
+            virtual size_t GetRemoteQueueSize() const { return 0; }
             virtual ErrorCode SendInsertBatch(int targetNode, const void* data, int startVID, int count, size_t dataSize) { return ErrorCode::Undefined; }
             virtual void SetInsertCallback(std::function<ErrorCode(const std::string&, int, unsigned int)> cb) {}
             virtual int GetNumNodes() const { return 1; }

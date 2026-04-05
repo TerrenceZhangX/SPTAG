@@ -482,10 +482,8 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
         thread.join();
     }
 
-    // Wait for remote insert batches to complete
+    // Wait for remote insert batches to complete, then final flush
     for (auto& t : remoteInsertThreads) t.join();
-
-    // Flush any pending remote appends accumulated across all insert threads
     p_index->FlushRemoteAppends();
 
     auto insertDone = std::chrono::high_resolution_clock::now();
@@ -647,7 +645,8 @@ ErrorCode QuantizeVectors(const std::shared_ptr<COMMON::IQuantizer>& quantizer,
 
 /// Apply distributed routing parameters to a loaded index and enable PostingRouter.
 void ApplyRouterParams(std::shared_ptr<VectorIndex>& index,
-                       const std::map<std::string, std::string>& ssdOverrides)
+                       const std::map<std::string, std::string>& ssdOverrides,
+                       bool skipEnable = false)
 {
     // IniReader lowercases all keys, so look up with lowercase keys
     static const std::vector<std::pair<std::string, std::string>> routerKeys = {
@@ -664,7 +663,7 @@ void ApplyRouterParams(std::shared_ptr<VectorIndex>& index,
             if (lowerKey == "routerenabled" && it->second == "true") hasRouter = true;
         }
     }
-    if (hasRouter) {
+    if (hasRouter && !skipEnable) {
         index->EnableRouter();
     }
 }
@@ -850,6 +849,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
             {
                 prevPath = indexPath + "_" + std::to_string(resume);
             }
+            std::shared_ptr<VectorIndex> routerHolder; // keeps PostingRouter alive across batches
             for (int iter = resume + 1; iter < batches; iter++)
             {
                 jsonFile << "      \"batch_" << iter + 1 << "\": {\n";
@@ -890,8 +890,14 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                     cloneIndex->SetParameter("Dim", std::to_string(quantizer->GetNumSubvectors()).c_str(), "Base");
                 }
 
-                // Enable distributed routing on the cloned index
-                ApplyRouterParams(cloneIndex, ssdOverrides);
+                // Reuse PostingRouter from previous batch if available, otherwise create new
+                if (routerHolder) {
+                    ApplyRouterParams(cloneIndex, ssdOverrides, /*skipEnable=*/true);
+                    cloneIndex->AdoptRouter(routerHolder.get());
+                    routerHolder = nullptr;
+                } else {
+                    ApplyRouterParams(cloneIndex, ssdOverrides);
+                }
                 cloneIndex->SetHeadSyncCallback();
                 
                 ErrorCode cloneret = cloneIndex->Check();
@@ -1016,6 +1022,10 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                 else
                     jsonFile << "      }\n";
 
+                // Keep PostingRouter alive for the next batch
+                if (iter != batches - 1) {
+                    routerHolder = cloneIndex;
+                }
                 cloneIndex = nullptr;
                 prevPath = clonePath;
                 jsonFile.flush();

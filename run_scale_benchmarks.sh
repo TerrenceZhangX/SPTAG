@@ -16,7 +16,7 @@ LOGDIR=benchmark_logs
 mkdir -p "$LOGDIR"
 
 # Cleanup on script exit/interrupt to prevent orphan processes
-trap 'echo ""; echo "Interrupted, cleaning up..."; pkill -9 -f "SPTAGTest.*WorkerNode" 2>/dev/null; pkill -9 -f "SPTAGTest.*BenchmarkFromConfig" 2>/dev/null; exit 1' INT TERM
+trap 'echo ""; echo "Interrupted, cleaning up..."; pkill -9 -f "SPTAGTest.*WorkerNode" 2>/dev/null; pkill -9 -f "SPTAGTest.*BenchmarkFromConfig" 2>/dev/null; cd "$TIKV_DIR" && docker compose down 2>/dev/null; exit 1' INT TERM
 
 # ─── Usage ───
 if [ $# -eq 0 ]; then
@@ -226,7 +226,7 @@ run_2node() {
 
     echo "${SCALE} 2-node build done: $(date)"
     # Only balance leaders to the 2 stores mapped by RouterNodeStores
-    rebalance_tikv_leaders 127.0.0.1:20161 127.0.0.1:20162
+    rebalance_tikv_leaders
 
     # Copy head index to n1
     echo "Copying head index to n1..."
@@ -378,6 +378,11 @@ echo "=========================================="
 for SCALE in "${SCALES[@]}"; do
     run_scale "$SCALE"
 done
+
+echo ""
+echo "Shutting down TiKV cluster..."
+cd "$TIKV_DIR" && docker compose down 2>&1
+cd "$SPTAG_DIR"
 
 echo ""
 echo "=========================================="
