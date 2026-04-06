@@ -15,17 +15,25 @@ reconnect on send failure). Clean TiKV restart per scale/node-count phase.
 
 ## 1. Insert Throughput Summary
 
-### 100K (base 99,000, insert 100/batch)
+### 100K (base 99,000, insert 100/batch, NumThreads=8, sub-partitioned stores)
 
 | Nodes | Avg (vec/s) | Avg Speedup | Max (vec/s) | Max Speedup | B1 | B2 | B3 | B4 | B5 | B6 | B7 | B8 | B9 | B10 |
 |-------|-------------|-------------|-------------|-------------|------|------|------|------|------|------|------|------|------|------|
-| 1 | **93.9** | 1.00× | 107.2 | 1.00× | 91.0 | 85.3 | 102.5 | 94.9 | 95.5 | 94.1 | 107.2 | 84.9 | 94.2 | 89.4 |
-| 2 | **185.3** | 1.97× | 240.1 | 2.24× | 194.8 | 224.8 | 240.1 | 158.2 | 153.5 | 207.8 | 194.1 | 181.6 | 159.4 | 138.1 |
-| 3 | **223.2** | 2.38× | 266.4 | 2.49× | 238.5 | 125.1 | 264.2 | 191.7 | 266.3 | 230.2 | 256.0 | 266.4 | 206.0 | 187.2 |
+| 1 | **98.1** | 1.00× | 122.8 | 1.00× | 104.9 | 98.7 | 100.1 | 111.8 | 89.5 | 122.8 | 105.0 | 85.0 | 83.2 | 80.4 |
+| 2 | **192.1** | 1.96× | 228.2 | 1.86× | 179.8 | 209.3 | 206.4 | 223.5 | 154.4 | 94.2 | 226.8 | 188.0 | 210.0 | 228.2 |
+| 3 | **274.9** | 2.80× | 339.2 | 2.76× | 130.3 | 286.4 | 339.2 | 302.1 | 304.2 | 232.9 | 305.4 | 255.8 | 320.8 | 271.7 |
+| 6 | **302.5** | 3.08× | 380.4 | 3.10× | 290.3 | 380.4 | 373.3 | 296.5 | 300.6 | 307.0 | 263.6 | 211.3 | 316.0 | 285.6 |
 
-### 1M (base 990,000, insert 1,000/batch) — *running, pending update*
+### 1M (base 990,000, insert 1,000/batch, NumThreads=8, sub-partitioned stores)
 
-### 10M (base 9,900,000, insert 10,000/batch) — *pending re-run with fix*
+| Nodes | Avg (vec/s) | Avg Speedup | Max (vec/s) | Max Speedup | B1 | B2 | B3 | B4 | B5 | B6 | B7 | B8 | B9 | B10 |
+|-------|-------------|-------------|-------------|-------------|------|------|------|------|------|------|------|------|------|------|
+| 1 | **140.1** | 1.00× | 160.3 | 1.00× | 142.5 | 146.5 | 150.3 | 142.8 | 148.7 | 149.9 | 110.9 | 151.2 | 98.3 | 160.3 |
+| 2 | **101.9** | 0.73× | 111.3 | 0.69× | 98.9 | 111.3 | 106.9 | 81.5 | 99.2 | 106.1 | 101.6 | 105.8 | 105.6 | 102.2 |
+| 3 | **149.4** | 1.07× | 173.4 | 1.08× | 127.0 | 131.7 | 142.8 | 147.8 | 168.1 | 173.4 | 140.3 | 149.7 | 160.7 | 152.0 |
+| 6 | **135.6** | 0.97× | 171.3 | 1.07× | 171.3 | 147.8 | 141.7 | 125.0 | 147.0 | 139.2 | 145.3 | 75.6 | 134.5 | 128.5 |
+
+### 10M (base 9,900,000, insert 10,000/batch) — *pending*
 
 ---
 
@@ -33,126 +41,138 @@ reconnect on send failure). Clean TiKV restart per scale/node-count phase.
 
 ### Query Before Insert
 
-| | 1-node | | 2-node | | 3-node | |
-|---|--------|----------|--------|----------|--------|----------|
-| **Metric** | **Cold** | **Warm** | **Cold** | **Warm** | **Cold** | **Warm** |
-| QPS | 568.8 | 593.5 | 370.6 | 444.1 | 502.3 | 665.5 |
-| Mean (ms) | 27.5 | 26.4 | 41.5 | 34.4 | 30.5 | 22.8 |
-| P50 (ms) | 27.2 | 26.0 | 41.0 | 35.2 | 29.4 | 22.5 |
-| P99 (ms) | 35.4 | 37.1 | 64.7 | 44.1 | 50.2 | 33.4 |
-| Recall@5 | 0.665 | 0.665 | 0.662 | 0.662 | 0.671 | 0.671 |
+| | 1-node | | 2-node | | 3-node | | 6-node | |
+|---|--------|----------|--------|----------|--------|----------|--------|----------|
+| **Metric** | **Cold** | **Warm** | **Cold** | **Warm** | **Cold** | **Warm** | **Cold** | **Warm** |
+| QPS | 568.8 | 593.5 | 370.6 | 444.1 | 502.3 | 665.5 | 562.0 | 573.0 |
+| Mean (ms) | 27.5 | 26.4 | 41.5 | 34.4 | 30.5 | 22.8 | 14.0 | 13.4 |
+| Recall@5 | 0.665 | 0.665 | 0.662 | 0.662 | 0.671 | 0.671 | 0.682 | 0.682 |
 
 ### Insert Throughput Comparison
 
-| Batch | 1-node (vec/s) | 2-node (vec/s) | 2n Speedup | 3-node (vec/s) | 3n Speedup |
-|-------|----------------|----------------|------------|----------------|------------|
-| 1 | 91.0 | 194.8 | 2.14× | 238.5 | 2.62× |
-| 2 | 85.3 | 224.8 | 2.64× | 125.1 | 1.47× |
-| 3 | 102.5 | 240.1 | 2.34× | 264.2 | 2.58× |
-| 4 | 94.9 | 158.2 | 1.67× | 191.7 | 2.02× |
-| 5 | 95.5 | 153.5 | 1.61× | 266.3 | 2.79× |
-| 6 | 94.1 | 207.8 | 2.21× | 230.2 | 2.45× |
-| 7 | 107.2 | 194.1 | 1.81× | 256.0 | 2.39× |
-| 8 | 84.9 | 181.6 | 2.14× | 266.4 | 3.14× |
-| 9 | 94.2 | 159.4 | 1.69× | 206.0 | 2.19× |
-| 10 | 89.4 | 138.1 | 1.54× | 187.2 | 2.09× |
-| **Avg** | **93.9** | **185.3** | **1.97×** | **223.2** | **2.38×** |
+| Batch | 1-node | 2-node | 2n× | 3-node | 3n× | 6-node | 6n× |
+|-------|--------|--------|-----|--------|-----|--------|-----|
+| 1 | 104.9 | 179.8 | 1.71 | 130.3 | 1.24 | 290.3 | 2.77 |
+| 2 | 98.7 | 209.3 | 2.12 | 286.4 | 2.90 | 380.4 | 3.85 |
+| 3 | 100.1 | 206.4 | 2.06 | 339.2 | 3.39 | 373.3 | 3.73 |
+| 4 | 111.8 | 223.5 | 2.00 | 302.1 | 2.70 | 296.5 | 2.65 |
+| 5 | 89.5 | 154.4 | 1.73 | 304.2 | 3.40 | 300.6 | 3.36 |
+| 6 | 122.8 | 94.2 | 0.77 | 232.9 | 1.90 | 307.0 | 2.50 |
+| 7 | 105.0 | 226.8 | 2.16 | 305.4 | 2.91 | 263.6 | 2.51 |
+| 8 | 85.0 | 188.0 | 2.21 | 255.8 | 3.01 | 211.3 | 2.49 |
+| 9 | 83.2 | 210.0 | 2.52 | 320.8 | 3.86 | 316.0 | 3.80 |
+| 10 | 80.4 | 228.2 | 2.84 | 271.7 | 3.38 | 285.6 | 3.55 |
+| **Avg** | **98.1** | **192.1** | **1.96** | **274.9** | **2.80** | **302.5** | **3.08** |
 
-### Search After Insert (per batch, warm cache)
+### Search After Insert (batch 10, warm cache)
 
-| Batch | 1n QPS | 1n P50 | 1n P99 | 1n Recall | 2n QPS | 2n P50 | 2n P99 | 2n Recall | 3n QPS | 3n P50 | 3n P99 | 3n Recall |
-|-------|--------|--------|--------|-----------|--------|--------|--------|-----------|--------|--------|--------|-----------|
-| 1 | 607.2 | 25.5 | 40.2 | 0.667 | 626.6 | 24.3 | 37.7 | 0.664 | 835.7 | 18.4 | 27.7 | 0.671 |
-| 2 | 607.1 | 25.2 | 36.6 | 0.665 | 645.8 | 24.1 | 38.3 | 0.664 | 878.1 | 17.5 | 27.3 | 0.671 |
-| 3 | 623.5 | 24.8 | 34.1 | 0.665 | 650.2 | 24.5 | 34.5 | 0.663 | 866.5 | 17.8 | 27.5 | 0.671 |
-| 4 | 530.0 | 28.6 | 40.5 | 0.665 | 593.0 | 25.9 | 37.9 | 0.661 | 898.5 | 17.3 | 26.4 | 0.671 |
-| 5 | 577.9 | 26.7 | 41.4 | 0.667 | 397.4 | 39.2 | 55.9 | 0.661 | 529.3 | 20.2 | 176.9 | 0.672 |
-| 6 | 535.0 | 28.8 | 40.1 | 0.668 | 332.0 | 47.5 | 65.3 | 0.662 | 571.5 | 26.5 | 45.3 | 0.673 |
-| 7 | 496.8 | 32.1 | 44.7 | 0.667 | 367.4 | 42.7 | 64.3 | 0.661 | 492.7 | 31.1 | 46.9 | 0.673 |
-| 8 | 473.0 | 33.7 | 40.7 | 0.666 | 337.1 | 44.0 | 66.7 | 0.660 | 534.7 | 28.2 | 51.3 | 0.673 |
-| 9 | 435.0 | 34.8 | 55.6 | 0.667 | 298.7 | 54.3 | 68.8 | 0.658 | 695.9 | 21.9 | 35.3 | 0.672 |
-| 10 | 420.1 | 36.1 | 55.6 | 0.668 | 318.6 | 48.8 | 68.1 | 0.658 | 436.4 | 32.3 | 94.7 | 0.672 |
-
-### Search After Insert (per batch, cold cache)
-
-| Batch | 1n QPS | 1n P50 | 1n P99 | 1n Recall | 2n QPS | 2n P50 | 2n P99 | 2n Recall | 3n QPS | 3n P50 | 3n P99 | 3n Recall |
-|-------|--------|--------|--------|-----------|--------|--------|--------|-----------|--------|--------|--------|-----------|
-| 1 | 541.5 | 28.2 | 41.5 | 0.667 | 654.7 | 23.2 | 38.9 | 0.664 | 800.6 | 19.1 | 33.1 | 0.671 |
-| 2 | 639.1 | 23.8 | 38.9 | 0.665 | 631.8 | 24.3 | 34.9 | 0.664 | 884.9 | 17.4 | 24.8 | 0.671 |
-| 3 | 584.7 | 26.1 | 42.9 | 0.665 | 667.6 | 23.1 | 42.2 | 0.663 | 897.6 | 17.1 | 29.5 | 0.671 |
-| 4 | 554.1 | 27.6 | 46.3 | 0.665 | 631.3 | 23.5 | 65.8 | 0.661 | 868.8 | 17.8 | 25.2 | 0.671 |
-| 5 | 598.1 | 24.9 | 46.0 | 0.667 | 463.2 | 33.4 | 45.5 | 0.661 | 897.5 | 17.2 | 26.2 | 0.672 |
-| 6 | 570.8 | 26.8 | 38.3 | 0.668 | 351.5 | 43.6 | 63.9 | 0.662 | 589.0 | 26.4 | 35.7 | 0.673 |
-| 7 | 528.7 | 28.7 | 40.9 | 0.667 | 363.3 | 41.8 | 58.0 | 0.661 | 561.7 | 26.4 | 46.6 | 0.673 |
-| 8 | 569.2 | 27.7 | 34.8 | 0.666 | 362.3 | 42.6 | 62.2 | 0.660 | 587.6 | 25.7 | 65.1 | 0.673 |
-| 9 | 457.6 | 33.0 | 54.5 | 0.667 | 307.0 | 50.4 | 76.6 | 0.658 | 616.4 | 23.9 | 43.1 | 0.672 |
-| 10 | 466.6 | 32.8 | 50.3 | 0.668 | 301.5 | 51.1 | 76.2 | 0.658 | 616.8 | 23.8 | 43.8 | 0.672 |
+| | 1-node | 2-node | 3-node | 6-node |
+|---|--------|--------|--------|--------|
+| QPS | 420.1 | 318.6 | 436.4 | 354.7 |
+| P50 (ms) | 36.1 | 48.8 | 32.3 | 22.0 |
+| P99 (ms) | 55.6 | 68.1 | 94.7 | 28.6 |
+| Recall@5 | 0.668 | 0.658 | 0.672 | 0.680 |
 
 ---
 
-## 3. 1M Detail — *pending re-run with AdoptRouter fix*
+## 3. 1M Detail
 
-## 4. 10M Detail — *pending re-run with AdoptRouter fix*
+### Query Before Insert
+
+| | 1-node | | 2-node | | 3-node | | 6-node | |
+|---|--------|----------|--------|----------|--------|----------|--------|----------|
+| **Metric** | **Cold** | **Warm** | **Cold** | **Warm** | **Cold** | **Warm** | **Cold** | **Warm** |
+| QPS | 445.4 | 471.1 | 298.7 | 338.1 | 375.7 | 409.8 | 324.0 | 363.8 |
+| Mean (ms) | 17.5 | 16.6 | 26.4 | 24.0 | 20.7 | 19.7 | 24.6 | 22.1 |
+| Recall@5 | 0.448 | 0.448 | 0.438 | 0.438 | 0.426 | 0.426 | 0.446 | 0.446 |
+
+### Insert Throughput Comparison
+
+| Batch | 1-node | 2-node | 2n× | 3-node | 3n× | 6-node | 6n× |
+|-------|--------|--------|-----|--------|-----|--------|-----|
+| 1 | 142.5 | 98.9 | 0.69 | 127.0 | 0.89 | 171.3 | 1.20 |
+| 2 | 146.5 | 111.3 | 0.76 | 131.7 | 0.90 | 147.8 | 1.01 |
+| 3 | 150.3 | 106.9 | 0.71 | 142.8 | 0.95 | 141.7 | 0.94 |
+| 4 | 142.8 | 81.5 | 0.57 | 147.8 | 1.04 | 125.0 | 0.88 |
+| 5 | 148.7 | 99.2 | 0.67 | 168.1 | 1.13 | 147.0 | 0.99 |
+| 6 | 149.9 | 106.1 | 0.71 | 173.4 | 1.16 | 139.2 | 0.93 |
+| 7 | 110.9 | 101.6 | 0.92 | 140.3 | 1.27 | 145.3 | 1.31 |
+| 8 | 151.2 | 105.8 | 0.70 | 149.7 | 0.99 | 75.6 | 0.50 |
+| 9 | 98.3 | 105.6 | 1.07 | 160.7 | 1.63 | 134.5 | 1.37 |
+| 10 | 160.3 | 102.2 | 0.64 | 152.0 | 0.95 | 128.5 | 0.80 |
+| **Avg** | **140.1** | **101.9** | **0.73** | **149.4** | **1.07** | **135.6** | **0.97** |
+
+### 1M Routing Statistics (per batch, driver node)
+
+| Config | Local Appends | Remote Appends | Remote % |
+|--------|--------------|----------------|----------|
+| 3-node | ~775 | ~1740 | 69% |
+| 6-node | ~195 | ~1045 | 84% |
+
+## 4. 10M Detail — *pending*
 
 ---
 
 ## 5. Key Observations
 
-1. **100k: ~2× scaling** — 1.97× avg at 2-node, 2.38× at 3-node. The previous run
-   showed inflated 3-node numbers (2.99×) because the PostingRouter reconnection bug
-   silently dropped ~50% of worker→driver remote appends from batch 2 onwards. With
-   the `AdoptRouter` fix, all appends are properly delivered, giving true scaling numbers.
+1. **100k scales well**: With sub-partitioned store ownership, 100k achieves 1.96× (2-node),
+   2.80× (3-node), and 3.08× (6-node). At this scale the insert batch (100 vectors) is
+   small enough that compute dominates over TiKV I/O, so distributing compute across nodes
+   provides near-linear scaling.
 
-2. **2-node store imbalance**: Round-robin with 3 stores → 2 nodes gives node 0 two
-   stores (0, 2) and node 1 one store (1). Node 1 must send ~2/3 of its appends
-   remotely, while node 0 sends only ~1/3. This asymmetry means node 1 is bottlenecked
-   on the remote flush RPC, dragging overall throughput below the ideal 2×.
-   Additionally, `HandleBatchAppendRequest` on the receiving end spawns 16 threads for
-   TiKV writes — when these arrive while the receiver is still doing its own AddIndex,
-   32 threads contend on TiKV simultaneously.
+2. **1M does NOT scale**: Multi-node configurations show no throughput improvement over
+   1-node (140 vec/s). 2-node drops to 102 vec/s (0.73×), 3-node is flat at 149 vec/s
+   (1.07×), and 6-node at 136 vec/s (0.97×). The distributed overhead negates any
+   parallelism benefit at this scale.
 
-3. **3-node sub-linear scaling**: With 3 stores perfectly mapped 1:1 to 3 nodes, each
-   node owns 1/3 of heads (local append) but each vector's ~8 replica heads still span
-   all 3 stores. Each node must send ~2/3 of its appends to remote nodes (double-hop
-   problem). This overhead limits 3-node scaling to ~2.4× rather than the theoretical 3×.
+3. **1M bottleneck analysis**: Each vector has ~7.4 replica heads spread across all 3
+   TiKV stores. Total Append work (~7400 per batch) is the same regardless of node count.
+   Distributing across N nodes means each node does 1/N of the head search but then sends
+   (N-1)/N of its appends as RPCs. At 6-node, 84% of appends are remote. The RPC
+   overhead (serialization, TCP, HandleBatchAppendRequest spawning 16 threads per incoming
+   batch) adds latency without reducing total work. Workers also call FlushRemoteAppends
+   which sends RPCs back to other nodes, creating cross-node synchronization barriers.
 
-4. **Query performance stable**: Recall values consistent across node counts (±0.01).
-   3-node shows better search QPS (800–900) than 1-node (450–600) due to TiKV cache
-   warming from the build phase across all stores.
+4. **2-node store imbalance**: Round-robin 3 stores → 2 nodes gives uneven distribution.
+   With sub-partitioning, each store maps to both nodes (headID % 2), but the overhead of
+   routing 2/3 of appends remotely still dominates. This effect is worse at 1M where each
+   RPC carries ~500+ items requiring TiKV writes.
 
-5. **Scaling strategy**: To achieve good store-to-node balance, the number of compute
-   nodes should be a multiple of the number of TiKV stores (3). Testing with 1, 3, 6
-   nodes avoids the imbalance problem. 2-node results are retained as a reference for
-   the imbalance effect.
+5. **Query performance**: Recall is ~0.45 at 1M (vs 0.67 at 100k) due to SearchK=TopK=5
+   being too low for the larger index. Query QPS is lower at multi-node configs because
+   the build phase runs single-node (no routing), so TiKV cache is less warm.
+
+6. **Scaling requires reducing remote append ratio**: The fundamental challenge is that
+   each vector's replica heads span all TiKV stores. To achieve scaling, the system would
+   need to either (a) co-locate replicas on fewer stores, (b) pipeline RPC with compute
+   to hide latency, or (c) use a lightweight append handler that avoids spawning threads.
 
 ---
 
 ## 6. Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  Driver (Node 0)                                         │
-│  ┌─────────────────────────────┐                         │
-│  │ InsertVectors()             │                         │
-│  │  ├─ partition vectors       │                         │
-│  │  ├─ local: head search +    │                         │
-│  │  │         AddIndex (16 thr)│                         │
-│  │  └─ remote: SendInsertBatch │                         │
-│  └────────────┬────────────────┘                         │
-│               │ TCP (InsertBatchRequest)                  │
-│  ┌────────────▼────────────────┐  ┌────────────────────┐ │
-│  │ Worker 1                    │  │ Worker 2           │ │
-│  │  head search + AddIndex     │  │  head search +     │ │
-│  │  (16 threads)               │  │  AddIndex (16 thr) │ │
-│  └──────┬──────────────────────┘  └──────┬─────────────┘ │
-│         │  HeadSyncRequest (broadcast)   │               │
-│         └────────────────────────────────┘               │
-│                         │                                │
-│  ┌──────────────────────▼──────────────────────────────┐ │
-│  │              Shared TiKV Cluster                     │ │
-│  │  Store 1 (20161)  Store 2 (20162)  Store 3 (20163)  │ │
-│  └─────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  Driver (Node 0)              Sub-partitioned ownership:     │
+│  ┌─────────────────────────┐  Store 0 → nodes {0, 3}        │
+│  │ InsertVectors()         │  Store 1 → nodes {1, 4}        │
+│  │  ├─ partition vectors   │  Store 2 → nodes {2, 5}        │
+│  │  ├─ local: head search  │  headID % nodesPerStore picks   │
+│  │  │   + AddIndex (8 thr) │  the owner within a store       │
+│  │  └─ remote: SendInsert  │                                 │
+│  │     Batch to workers    │                                 │
+│  └────────────┬────────────┘                                 │
+│               │ TCP (InsertBatchRequest)                      │
+│  ┌────────────▼────────────────────────────────────────────┐ │
+│  │ Workers 1-5: head search + AddIndex + FlushRemoteAppends│ │
+│  │ Each worker routes appends to the correct owner node    │ │
+│  └─────────────────────────┬───────────────────────────────┘ │
+│                            │                                  │
+│  ┌─────────────────────────▼──────────────────────────────┐  │
+│  │              Shared TiKV Cluster                        │  │
+│  │  Store 1 (20161)  Store 2 (20162)  Store 3 (20163)     │  │
+│  └────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ---
