@@ -64,18 +64,17 @@ namespace SPTAG::SPANN {
         private:
             ExtraDynamicSearcher<ValueType>* m_extraIndex;
             SizeType m_headID;
-            bool m_disableReassign;
             std::function<void()> m_callback;
         public:
-            MergeAsyncJob(ExtraDynamicSearcher<ValueType>* extraIndex, SizeType headID, bool disableReassign, std::function<void()> p_callback)
-                : m_extraIndex(extraIndex), m_headID(headID), m_disableReassign(disableReassign), m_callback(std::move(p_callback)) {}
+            MergeAsyncJob(ExtraDynamicSearcher<ValueType>* extraIndex, SizeType headID, std::function<void()> p_callback)
+                : m_extraIndex(extraIndex), m_headID(headID), m_callback(std::move(p_callback)) {}
 
             ~MergeAsyncJob() {}
             inline void exec(IAbortOperation* p_abort) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Cannot support job.exec(abort)!\n");
             }
             inline void exec(void* p_workSpace, IAbortOperation* p_abort) override {
-                ErrorCode ret = m_extraIndex->MergePostings((ExtraWorkSpace*)p_workSpace, m_headID, !m_disableReassign);
+                ErrorCode ret = m_extraIndex->MergePostings((ExtraWorkSpace*)p_workSpace, m_headID);
                 if (ret != ErrorCode::Success)
                     m_extraIndex->m_asyncStatus = ret;
                 if (m_callback != nullptr) {
@@ -89,18 +88,17 @@ namespace SPTAG::SPANN {
         private:
             ExtraDynamicSearcher<ValueType>* m_extraIndex;
             SizeType m_headID;
-            bool m_disableReassign;
             std::function<void()> m_callback;
         public:
-            SplitAsyncJob(ExtraDynamicSearcher<ValueType>* extraIndex, SizeType headID,  bool disableReassign, std::function<void()> p_callback)
-                : m_extraIndex(extraIndex), m_headID(headID), m_disableReassign(disableReassign), m_callback(std::move(p_callback)) {}
+            SplitAsyncJob(ExtraDynamicSearcher<ValueType>* extraIndex, SizeType headID, std::function<void()> p_callback)
+                : m_extraIndex(extraIndex), m_headID(headID), m_callback(std::move(p_callback)) {}
 
             ~SplitAsyncJob() {}
             inline void exec(IAbortOperation* p_abort) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Cannot support job.exec(abort)!\n");
             }
             inline void exec(void* p_workSpace, IAbortOperation* p_abort) override {
-                ErrorCode ret = m_extraIndex->Split((ExtraWorkSpace*)p_workSpace, m_headID, !m_disableReassign);
+                ErrorCode ret = m_extraIndex->Split((ExtraWorkSpace*)p_workSpace, m_headID);
                 if (ret != ErrorCode::Success)
                     m_extraIndex->m_asyncStatus = ret;
                 if (m_callback != nullptr) {
@@ -425,7 +423,7 @@ namespace SPTAG::SPANN {
             return ErrorCode::Success;
         }
         
-        ErrorCode Split(ExtraWorkSpace* p_exWorkSpace, const SizeType headID, bool reassign = false, bool requirelock = true)
+        ErrorCode Split(ExtraWorkSpace* p_exWorkSpace, const SizeType headID, bool requirelock = true)
         {
             auto splitBegin = std::chrono::high_resolution_clock::now();
             std::vector<SizeType> newHeadsID;
@@ -742,7 +740,7 @@ namespace SPTAG::SPANN {
             }
             
             m_stat.m_splitNum++;
-            if (reassign) {
+            if (!m_opt->m_disableReassign) {
                 auto reassignScanBegin = std::chrono::high_resolution_clock::now();
 
                 CollectReAssign(p_exWorkSpace, headID, headVec, newPostingLists, newHeadsID, newHeadsVec, theSameHead);
@@ -758,7 +756,7 @@ namespace SPTAG::SPANN {
             return ErrorCode::Success;
         }
 
-        ErrorCode MergePostings(ExtraWorkSpace *p_exWorkSpace, SizeType headID, bool reassign = false)
+        ErrorCode MergePostings(ExtraWorkSpace *p_exWorkSpace, SizeType headID)
         {
             std::unique_lock<std::shared_timed_mutex> lock(m_rwLocks[headID]);
 
@@ -850,7 +848,7 @@ namespace SPTAG::SPANN {
                     // SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"Locked: %d, to be lock: %d\n", headID, queryResult->VID);
                     if (m_rwLocks.hash_func(queryResult->VID) != m_rwLocks.hash_func(headID)) {
                         if (!anotherLock.try_lock()) {
-                            auto* curJob = new MergeAsyncJob(this, headID, reassign, nullptr);
+                            auto* curJob = new MergeAsyncJob(this, headID, nullptr);
                             m_splitThreadPool->add(curJob);
                             return ErrorCode::Success;
                         }
@@ -929,7 +927,7 @@ namespace SPTAG::SPANN {
                 // SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"Release: %d, Release: %d\n", headID, queryResult->VID);
                 lock.unlock();
 
-                if (reassign) 
+                if (!m_opt->m_disableReassign) 
                 {
                     postingP = reinterpret_cast<uint8_t*>(deletedPostingList->data());
                     for (int j = 0; j < deletedLength; j++) {
@@ -994,7 +992,7 @@ namespace SPTAG::SPANN {
                 }
             }
 
-            auto* curJob = new SplitAsyncJob(this, headID, m_opt->m_disableReassign, p_callback);
+            auto* curJob = new SplitAsyncJob(this, headID, p_callback);
             m_splitThreadPool->add(curJob);
             // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Add to thread pool\n");
         }
@@ -1011,7 +1009,7 @@ namespace SPTAG::SPANN {
                 }
             }
 
-            auto* curJob = new MergeAsyncJob(this, headID, m_opt->m_disableReassign, p_callback);
+            auto* curJob = new MergeAsyncJob(this, headID, p_callback);
             m_splitThreadPool->add(curJob);
         }
 
@@ -1247,7 +1245,7 @@ namespace SPTAG::SPANN {
                 }
                 if (postingSize + appendNum > (m_postingSizeLimit + m_bufferSizeLimit)) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "After appending, the number of vectors in %lld exceeds the postingsize + buffersize (%d + %d)! Do split now...\n", (std::int64_t)headID, m_postingSizeLimit, m_bufferSizeLimit);
-                    ret = Split(p_exWorkSpace, headID, !m_opt->m_disableReassign, false);
+                    ret = Split(p_exWorkSpace, headID, false);
                     if (ret != ErrorCode::Success)
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split %lld failed!\n", (std::int64_t)headID);
                     lock.unlock();
@@ -1275,7 +1273,7 @@ namespace SPTAG::SPANN {
                 //     GetDBStats();
                 // }
                 if (!reassignThreshold) SplitAsync(headID, postingSize);
-                else Split(p_exWorkSpace, headID, !m_opt->m_disableReassign);
+                else Split(p_exWorkSpace, headID);
             }
             auto appendEnd = std::chrono::high_resolution_clock::now();
             double elapsedMSeconds = std::chrono::duration_cast<std::chrono::microseconds>(appendEnd - appendBegin).count();
