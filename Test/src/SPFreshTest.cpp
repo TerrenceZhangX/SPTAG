@@ -333,9 +333,9 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
     // SSD-only mode: skip SelectHead and BuildHead, resume from specified layer
     if (ssdOnly)
     {
-        // For multi-layer builds, resume from layer 1 (skip layer 0, rebuild layer 1+ SSD only)
-        // For single-layer builds, resume from layer 0
-        int resumeLayer = (layers > 1) ? 1 : 0;
+        // Allow explicit ResumeLayer from config/overrides; otherwise default to layer 0
+        // (rebuild SSD for all layers, reusing existing head indexes)
+        int resumeLayer = 0;
         vecIndex->SetParameter("ResumeLayer", std::to_string(resumeLayer).c_str(), "BuildSSDIndex");
     }
 
@@ -726,7 +726,14 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     BOOST_TEST_MESSAGE("\n=== Building Index ===");
     if (rebuild || rebuildSsdOnly || !direxists(indexPath.c_str())) {
         if (!rebuildSsdOnly) {
-            std::filesystem::remove_all(indexPath);
+            if (direxists(indexPath.c_str())) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "Index directory '%s' already exists. Refusing to delete. "
+                    "Remove it manually or use RebuildSSDOnly=true to resume.\n",
+                    indexPath.c_str());
+                BOOST_FAIL("Index directory already exists: " + indexPath);
+                return;
+            }
         }
         auto buildstart = std::chrono::high_resolution_clock::now();
 
