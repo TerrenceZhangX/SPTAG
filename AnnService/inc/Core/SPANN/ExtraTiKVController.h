@@ -756,6 +756,10 @@ namespace SPTAG::SPANN
         mutable std::mutex m_storeMutex;
         std::unordered_map<std::string, std::shared_ptr<tikvpb::Tikv::Stub>> m_storeStubs;
 
+        // Store address cache: store_id -> address
+        mutable std::mutex m_storeAddrMutex;
+        std::unordered_map<uint64_t, std::string> m_storeAddrCache;
+
         // Region cache: maps a key prefix to (region_id, leader_store_addr)
         struct RegionInfo {
             uint64_t regionId;
@@ -949,9 +953,18 @@ namespace SPTAG::SPANN
             return false;
         }
 
-        // ---- PD: get store address by store ID (with retry + reconnect) ----
+        // ---- PD: get store address by store ID (with retry + reconnect + cache) ----
         std::string GetStoreAddress(uint64_t storeId) {
-            for (int attempt = 0; attempt < 5; attempt++) {
+            // Check cache first
+            {
+                std::lock_guard<std::mutex> lock(m_storeAddrMutex);
+                auto it = m_storeAddrCache.find(storeId);
+                if (it != m_storeAddrCache.end()) {
+                    return it->second;
+                }
+            }
+
+            for (int attempt = 0; attempt < 3; attempt++) {
                 if (!m_pdStub) {
                     if (!ReconnectPD()) {
                         std::this_thread::sleep_for(std::chrono::seconds(1 << attempt));
@@ -976,7 +989,13 @@ namespace SPTAG::SPANN
                     continue;
                 }
 
-                return response.store().address();
+                std::string addr = response.store().address();
+                // Cache the result
+                {
+                    std::lock_guard<std::mutex> lock(m_storeAddrMutex);
+                    m_storeAddrCache[storeId] = addr;
+                }
+                return addr;
             }
             SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO: PD GetStore failed for store %lu after all retries\n", storeId);
             return "";
@@ -1013,7 +1032,12 @@ namespace SPTAG::SPANN
         // ---- Get or create a TiKV stub for a key ----
         tikvpb::Tikv::Stub* GetStubForKey(const std::string& key) {
             RegionInfo region;
-            if (!FindRegionForKey(key, region) || region.leaderAddr.empty()) {
+            bool found = FindRegionForKey(key, region);
+            if (found && region.leaderAddr.empty() && region.storeId != 0) {
+                // Region found but address not resolved yet — resolve from storeId
+                region.leaderAddr = GetStoreAddress(region.storeId);
+            }
+            if (!found || region.leaderAddr.empty()) {
                 // Fallback: use one of the known TiKV store addresses from PD
                 std::string fallbackAddr = GetAnyStoreAddress();
                 if (!fallbackAddr.empty()) {
@@ -1032,12 +1056,34 @@ namespace SPTAG::SPANN
 
         // ---- Get any available TiKV store address from PD ----
         std::string GetAnyStoreAddress() {
-            // Try to get stores from PD via its HTTP-like GetStore calls
-            // Use store IDs 1-10 as a heuristic
-            for (uint64_t storeId = 1; storeId <= 10; storeId++) {
-                std::string addr = GetStoreAddress(storeId);
-                if (!addr.empty()) {
-                    return addr;
+            // First check the store address cache
+            {
+                std::lock_guard<std::mutex> lock(m_storeAddrMutex);
+                for (const auto& [id, addr] : m_storeAddrCache) {
+                    if (!addr.empty()) return addr;
+                }
+            }
+
+            // Discover real store IDs by querying PD for the first region
+            // (empty key hits the first region) and extracting peers
+            RegionInfo firstRegion;
+            if (GetRegionFromPD("", firstRegion)) {
+                // firstRegion is now cached; try its leader address
+                if (!firstRegion.leaderAddr.empty()) {
+                    return firstRegion.leaderAddr;
+                }
+                // Otherwise resolve from storeId
+                if (firstRegion.storeId != 0) {
+                    std::string addr = GetStoreAddress(firstRegion.storeId);
+                    if (!addr.empty()) return addr;
+                }
+            }
+
+            // Last resort: scan region cache for any known store address
+            {
+                std::lock_guard<std::mutex> lock(m_regionMutex);
+                for (const auto& r : m_regionCache) {
+                    if (!r.leaderAddr.empty()) return r.leaderAddr;
                 }
             }
             return "";
