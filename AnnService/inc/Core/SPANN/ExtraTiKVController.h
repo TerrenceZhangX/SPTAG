@@ -839,30 +839,79 @@ namespace SPTAG::SPANN
             std::vector<std::pair<size_t, std::string>> keys; // (original_index, prefixed_key)
         };
 
-        // ---- PD: get region for a given key ----
+        // ---- Reconnect to PD leader (called when PD stub fails) ----
+        bool ReconnectPD() {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO: Attempting PD reconnection...\n");
+            for (const auto& pdAddr : m_pdAddresses) {
+                auto channel = grpc::CreateChannel(pdAddr, grpc::InsecureChannelCredentials());
+                auto stub = pdpb::PD::NewStub(channel);
+                if (!stub) continue;
+
+                pdpb::GetMembersRequest membersReq;
+                auto* header = membersReq.mutable_header();
+                header->set_cluster_id(m_clusterId);
+                pdpb::GetMembersResponse membersResp;
+                grpc::ClientContext membersCtx;
+                membersCtx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+
+                auto status = stub->GetMembers(&membersCtx, membersReq, &membersResp);
+                if (!status.ok()) continue;
+
+                if (membersResp.has_leader() && membersResp.leader().client_urls_size() > 0) {
+                    if (membersResp.has_header()) {
+                        m_clusterId = membersResp.header().cluster_id();
+                    }
+                    std::string leaderAddr = membersResp.leader().client_urls(0);
+                    auto schemePos = leaderAddr.find("://");
+                    if (schemePos != std::string::npos) {
+                        leaderAddr = leaderAddr.substr(schemePos + 3);
+                    }
+                    if (leaderAddr == pdAddr) {
+                        m_pdStub = std::move(stub);
+                    } else {
+                        auto leaderChannel = grpc::CreateChannel(leaderAddr, grpc::InsecureChannelCredentials());
+                        m_pdStub = pdpb::PD::NewStub(leaderChannel);
+                    }
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "TiKVIO: Reconnected to PD leader at %s\n", leaderAddr.c_str());
+                    return true;
+                }
+            }
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO: PD reconnection failed on all addresses\n");
+            return false;
+        }
+
+        // ---- PD: get region for a given key (with retry + reconnect) ----
         bool GetRegionFromPD(const std::string& key, RegionInfo& info) {
-            if (!m_pdStub) return false;
+            for (int attempt = 0; attempt < 5; attempt++) {
+                if (!m_pdStub) {
+                    if (!ReconnectPD()) {
+                        std::this_thread::sleep_for(std::chrono::seconds(1 << attempt));
+                        continue;
+                    }
+                }
 
-            pdpb::GetRegionRequest request;
-            request.set_region_key(key);
-            // PD requires a header
-            auto* header = request.mutable_header();
-            header->set_cluster_id(m_clusterId);
+                pdpb::GetRegionRequest request;
+                request.set_region_key(key);
+                auto* header = request.mutable_header();
+                header->set_cluster_id(m_clusterId);
 
-            pdpb::GetRegionResponse response;
-            grpc::ClientContext ctx;
-            ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+                pdpb::GetRegionResponse response;
+                grpc::ClientContext ctx;
+                ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
 
-            auto status = m_pdStub->GetRegion(&ctx, request, &response);
-            if (!status.ok()) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO: PD GetRegion failed: %s\n", status.error_message().c_str());
-                return false;
-            }
+                auto status = m_pdStub->GetRegion(&ctx, request, &response);
+                if (!status.ok()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO: PD GetRegion failed (attempt %d): %s\n", attempt, status.error_message().c_str());
+                    m_pdStub.reset();
+                    std::this_thread::sleep_for(std::chrono::seconds(1 << attempt));
+                    continue;
+                }
 
-            if (!response.has_region() || !response.has_leader()) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO: PD GetRegion returned no region/leader\n");
-                return false;
-            }
+                if (!response.has_region() || !response.has_leader()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO: PD GetRegion returned no region/leader (attempt %d)\n", attempt);
+                    std::this_thread::sleep_for(std::chrono::seconds(1 << attempt));
+                    continue;
+                }
 
             const auto& region = response.region();
             const auto& leader = response.leader();
@@ -894,29 +943,43 @@ namespace SPTAG::SPANN
                 }
             }
 
-            return true;
+                return true;
+            }
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO: GetRegionFromPD failed after all retries for key\n");
+            return false;
         }
 
-        // ---- PD: get store address by store ID ----
+        // ---- PD: get store address by store ID (with retry + reconnect) ----
         std::string GetStoreAddress(uint64_t storeId) {
-            if (!m_pdStub) return "";
+            for (int attempt = 0; attempt < 5; attempt++) {
+                if (!m_pdStub) {
+                    if (!ReconnectPD()) {
+                        std::this_thread::sleep_for(std::chrono::seconds(1 << attempt));
+                        continue;
+                    }
+                }
 
-            pdpb::GetStoreRequest request;
-            request.set_store_id(storeId);
-            auto* header = request.mutable_header();
-            header->set_cluster_id(m_clusterId);
+                pdpb::GetStoreRequest request;
+                request.set_store_id(storeId);
+                auto* header = request.mutable_header();
+                header->set_cluster_id(m_clusterId);
 
-            pdpb::GetStoreResponse response;
-            grpc::ClientContext ctx;
-            ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+                pdpb::GetStoreResponse response;
+                grpc::ClientContext ctx;
+                ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
 
-            auto status = m_pdStub->GetStore(&ctx, request, &response);
-            if (!status.ok() || !response.has_store()) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO: PD GetStore failed for store %lu\n", storeId);
-                return "";
+                auto status = m_pdStub->GetStore(&ctx, request, &response);
+                if (!status.ok() || !response.has_store()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO: PD GetStore failed for store %lu (attempt %d)\n", storeId, attempt);
+                    if (!status.ok()) m_pdStub.reset();
+                    std::this_thread::sleep_for(std::chrono::seconds(1 << attempt));
+                    continue;
+                }
+
+                return response.store().address();
             }
-
-            return response.store().address();
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO: PD GetStore failed for store %lu after all retries\n", storeId);
+            return "";
         }
 
         // ---- Find cached region for a key ----

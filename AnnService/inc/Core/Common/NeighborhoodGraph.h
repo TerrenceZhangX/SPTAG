@@ -331,9 +331,32 @@ break;
                 std::vector<std::vector<SizeType>> TptreeDataIndices(m_iTPTNumber, std::vector<SizeType>(m_iGraphSize));
                 std::vector<std::vector<std::pair<SizeType, SizeType>>> TptreeLeafNodes(m_iTPTNumber, std::vector<std::pair<SizeType, SizeType>>());
 
-                for (SizeType i = 0; i < m_iGraphSize; i++)
-                    for (DimensionType j = 0; j < m_iNeighborhoodSize; j++)
-                        (NeighborhoodDists)[i][j] = MaxDist;
+                // Parallel initialization of NeighborhoodDists
+                {
+                    std::vector<std::thread> mythreads;
+                    mythreads.reserve(m_iThreadNum);
+                    std::atomic_size_t sent(0);
+                    for (int tid = 0; tid < m_iThreadNum; tid++)
+                    {
+                        mythreads.emplace_back([&]() {
+                            size_t i = 0;
+                            while (true)
+                            {
+                                i = sent.fetch_add(1);
+                                if (i < m_iGraphSize)
+                                {
+                                    for (DimensionType j = 0; j < m_iNeighborhoodSize; j++)
+                                        (NeighborhoodDists)[i][j] = MaxDist;
+                                }
+                                else
+                                {
+                                    return;
+                                }
+                            }
+                        });
+                    }
+                    for (auto &t : mythreads) t.join();
+                }
 
                 auto t1 = std::chrono::high_resolution_clock::now();
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Parallel TpTree Partition begin\n");
@@ -378,11 +401,25 @@ break;
                 auto t2 = std::chrono::high_resolution_clock::now();
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Build TPTree time (s): %lld\n", std::chrono::duration_cast<std::chrono::seconds>(t2 - t1).count());
 
-                for (int i = 0; i < m_iTPTNumber; i++)
+                // Collect all leaf tasks from all trees, then process in one parallel pass
+                struct LeafTask {
+                    int treeIdx;
+                    SizeType startIndex;
+                    SizeType endIndex;
+                };
+                std::vector<LeafTask> allLeafTasks;
+                for (int i = 0; i < m_iTPTNumber; i++) {
+                    for (size_t j = 0; j < TptreeLeafNodes[i].size(); j++) {
+                        allLeafTasks.push_back({i, TptreeLeafNodes[i][j].first, TptreeLeafNodes[i][j].second});
+                    }
+                }
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Total leaf tasks across %d trees: %zu\n", m_iTPTNumber, allLeafTasks.size());
+
                 {
                     std::vector<std::thread> mythreads;
                     mythreads.reserve(m_iThreadNum);
                     std::atomic_size_t sent(0);
+                    size_t totalTasks = allLeafTasks.size();
                     for (int tid = 0; tid < m_iThreadNum; tid++)
                     {
                         mythreads.emplace_back([&, tid]() {
@@ -390,13 +427,15 @@ break;
                             while (true)
                             {
                                 j = sent.fetch_add(1);
-                                if (j < TptreeLeafNodes[i].size())
+                                if (j < totalTasks)
                                 {
-                                    SizeType start_index = TptreeLeafNodes[i][j].first;
-                                    SizeType end_index = TptreeLeafNodes[i][j].second;
-                                    if ((j * 5) % TptreeLeafNodes[i].size() == 0)
-                                        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Processing Tree %d %d%%\n", i,
-                                                     static_cast<int>(j * 1.0 / TptreeLeafNodes[i].size() * 100));
+                                    const auto& task = allLeafTasks[j];
+                                    SizeType start_index = task.startIndex;
+                                    SizeType end_index = task.endIndex;
+                                    int i = task.treeIdx;
+                                    if ((j * 5) % totalTasks == 0)
+                                        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Processing leaf tasks %d%%\n",
+                                                     static_cast<int>(j * 1.0 / totalTasks * 100));
                                     for (SizeType x = start_index; x < end_index; x++)
                                     {
                                         for (SizeType y = x + 1; y <= end_index; y++)
@@ -429,9 +468,9 @@ break;
                         t.join();
                     }
                     mythreads.clear();
-                    TptreeDataIndices[i].clear();
-                    TptreeLeafNodes[i].clear();
                 }
+                allLeafTasks.clear();
+                allLeafTasks.shrink_to_fit();
                 TptreeDataIndices.clear();
                 TptreeLeafNodes.clear();
 
