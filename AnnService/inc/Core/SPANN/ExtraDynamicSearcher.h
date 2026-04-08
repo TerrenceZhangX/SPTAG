@@ -19,6 +19,7 @@
 #include "inc/Core/Common/LocalVersionMap.h"
 #include "inc/Core/Common/TiKVVersionMap.h"
 #include "ExtraFileController.h"
+#include "PostingRouter.h"
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -185,6 +186,9 @@ namespace SPTAG::SPANN {
         Helper::Concurrent::ConcurrentPriorityQueue<AppendPair> m_asyncAppendQueue;
              
         std::shared_ptr<Helper::KeyValueIO> db;
+        std::unique_ptr<PostingRouter> m_router;
+
+        PostingRouter* GetRouter() { return m_router.get(); }
 
         SPANN::Index<ValueType>* m_headIndex;
         std::unique_ptr<COMMON::IVersionMap> m_versionMap;
@@ -256,6 +260,63 @@ namespace SPTAG::SPANN {
         }
 
         ~ExtraDynamicSearcher() {}
+
+        void InitializeRouter(SPANN::Options& p_opt) {
+            std::vector<std::pair<std::string, std::string>> nodeAddrs;
+            {
+                auto parts = Helper::StrUtils::SplitString(p_opt.m_routerNodeAddrs, ",");
+                for (auto& part : parts) {
+                    auto hp = Helper::StrUtils::SplitString(part, ":");
+                    if (hp.size() == 2) {
+                        nodeAddrs.emplace_back(hp[0], hp[1]);
+                    }
+                }
+            }
+
+            auto nodeStores = Helper::StrUtils::SplitString(p_opt.m_routerNodeStores, ",");
+
+            m_router.reset(new PostingRouter());
+            if (!m_router->Initialize(db, p_opt.m_routerLocalNodeIndex, nodeAddrs, nodeStores)) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "PostingRouter initialization failed, disabling routing\n");
+                m_router.reset();
+                return;
+            }
+
+            m_router->SetAppendCallback(
+                [this](SizeType headID, std::shared_ptr<std::string> headVec,
+                       int appendNum, std::string& appendPosting) -> ErrorCode {
+                    ExtraWorkSpace workSpace;
+                    InitWorkSpace(&workSpace);
+                    return Append(&workSpace, headID, appendNum, appendPosting);
+                });
+
+            m_router->Start();
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "PostingRouter started for layer %d\n", m_layer);
+        }
+
+    public:
+        void EnableRouter(Options& p_opt)
+        {
+            if (!m_router && p_opt.m_routerEnabled && !p_opt.m_routerNodeAddrs.empty()) {
+                InitializeRouter(p_opt);
+            }
+        }
+
+        void AdoptRouter(ExtraDynamicSearcher* source)
+        {
+            if (!source || !source->m_router) return;
+
+            m_router = std::move(source->m_router);
+            m_router->SetAppendCallback(
+                [this](SizeType headID, std::shared_ptr<std::string> headVec,
+                       int appendNum, std::string& appendPosting) -> ErrorCode {
+                    ExtraWorkSpace workSpace;
+                    InitWorkSpace(&workSpace);
+                    return Append(&workSpace, headID, appendNum, appendPosting);
+                });
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "PostingRouter adopted from previous index (layer %d)\n", m_layer);
+        }
 
         virtual bool Available() override
         {
@@ -763,6 +824,28 @@ namespace SPTAG::SPANN {
                     }
                 }
 
+                // Broadcast HeadSync to peer nodes
+                if (m_router && m_router->IsEnabled()) {
+                    std::vector<HeadSyncEntry> headSyncEntries;
+                    for (int k = 0; k < 2; k++) {
+                        if (args.counts[k] == 0 || (int)newHeadsID.size() <= k) continue;
+                        HeadSyncEntry entry;
+                        entry.op = HeadSyncEntry::Op::Add;
+                        entry.headVID = newHeadsID[k];
+                        entry.headVector.assign(args.centers + k * args._D, args.centers + k * args._D + m_vectorDataSize);
+                        headSyncEntries.push_back(std::move(entry));
+                    }
+                    if (!theSameHead) {
+                        HeadSyncEntry entry;
+                        entry.op = HeadSyncEntry::Op::Delete;
+                        entry.headVID = headID;
+                        headSyncEntries.push_back(std::move(entry));
+                    }
+                    if (!headSyncEntries.empty()) {
+                        m_router->BroadcastHeadSync(headSyncEntries);
+                    }
+                }
+
                 {
                     std::unique_lock<std::shared_timed_mutex> tmplock(m_splitListLock);
                     //SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"erase: %d\n", headID);
@@ -887,12 +970,33 @@ namespace SPTAG::SPANN {
                 int deletedLength = 0;
                 {
                     std::unique_lock<std::shared_timed_mutex> anotherLock(m_rwLocks[queryResult->VID], std::defer_lock);
+                    bool remoteLocked = false;
+                    int remoteNodeIndex = -1;
                     // SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"Locked: %d, to be lock: %d\n", headID, queryResult->VID);
                     if (m_rwLocks.hash_func(queryResult->VID) != m_rwLocks.hash_func(headID)) {
-                        if (!anotherLock.try_lock()) {
-                            auto* curJob = new MergeAsyncJob(this, headID, reassign, nullptr);
-                            m_splitThreadPool->add(curJob);
-                            return ErrorCode::Success;
+                        if (m_router && m_router->IsEnabled()) {
+                            auto target = m_router->GetOwner(queryResult->VID);
+                            if (!target.isLocal) {
+                                if (!m_router->SendRemoteLock(target.nodeIndex, queryResult->VID, true)) {
+                                    auto* curJob = new MergeAsyncJob(this, headID, reassign, nullptr);
+                                    m_splitThreadPool->add(curJob);
+                                    return ErrorCode::Success;
+                                }
+                                remoteLocked = true;
+                                remoteNodeIndex = target.nodeIndex;
+                            } else {
+                                if (!anotherLock.try_lock()) {
+                                    auto* curJob = new MergeAsyncJob(this, headID, reassign, nullptr);
+                                    m_splitThreadPool->add(curJob);
+                                    return ErrorCode::Success;
+                                }
+                            }
+                        } else {
+                            if (!anotherLock.try_lock()) {
+                                auto* curJob = new MergeAsyncJob(this, headID, reassign, nullptr);
+                                m_splitThreadPool->add(curJob);
+                                return ErrorCode::Success;
+                            }
                         }
                     }
                     if (!m_headIndex->ContainSample(queryResult->VID, m_layer + 1)) continue;
@@ -965,7 +1069,13 @@ namespace SPTAG::SPANN {
                         deletedPostingList = &currentPostingList;
                         deletedLength = currentLength;
                     }
-                    if (m_rwLocks.hash_func(queryResult->VID) != m_rwLocks.hash_func(headID)) anotherLock.unlock();
+                    if (m_rwLocks.hash_func(queryResult->VID) != m_rwLocks.hash_func(headID)) {
+                        if (remoteLocked && remoteNodeIndex >= 0) {
+                            m_router->SendRemoteLock(remoteNodeIndex, queryResult->VID, false);
+                        } else {
+                            anotherLock.unlock();
+                        }
+                    }
                 }
 
                 // SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"Release: %d, Release: %d\n", headID, queryResult->VID);
@@ -994,6 +1104,16 @@ namespace SPTAG::SPANN {
                                     deletedHeadVec->data());
                         ReassignAsync(vectorinfo, -1);
                     }
+                }
+
+                // Broadcast HeadSync for deleted head after merge
+                if (m_router && m_router->IsEnabled() && deletedHeadID >= 0) {
+                    std::vector<HeadSyncEntry> headSyncEntries;
+                    HeadSyncEntry entry;
+                    entry.op = HeadSyncEntry::Op::Delete;
+                    entry.headVID = deletedHeadID;
+                    headSyncEntries.push_back(std::move(entry));
+                    m_router->BroadcastHeadSync(headSyncEntries);
                 }
 
                 {
@@ -1385,13 +1505,31 @@ namespace SPTAG::SPANN {
 
                 //LOG(Helper::LogLevel::LL_Info, "Reassign: oldVID:%d, replicaCount:%d, candidateNum:%d, dist0:%f\n", oldVID, replicaCount, i, selections[0].distance);
                 for (int i = 0; i < replicaCount && m_versionMap->GetVersion(VID) == version; i++) {
-                    //LOG(Helper::LogLevel::LL_Info, "Reassign: headID :%d, oldVID:%d, newVID:%d, posting length: %d, dist: %f, string size: %d\n", headID, oldVID, VID, m_postingSizes[headID].load(), selections[i].distance, newPart.size());
-                    ErrorCode tmp = Append(p_exWorkSpace, selections[i].VID, 1, *vectorInfo, 3);
+                    SizeType newHeadID = selections[i].VID;
+                    // Route Reassign Append to owner node via hash routing
+                    if (m_router && m_router->IsEnabled()) {
+                        auto target = m_router->GetOwner(newHeadID);
+                        if (!target.isLocal) {
+                            RemoteAppendRequest req;
+                            req.m_headID = newHeadID;
+                            req.m_headVec.assign((const char*)(selections[i].Vec.Data()), m_vectorDataSize);
+                            req.m_appendNum = 1;
+                            req.m_appendPosting = *vectorInfo;
+                            m_router->QueueRemoteAppend(target.nodeIndex, std::move(req));
+                            continue;
+                        }
+                    }
+
+                    ErrorCode tmp = Append(p_exWorkSpace, newHeadID, 1, *vectorInfo, 3);
                     if (ErrorCode::Success != tmp) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Head Miss: VID: %d, current version: %d, another re-assign\n", VID, version);
                         return tmp;
                     }
                 }
+            }
+            // Flush any queued remote appends from Reassign
+            if (m_router && m_router->IsEnabled()) {
+                m_router->FlushRemoteAppends();
             }
             auto reassignAppendEnd = std::chrono::high_resolution_clock::now();
             elapsedMSeconds = std::chrono::duration_cast<std::chrono::microseconds>(reassignAppendEnd - reassignAppendBegin).count();
@@ -2334,6 +2472,19 @@ namespace SPTAG::SPANN {
                 }
                 for (int i = 0; i < replicaCount; i++)
                 {
+                    if (m_router && m_router->IsEnabled()) {
+                        auto target = m_router->GetOwner(selections[i].VID);
+                        if (!target.isLocal) {
+                            std::string headVec((char*)(selections[i].Vec.Data()), m_vectorDataSize);
+                            RemoteAppendRequest req;
+                            req.m_headID = selections[i].VID;
+                            req.m_headVec = headVec;
+                            req.m_appendNum = 1;
+                            req.m_appendPosting = appendPosting;
+                            m_router->QueueRemoteAppend(target.nodeIndex, std::move(req));
+                            continue;
+                        }
+                    }
                     headAppends[selections[i].VID] += appendPosting;
                 }
             }
@@ -2356,6 +2507,56 @@ namespace SPTAG::SPANN {
             }
             if (m_versionMap->Delete(p_id)) return ErrorCode::Success;
             return ErrorCode::VectorNotFound;
+        }
+
+        ErrorCode FlushRemoteAppends() {
+            if (m_router && m_router->IsEnabled()) {
+                ErrorCode ret = m_router->FlushRemoteAppends();
+                m_router->LogRouteStats(" (batch flush)");
+                m_router->ResetRouteStats();
+                return ret;
+            }
+            return ErrorCode::Success;
+        }
+
+        size_t GetRemoteQueueSize() const {
+            if (m_router && m_router->IsEnabled()) {
+                return m_router->GetRemoteQueueSize();
+            }
+            return 0;
+        }
+
+        int GetNumNodes() const {
+            if (m_router && m_router->IsEnabled()) {
+                return m_router->GetNumNodes();
+            }
+            return 1;
+        }
+
+        void SetHeadSyncCallback() {
+            if (m_router && m_router->IsEnabled()) {
+                auto* headIndex = m_headIndex;
+                int layer = m_layer;
+                m_router->SetHeadSyncCallback([headIndex, layer](const HeadSyncEntry& entry) {
+                    if (entry.op == HeadSyncEntry::Op::Add) {
+                        headIndex->AddHeadIndex(entry.headVector.data(), entry.headVID, 0,
+                            static_cast<DimensionType>(entry.headVector.size() / sizeof(ValueType)),
+                            layer + 1, nullptr);
+                    } else {
+                        headIndex->DeleteIndex(entry.headVID, layer + 1);
+                    }
+                });
+
+                auto& rwLocks = m_rwLocks;
+                m_router->SetRemoteLockCallback([&rwLocks](SizeType headID, bool lock) -> bool {
+                    if (lock) {
+                        return rwLocks[headID].try_lock();
+                    } else {
+                        rwLocks[headID].unlock();
+                        return true;
+                    }
+                });
+            }
         }
 
         bool AllFinished() {

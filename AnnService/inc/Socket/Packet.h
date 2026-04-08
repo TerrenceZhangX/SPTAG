@@ -27,13 +27,31 @@ enum class PacketType : std::uint8_t
 
     SearchRequest = 0x03,
 
+    AppendRequest = 0x04,
+
+    BatchAppendRequest = 0x05,
+
+    InsertBatchRequest = 0x06,
+
+    HeadSyncRequest = 0x07,
+
+    RemoteLockRequest = 0x08,
+
     ResponseMask = 0x80,
 
     HeartbeatResponse = ResponseMask | HeartbeatRequest,
 
     RegisterResponse = ResponseMask | RegisterRequest,
 
-    SearchResponse = ResponseMask | SearchRequest
+    SearchResponse = ResponseMask | SearchRequest,
+
+    AppendResponse = ResponseMask | AppendRequest,
+
+    BatchAppendResponse = ResponseMask | BatchAppendRequest,
+
+    InsertBatchResponse = ResponseMask | InsertBatchRequest,
+
+    RemoteLockResponse = ResponseMask | RemoteLockRequest
 };
 
 
