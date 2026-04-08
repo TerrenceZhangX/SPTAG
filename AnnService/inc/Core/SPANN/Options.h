@@ -215,6 +215,12 @@ namespace SPTAG {
             SizeType m_maxID;
             bool m_shareDB;
 
+            // Distributed routing
+            bool m_routerEnabled;
+            int m_routerLocalNodeIndex;
+            std::string m_routerNodeAddrs;
+            std::string m_routerNodeStores;
+
             Options() {
 #define DefineBasicParameter(VarName, VarType, DefaultValue, RepresentStr) \
                 VarName = DefaultValue; \

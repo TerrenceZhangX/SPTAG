@@ -293,6 +293,39 @@ namespace SPTAG
                 return true;
             }
 
+            void EnableRouter() override {
+                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    m_extraSearchers[0]->EnableRouter(m_options);
+                }
+            }
+
+            ErrorCode FlushRemoteAppends() override {
+                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    return m_extraSearchers[0]->FlushRemoteAppends();
+                }
+                return ErrorCode::Success;
+            }
+
+            size_t GetRemoteQueueSize() const override {
+                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    return m_extraSearchers[0]->GetRemoteQueueSize();
+                }
+                return 0;
+            }
+
+            int GetNumNodes() const override {
+                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    return m_extraSearchers[0]->GetNumNodes();
+                }
+                return 1;
+            }
+
+            void SetHeadSyncCallback() override {
+                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    m_extraSearchers[0]->SetHeadSyncCallback();
+                }
+            }
+
             void GetDBStat() { 
                 //if (m_options.m_storage != Storage::STATIC) m_extraSearcher->GetDBStats();
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Current Vector Num: %d, Deleted: %d .\n", GetNumSamples(), GetNumDeleted());

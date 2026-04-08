@@ -204,6 +204,15 @@ public:
     }
 
     virtual std::string GetPriorityID(int queryID) const { return ""; }
+
+    // Distributed routing methods (no-op defaults)
+    virtual void EnableRouter() {}
+    virtual ErrorCode FlushRemoteAppends() { return ErrorCode::Success; }
+    virtual size_t GetRemoteQueueSize() const { return 0; }
+    virtual int GetNumNodes() const { return 1; }
+    virtual void SetHeadSyncCallback() {}
+    virtual void SetInsertCallback(std::function<ErrorCode(const std::string&, int, unsigned int)> cb) {}
+    virtual ErrorCode SendInsertBatch(int targetNode, const void* data, int startVID, int count, size_t dataSize) { return ErrorCode::Undefined; }
     
   private:
     ErrorCode LoadIndexConfig(Helper::IniReader& p_reader);

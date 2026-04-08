@@ -648,6 +648,29 @@ ErrorCode QuantizeVectors(const std::shared_ptr<COMMON::IQuantizer>& quantizer,
     return ErrorCode::Success;
 }
 
+void ApplyRouterParams(std::shared_ptr<VectorIndex>& index,
+                       const std::map<std::string, std::string>& ssdOverrides,
+                       bool skipEnable = false)
+{
+    static const std::vector<std::pair<std::string, std::string>> routerKeys = {
+        {"routerenabled", "RouterEnabled"},
+        {"routerlocalnodeindex", "RouterLocalNodeIndex"},
+        {"routernodeaddrs", "RouterNodeAddrs"},
+        {"routernodestores", "RouterNodeStores"}
+    };
+    bool hasRouter = false;
+    for (const auto& [lowerKey, paramName] : routerKeys) {
+        auto it = ssdOverrides.find(lowerKey);
+        if (it != ssdOverrides.end() && !it->second.empty()) {
+            index->SetParameter(paramName.c_str(), it->second.c_str(), "BuildSSDIndex");
+            if (lowerKey == "routerenabled" && it->second == "true") hasRouter = true;
+        }
+    }
+    if (hasRouter && !skipEnable) {
+        index->EnableRouter();
+    }
+}
+
 template <typename T>
 void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, const std::string &truthPath,
                   DistCalcMethod distMethod, const std::string &indexPath, int dimension, int baseVectorCount,
@@ -781,6 +804,10 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
         BOOST_REQUIRE(index != nullptr);
     }
 
+    // Enable distributed routing if configured
+    ApplyRouterParams(index, ssdOverrides);
+    index->SetHeadSyncCallback();
+
     auto queryset = TestUtils::TestDataGenerator<T>::LoadVectorSet(pqueryset, M);
     BOOST_REQUIRE(queryset != nullptr);
 
@@ -903,6 +930,10 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Cloned index from %s to %s, check:%d, time: %f seconds\n",
                              prevPath.c_str(), clonePath.c_str(), (int)(cloneret == ErrorCode::Success), seconds);
 
+                // Enable routing on cloned index
+                ApplyRouterParams(cloneIndex, ssdOverrides);
+                cloneIndex->SetHeadSyncCallback();
+
                 int insertStart = iter * insertBatchSize;
                 {
                     std::shared_ptr<VectorSet> addset = TestUtils::TestDataGenerator<T>::LoadVectorSet(paddset, M, insertStart, insertBatchSize);
@@ -923,6 +954,8 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                                      addset, addmetaset, numSearchThreads, queryset, numQueries, SearchK, &jsonFile, 0);
                     end = std::chrono::high_resolution_clock::now();
                 }
+                // Flush any pending remote appends
+                cloneIndex->FlushRemoteAppends();
                 seconds =
                     std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000000.0f;
                 double throughput = insertBatchSize / seconds;
@@ -2151,4 +2184,70 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
 
     //std::filesystem::remove_all(indexPath);
 }
+
+/// Worker node for distributed routing benchmark.
+/// Loads a pre-built head index, connects to TiKV, starts PostingRouter
+/// to handle incoming remote append requests from the driver node.
+BOOST_AUTO_TEST_CASE(WorkerNode)
+{
+    using namespace SPFreshTest;
+
+    const char *configPath = std::getenv("BENCHMARK_CONFIG");
+    if (configPath == nullptr) {
+        BOOST_TEST_MESSAGE("Skipping WorkerNode - BENCHMARK_CONFIG not set");
+        return;
+    }
+
+    Helper::IniReader iniReader;
+    BOOST_REQUIRE(iniReader.LoadIniFile(configPath) == ErrorCode::Success);
+
+    std::string indexPath = iniReader.GetParameter("Benchmark", "IndexPath", std::string(""));
+    BOOST_REQUIRE(!indexPath.empty());
+
+    std::map<std::string, std::string> ssdOverrides;
+    std::string storage = iniReader.GetParameter("Benchmark", "Storage", std::string(""));
+    if (!storage.empty()) ssdOverrides["Storage"] = storage;
+    std::string tikvPD = iniReader.GetParameter("Benchmark", "TiKVPDAddresses", std::string(""));
+    if (!tikvPD.empty()) ssdOverrides["TiKVPDAddresses"] = tikvPD;
+    std::string tikvPrefix = iniReader.GetParameter("Benchmark", "TiKVKeyPrefix", std::string(""));
+    if (!tikvPrefix.empty()) ssdOverrides["TiKVKeyPrefix"] = tikvPrefix;
+
+    auto buildSSDParams = iniReader.GetParameters("BuildSSDIndex");
+    for (const auto &[key, val] : buildSSDParams) {
+        ssdOverrides[key] = val;
+    }
+
+    BOOST_TEST_MESSAGE("WorkerNode: Loading index from " << indexPath);
+    std::shared_ptr<VectorIndex> index;
+    BOOST_REQUIRE(VectorIndex::LoadIndex(indexPath, index) == ErrorCode::Success);
+    BOOST_REQUIRE(index != nullptr);
+
+    ApplyRouterParams(index, ssdOverrides);
+    index->SetHeadSyncCallback();
+
+    int nodeIndex = std::stoi(ssdOverrides.count("routerlocalnodeindex")
+        ? ssdOverrides.at("routerlocalnodeindex") : "0");
+    BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Router started, waiting for requests...");
+
+    std::string stopFile = iniReader.GetParameter("Benchmark", "StopFile",
+        std::string("worker_stop_") + std::to_string(nodeIndex));
+    int timeoutSec = iniReader.GetParameter("Benchmark", "WorkerTimeout", 3600);
+
+    auto startTime = std::chrono::steady_clock::now();
+    while (!std::filesystem::exists(stopFile)) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - startTime).count();
+        if (elapsed >= timeoutSec) {
+            BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Timeout after " << timeoutSec << "s");
+            break;
+        }
+    }
+
+    BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Shutting down");
+    if (std::filesystem::exists(stopFile)) {
+        std::filesystem::remove(stopFile);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

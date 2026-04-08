@@ -354,6 +354,14 @@ namespace SPTAG {
             }
 
             virtual ErrorCode Checkpoint(std::string prefix) { return ErrorCode::Success; }
+
+            // Distributed routing (no-op defaults, overridden by ExtraDynamicSearcher)
+            virtual void EnableRouter(Options& p_opt) {}
+            virtual void AdoptRouter(IExtraSearcher* source) {}
+            virtual ErrorCode FlushRemoteAppends() { return ErrorCode::Success; }
+            virtual size_t GetRemoteQueueSize() const { return 0; }
+            virtual int GetNumNodes() const { return 1; }
+            virtual void SetHeadSyncCallback() {}
         };
     } // SPANN
 } // SPTAG
