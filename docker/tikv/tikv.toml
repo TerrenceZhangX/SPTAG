@@ -1,8 +1,4 @@
-# TiKV config for SPTAG benchmarks.
-# Tuned for 125GB machine with 3 instances (~37GB each).
-# See BENCHMARK_GUIDE.md Section 4.2.
-
-memory-usage-limit = "37GB"
+memory-usage-limit = "80GB"
 
 [server]
 grpc-concurrency = 8
@@ -38,7 +34,7 @@ max-write-buffer-number = 5
 reserve-space = "1GB"
 
 [storage.block-cache]
-capacity = "20GB"
+capacity = "40GB"
 
 [coprocessor]
 region-max-size = "512MB"
