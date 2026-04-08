@@ -302,11 +302,12 @@ namespace SPTAG::SPANN {
             }
         }
 
-        void AdoptRouter(ExtraDynamicSearcher* source)
+        void AdoptRouter(IExtraSearcher* source) override
         {
-            if (!source || !source->m_router) return;
+            auto* src = dynamic_cast<ExtraDynamicSearcher*>(source);
+            if (!src || !src->m_router) return;
 
-            m_router = std::move(source->m_router);
+            m_router = std::move(src->m_router);
             m_router->SetAppendCallback(
                 [this](SizeType headID, std::shared_ptr<std::string> headVec,
                        int appendNum, std::string& appendPosting) -> ErrorCode {

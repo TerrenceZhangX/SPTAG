@@ -216,7 +216,7 @@ run_1node() {
     restart_tikv
 
     rm -rf "$IDXROOT/proidx_${SCALE}_1node" "truth_${SCALE}_1node" "output_${SCALE}_1node.json"
-    mkdir -p "$IDXROOT/proidx_${SCALE}_1node/spann_index"
+    mkdir -p "$IDXROOT/proidx_${SCALE}_1node"
 
     BENCHMARK_CONFIG="$INI" \
     BENCHMARK_OUTPUT="output_${SCALE}_1node.json" \
@@ -243,7 +243,7 @@ run_2node() {
 
     # Build index with n0 (router disabled - worker not started yet)
     rm -rf "$IDXROOT/proidx_${SCALE}_2node_n0" "$IDXROOT/proidx_${SCALE}_2node_n1" "truth_${SCALE}_2node" "output_${SCALE}_2node"*.json
-    mkdir -p "$IDXROOT/proidx_${SCALE}_2node_n0/spann_index"
+    mkdir -p "$IDXROOT/proidx_${SCALE}_2node_n0"
 
     # Disable router during build: worker isn't running yet
     sed 's/^RouterEnabled=true/RouterEnabled=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_2node_n0_build.ini"
@@ -256,6 +256,9 @@ run_2node() {
     echo "${SCALE} 2-node build done: $(date)"
     # Only balance leaders to the 2 stores mapped by RouterNodeStores
     rebalance_tikv_leaders
+
+    # Clear checkpoint so driver re-runs all insert batches with routing
+    rm -f "$IDXROOT/proidx_${SCALE}_2node_n0/spann_index/checkpoint.txt"
 
     # Copy head index to n1
     echo "Copying head index to n1..."
@@ -301,7 +304,7 @@ run_3node() {
 
     # Build index with n0 (router disabled - workers not started yet)
     rm -rf "$IDXROOT/proidx_${SCALE}_3node_n0" "$IDXROOT/proidx_${SCALE}_3node_n1" "$IDXROOT/proidx_${SCALE}_3node_n2" "truth_${SCALE}_3node" "output_${SCALE}_3node"*.json
-    mkdir -p "$IDXROOT/proidx_${SCALE}_3node_n0/spann_index"
+    mkdir -p "$IDXROOT/proidx_${SCALE}_3node_n0"
 
     # Disable router during build: workers aren't running yet
     sed 's/^RouterEnabled=true/RouterEnabled=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_3node_n0_build.ini"
@@ -313,6 +316,9 @@ run_3node() {
 
     echo "${SCALE} 3-node build done: $(date)"
     rebalance_tikv_leaders
+
+    # Clear checkpoint so driver re-runs all insert batches with routing
+    rm -f "$IDXROOT/proidx_${SCALE}_3node_n0/spann_index/checkpoint.txt"
 
     # Copy head index to n1, n2
     echo "Copying head index to n1, n2..."
@@ -367,7 +373,7 @@ run_6node() {
 
     # Build index with n0 (router disabled)
     rm -rf "$IDXROOT/proidx_${SCALE}_6node_n"{0,1,2,3,4,5} "truth_${SCALE}_6node" "output_${SCALE}_6node"*.json
-    mkdir -p "$IDXROOT/proidx_${SCALE}_6node_n0/spann_index"
+    mkdir -p "$IDXROOT/proidx_${SCALE}_6node_n0"
 
     sed 's/^RouterEnabled=true/RouterEnabled=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_6node_n0_build.ini"
 
@@ -378,6 +384,9 @@ run_6node() {
 
     echo "${SCALE} 6-node build done: $(date)"
     rebalance_tikv_leaders
+
+    # Clear checkpoint so driver re-runs all insert batches with routing
+    rm -f "$IDXROOT/proidx_${SCALE}_6node_n0/spann_index/checkpoint.txt"
 
     # Copy head index to n1-n5
     echo "Copying head index to n1-n5..."
