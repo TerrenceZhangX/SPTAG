@@ -830,6 +830,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     // Enable distributed routing if configured
     ApplyRouterParams(index, ssdOverrides);
     index->SetHeadSyncCallback();
+    std::shared_ptr<VectorIndex> routerOwner = index; // track who owns the router
 
     auto queryset = TestUtils::TestDataGenerator<T>::LoadVectorSet(pqueryset, M);
     BOOST_REQUIRE(queryset != nullptr);
@@ -953,9 +954,11 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Cloned index from %s to %s, check:%d, time: %f seconds\n",
                              prevPath.c_str(), clonePath.c_str(), (int)(cloneret == ErrorCode::Success), seconds);
 
-                // Enable routing on cloned index
-                ApplyRouterParams(cloneIndex, ssdOverrides);
+                // Adopt router from previous index (reuse TCP connections)
+                ApplyRouterParams(cloneIndex, ssdOverrides, true);
+                cloneIndex->AdoptRouter(routerOwner.get());
                 cloneIndex->SetHeadSyncCallback();
+                routerOwner = cloneIndex;
 
                 int insertStart = iter * insertBatchSize;
                 {

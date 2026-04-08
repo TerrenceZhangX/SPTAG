@@ -299,6 +299,14 @@ namespace SPTAG
                 }
             }
 
+            void AdoptRouter(VectorIndex* source) override {
+                auto* srcIndex = dynamic_cast<Index<T>*>(source);
+                if (srcIndex && !srcIndex->m_extraSearchers.empty() && srcIndex->m_extraSearchers[0]
+                    && !m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    m_extraSearchers[0]->AdoptRouter(srcIndex->m_extraSearchers[0].get());
+                }
+            }
+
             ErrorCode FlushRemoteAppends() override {
                 if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
                     return m_extraSearchers[0]->FlushRemoteAppends();

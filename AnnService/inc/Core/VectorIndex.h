@@ -207,6 +207,7 @@ public:
 
     // Distributed routing methods (no-op defaults)
     virtual void EnableRouter() {}
+    virtual void AdoptRouter(VectorIndex* source) {}
     virtual ErrorCode FlushRemoteAppends() { return ErrorCode::Success; }
     virtual size_t GetRemoteQueueSize() const { return 0; }
     virtual int GetNumNodes() const { return 1; }
