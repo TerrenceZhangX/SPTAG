@@ -29,6 +29,8 @@
 #include <numeric>
 #include <utility>
 #include <random>
+#include <deque>
+#include <condition_variable>
 
 #ifdef SPDK
 #include "ExtraSPDKController.h"
@@ -85,6 +87,7 @@ namespace SPTAG::SPANN {
                 ErrorCode ret = m_extraIndex->MergePostings((ExtraWorkSpace*)p_workSpace, m_headID, !m_disableReassign);
                 if (ret != ErrorCode::Success)
                     m_extraIndex->m_asyncStatus = ret;
+                m_extraIndex->m_mergeJobsInFlight--;
                 if (m_callback != nullptr) {
                     m_callback();
                 }
@@ -110,6 +113,7 @@ namespace SPTAG::SPANN {
                 ErrorCode ret = m_extraIndex->Split((ExtraWorkSpace*)p_workSpace, m_headID, !m_disableReassign);
                 if (ret != ErrorCode::Success)
                     m_extraIndex->m_asyncStatus = ret;
+                m_extraIndex->m_splitJobsInFlight--;
                 if (m_callback != nullptr) {
                     m_callback();
                 }
@@ -195,9 +199,11 @@ namespace SPTAG::SPANN {
 
         std::shared_timed_mutex m_splitListLock;
         Helper::Concurrent::ConcurrentMap<SizeType, int> m_splitList;
+        std::atomic_size_t m_splitJobsInFlight{ 0 };
 
         std::shared_timed_mutex m_mergeListLock;
-        Helper::Concurrent::ConcurrentSet<SizeType> m_mergeList;        
+        Helper::Concurrent::ConcurrentSet<SizeType> m_mergeList;
+        std::atomic_size_t m_mergeJobsInFlight{ 0 };
 
     public:
         ExtraDynamicSearcher(SPANN::Options& p_opt, int layer, SPANN::Index<ValueType>* headIndex, std::shared_ptr<Helper::KeyValueIO> p_db) {
@@ -1040,6 +1046,7 @@ namespace SPTAG::SPANN {
             }
 
             auto* curJob = new SplitAsyncJob(this, headID, m_opt->m_disableReassign, p_callback);
+            m_splitJobsInFlight++;
             m_splitThreadPool->add(curJob);
             // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Add to thread pool\n");
         }
@@ -1057,6 +1064,7 @@ namespace SPTAG::SPANN {
             }
 
             auto* curJob = new MergeAsyncJob(this, headID, m_opt->m_disableReassign, p_callback);
+            m_mergeJobsInFlight++;
             m_splitThreadPool->add(curJob);
         }
 
@@ -1995,6 +2003,7 @@ namespace SPTAG::SPANN {
 
             Helper::Concurrent::ConcurrentSet<SizeType> zeroReplicaSet;
             std::atomic_int64_t originalSize(0), relaxSize(0);
+            std::atomic_int64_t overflowPostingCount(0), droppedReplicaCount(0);
             {
                 std::vector<std::thread> mythreads;
                 mythreads.reserve(m_opt->m_iSSDNumberOfThreads);
@@ -2019,6 +2028,7 @@ namespace SPTAG::SPANN {
                                     relaxSize += postingListSize[i];
                                     continue;
                                 }
+                                ++overflowPostingCount;
                                 relaxSize += relaxLimit;
 
                                 std::size_t selectIdx =
@@ -2030,6 +2040,7 @@ namespace SPTAG::SPANN {
                                      dropID < postingListSize[i]; ++dropID)
                                 {
                                     int tonode = selections.m_selections[selectIdx + dropID].tonode;
+                                    ++droppedReplicaCount;
                                     --replicaCount[tonode];
                                     if (replicaCount[tonode] == 0)
                                     {
@@ -2064,8 +2075,12 @@ namespace SPTAG::SPANN {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Replica Count Dist: %d, %lld\n", i, (std::int64_t)(replicaCountDist[i]));
                 }
             }
+            size_t zeroReplicaCount = zeroReplicaSet.size();
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Posting cut original:%lld relax:%lld\n", originalSize.load(),
                          relaxSize.load());
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                         "Posting cut overflowHeadCount:%lld droppedReplicaCount:%lld zeroReplicaCount:%zu\n",
+                         overflowPostingCount.load(), droppedReplicaCount.load(), zeroReplicaCount);
 
             auto t4 = std::chrono::high_resolution_clock::now();
             SPTAGLIB_LOG(SPTAG::Helper::LogLevel::LL_Info, "Time to perform posting cut:%.2lf sec.\n", ((double)std::chrono::duration_cast<std::chrono::seconds>(t4 - t3).count()) + ((double)std::chrono::duration_cast<std::chrono::milliseconds>(t4 - t3).count()) / 1000);
@@ -2087,28 +2102,140 @@ namespace SPTAG::SPANN {
             }
             if (ErrorCode::Success != WriteDownAllPostingToDB(selections, fullVectors, postingListSize, p_headToLocal, p_localToGlobal)) return false;
 
-            if (m_opt->m_update && !m_opt->m_allowZeroReplica && zeroReplicaSet.size() > 0)
+            if (m_opt->m_update && !m_opt->m_allowZeroReplica && zeroReplicaCount > 0)
             {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPFresh: initialize thread pools, append: %d, reassign %d\n", m_opt->m_appendThreadNum, m_opt->m_reassignThreadNum);
                 m_splitThreadPool = std::make_shared<SPDKThreadPool>();
                 m_splitThreadPool->initSPDK(m_opt->m_appendThreadNum, this);
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPFresh: finish initialization, zeroReplicaCount:%d\n", (int)(zeroReplicaSet.size()));
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPFresh: finish initialization, zeroReplicaCount:%zu\n", zeroReplicaCount);
 
-                ExtraWorkSpace workSpace;
-                InitWorkSpace(&workSpace);
+                uint32_t splitNumBeforeZeroReplica = m_stat.m_splitNum;
+                uint32_t reassignNumBeforeZeroReplica = m_stat.m_reAssignNum;
+                uint32_t headMissBeforeZeroReplica = m_stat.m_headMiss.load();
+
+                int zeroReplicaWorkerNum = std::max(1, std::min(static_cast<int>(zeroReplicaCount), m_opt->m_appendThreadNum));
+                size_t zeroReplicaBatchSize = 4096;
+                size_t zeroReplicaQueueLimit = std::max(static_cast<size_t>(4), static_cast<size_t>(zeroReplicaWorkerNum) * 2);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                             "SPFresh: zero-replica refill workers:%d batchSize:%zu queueLimit:%zu\n",
+                             zeroReplicaWorkerNum, zeroReplicaBatchSize, zeroReplicaQueueLimit);
+
+                std::mutex zeroReplicaQueueLock;
+                std::condition_variable zeroReplicaQueueCv;
+                std::deque<std::vector<SizeType>> zeroReplicaQueue;
+                bool zeroReplicaQueueDone = false;
+                std::atomic<bool> zeroReplicaFailed(false);
+                std::atomic<SizeType> zeroReplicaProcessed(0);
+                ErrorCode zeroReplicaRet = ErrorCode::Success;
+
+                auto zeroReplicaFail = [&](ErrorCode code, SizeType vid) {
+                    bool expected = false;
+                    if (zeroReplicaFailed.compare_exchange_strong(expected, true)) {
+                        zeroReplicaRet = code;
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                                     "Fail to add index for zero replica ID: %lld, err=%d\n",
+                                     static_cast<std::int64_t>(vid), static_cast<int>(code));
+                    }
+                    zeroReplicaQueueCv.notify_all();
+                };
+
+                auto enqueueZeroReplicaBatch = [&](std::vector<SizeType>& batch) {
+                    std::unique_lock<std::mutex> lock(zeroReplicaQueueLock);
+                    zeroReplicaQueueCv.wait(lock, [&]() {
+                        return zeroReplicaFailed.load() || zeroReplicaQueue.size() < zeroReplicaQueueLimit;
+                    });
+                    if (zeroReplicaFailed.load()) return;
+                    zeroReplicaQueue.emplace_back(std::move(batch));
+                    lock.unlock();
+                    zeroReplicaQueueCv.notify_one();
+                };
+
+                std::vector<std::thread> zeroReplicaWorkers;
+                zeroReplicaWorkers.reserve(zeroReplicaWorkerNum);
+                for (int workerId = 0; workerId < zeroReplicaWorkerNum; ++workerId)
+                {
+                    zeroReplicaWorkers.emplace_back([&, workerId]() {
+                        ExtraWorkSpace workSpace;
+                        InitWorkSpace(&workSpace);
+                        while (true)
+                        {
+                            std::vector<SizeType> batch;
+                            {
+                                std::unique_lock<std::mutex> lock(zeroReplicaQueueLock);
+                                zeroReplicaQueueCv.wait(lock, [&]() {
+                                    return zeroReplicaFailed.load() || !zeroReplicaQueue.empty() || zeroReplicaQueueDone;
+                                });
+
+                                if (zeroReplicaFailed.load()) return;
+                                if (zeroReplicaQueue.empty()) {
+                                    if (zeroReplicaQueueDone) return;
+                                    continue;
+                                }
+
+                                batch = std::move(zeroReplicaQueue.front());
+                                zeroReplicaQueue.pop_front();
+                            }
+                            zeroReplicaQueueCv.notify_one();
+
+                            for (SizeType it : batch)
+                            {
+                                std::shared_ptr<VectorSet> vectorSet(new BasicVectorSet(ByteArray((std::uint8_t*)fullVectors->GetVector(it), m_vectorDataSize, false),
+                                    GetEnumValueType<ValueType>(), m_opt->m_dim, 1));
+                                ErrorCode addRet = AddIndex(&workSpace, vectorSet, it);
+                                if (addRet != ErrorCode::Success) {
+                                    zeroReplicaFail(addRet, it);
+                                    return;
+                                }
+
+                                SizeType processed = zeroReplicaProcessed.fetch_add(1) + 1;
+                                if (processed % 1000000 == 0) {
+                                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                                                 "SPFresh: zero-replica refill progress %lld/%zu\n",
+                                                 static_cast<std::int64_t>(processed), zeroReplicaCount);
+                                }
+                            }
+                        }
+                    });
+                }
+
+                std::vector<SizeType> zeroReplicaBatch;
+                zeroReplicaBatch.reserve(zeroReplicaBatchSize);
                 for (SizeType it : zeroReplicaSet)
                 {
-                    std::shared_ptr<VectorSet> vectorSet(new BasicVectorSet(ByteArray((std::uint8_t*)fullVectors->GetVector(it), m_vectorDataSize, false),
-                        GetEnumValueType<ValueType>(), m_opt->m_dim, 1));
-                    if (AddIndex(&workSpace, vectorSet, it) != ErrorCode::Success) {
-                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to add index for zero replica ID: %d\n", it);
-                        return false;
+                    if (zeroReplicaFailed.load()) break;
+                    zeroReplicaBatch.push_back(it);
+                    if (zeroReplicaBatch.size() >= zeroReplicaBatchSize) {
+                        enqueueZeroReplicaBatch(zeroReplicaBatch);
+                        zeroReplicaBatch.clear();
                     }
                 }
+                if (!zeroReplicaFailed.load() && !zeroReplicaBatch.empty()) {
+                    enqueueZeroReplicaBatch(zeroReplicaBatch);
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(zeroReplicaQueueLock);
+                    zeroReplicaQueueDone = true;
+                }
+                zeroReplicaQueueCv.notify_all();
+
+                for (auto& worker : zeroReplicaWorkers) {
+                    worker.join();
+                }
+                if (zeroReplicaFailed.load()) {
+                    return false;
+                }
+
                 while (!AllFinished())
                 {
                     std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 }
+
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                             "SPFresh: zero-replica refill done, processed:%zu, newSplits:%u, newHeadMiss:%u, newReassign:%u\n",
+                             zeroReplicaCount, m_stat.m_splitNum - splitNumBeforeZeroReplica,
+                             m_stat.m_headMiss.load() - headMissBeforeZeroReplica,
+                             m_stat.m_reAssignNum - reassignNumBeforeZeroReplica);
 
                 if (p_headIndex->SaveIndex(m_opt->m_indexDirectory + FolderSep + m_opt->m_headIndexFolder) != ErrorCode::Success) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to save head index!\n");
@@ -2151,6 +2278,13 @@ namespace SPTAG::SPANN {
                                 return;
                             }
                             SizeType localID = p_postingSelections[selectIdx++].tonode;
+                            if (p_localToGlobal.R() > 0 && (localID < 0 || localID >= p_localToGlobal.R())) {
+                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                                             "WriteDownAllPostingToDB: localID %lld out of range for localToGlobal size %lld\n",
+                                             (std::int64_t)localID, (std::int64_t)p_localToGlobal.R());
+                                ret = ErrorCode::Key_OverFlow;
+                                return;
+                            }
                             SizeType fullID = (p_localToGlobal.R() > 0) ? *(p_localToGlobal[localID]) : localID;
                             // if (id == 0) SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ID: %d\n", fullID);
                             uint8_t version = m_versionMap->GetVersion(fullID);
@@ -2223,11 +2357,27 @@ namespace SPTAG::SPANN {
             return ErrorCode::VectorNotFound;
         }
 
-        bool AllFinished() { return m_splitThreadPool->allClear(); } // && m_reassignThreadPool->allClear(); }
+        bool AllFinished() {
+            if (!m_splitThreadPool) return true;
+
+            size_t totalJobs = m_splitThreadPool->jobsize();
+            unsigned int runningJobs = static_cast<unsigned int>(m_splitThreadPool->runningJobs());
+            if (totalJobs % 10000 == 0) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                             "layer %d jobsize total:%zu split:%zu merge:%zu running:%u\n",
+                             m_layer, totalJobs, m_splitJobsInFlight.load(),
+                             m_mergeJobsInFlight.load(), runningJobs);
+            }
+            return runningJobs == 0 && totalJobs == 0;
+        } // && m_reassignThreadPool->allClear(); }
         void ForceCompaction() override { db->ForceCompaction(); }
         void GetDBStats() override { 
             db->GetStat();
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "remain splitJobs: %d, reassignJobs: %d, running split: %d, running reassign: %d\n", m_splitThreadPool->jobsize(), 0, m_splitThreadPool->runningJobs(), 0);
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                         "layer %d remain jobs total:%zu split:%zu merge:%zu running:%u reassign:%d\n",
+                         m_layer, m_splitThreadPool ? m_splitThreadPool->jobsize() : 0,
+                         m_splitJobsInFlight.load(), m_mergeJobsInFlight.load(),
+                         m_splitThreadPool ? static_cast<unsigned int>(m_splitThreadPool->runningJobs()) : 0, 0);
         }
 
         int64_t GetNumBlocks() override

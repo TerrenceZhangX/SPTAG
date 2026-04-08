@@ -197,7 +197,7 @@ namespace SPTAG
 
                 SizeType totalChunks = (size + m_chunkSize - 1) / m_chunkSize;
 
-                if (globalIDs != nullptr && globalIDs->R() > 0) {
+                if (m_layer > 0 && globalIDs != nullptr && globalIDs->R() > 0) {
                     // Non-leaf layer: only globalIDs are alive, rest deleted
                     std::string defaultChunk(m_chunkSize, static_cast<char>(0xfe));
                     for (SizeType c = 0; c < totalChunks; c++) {

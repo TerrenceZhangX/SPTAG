@@ -1021,18 +1021,25 @@ bool Index<T>::SelectHeadInternal(std::shared_ptr<Helper::VectorSetReader> &p_re
 
 template <typename T> ErrorCode Index<T>::BuildIndexInternalLayer(std::shared_ptr<Helper::VectorSetReader> &p_reader)
 {
+    int currentLayer = static_cast<int>(m_extraSearchers.size());
     COMMON::Dataset<SizeType> localToGlobalID;
     {
-        std::shared_ptr<Helper::DiskIO> ptr = SPTAG::f_createIO();
-        if (ptr == nullptr ||
-            !ptr->Initialize((m_options.m_indexDirectory + FolderSep + m_options.m_headIDFile).c_str(),
-                                std::ios::binary | std::ios::in))
-        {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "No headIDFile file:%s\n",
-                            (m_options.m_indexDirectory + FolderSep + m_options.m_headIDFile).c_str());
-        }
-        else {
-            localToGlobalID.Load(ptr, m_topIndex->m_iDataBlockSize, m_topIndex->m_iDataCapacity);
+        if (currentLayer > 0) {
+            std::shared_ptr<Helper::DiskIO> ptr = SPTAG::f_createIO();
+            if (ptr == nullptr ||
+                !ptr->Initialize((m_options.m_indexDirectory + FolderSep + m_options.m_headIDFile).c_str(),
+                                    std::ios::binary | std::ios::in))
+            {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "No headIDFile file:%s\n",
+                                (m_options.m_indexDirectory + FolderSep + m_options.m_headIDFile).c_str());
+            }
+            else {
+                localToGlobalID.Load(ptr, m_topIndex->m_iDataBlockSize, m_topIndex->m_iDataCapacity);
+            }
+        } else {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                         "Layer 0 build: skip loading localToGlobalID from %s\n",
+                         (m_options.m_indexDirectory + FolderSep + m_options.m_headIDFile).c_str());
         }
     }
 
