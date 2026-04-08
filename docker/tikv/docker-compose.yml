@@ -17,8 +17,8 @@ services:
     container_name: tikv-pd1
     network_mode: host
     volumes:
-      - /mnt/nvme/tikv/pd1-data:/data
-      - /mnt/nvme/tikv/pd1-logs:/logs
+      - /mnt/nvme_striped/zhangt/tikv/pd1-data:/data
+      - /mnt/nvme_striped/zhangt/tikv/pd1-logs:/logs
     command:
       - --name=pd1
       - --client-urls=http://0.0.0.0:23791
@@ -40,8 +40,8 @@ services:
     container_name: tikv-pd2
     network_mode: host
     volumes:
-      - /mnt/nvme/tikv/pd2-data:/data
-      - /mnt/nvme/tikv/pd2-logs:/logs
+      - /mnt/nvme_striped/zhangt/tikv/pd2-data:/data
+      - /mnt/nvme_striped/zhangt/tikv/pd2-logs:/logs
     command:
       - --name=pd2
       - --client-urls=http://0.0.0.0:23792
@@ -57,8 +57,8 @@ services:
     container_name: tikv-pd3
     network_mode: host
     volumes:
-      - /mnt/nvme/tikv/pd3-data:/data
-      - /mnt/nvme/tikv/pd3-logs:/logs
+      - /mnt/nvme_striped/zhangt/tikv/pd3-data:/data
+      - /mnt/nvme_striped/zhangt/tikv/pd3-logs:/logs
     command:
       - --name=pd3
       - --client-urls=http://0.0.0.0:23793
@@ -74,8 +74,8 @@ services:
     container_name: tikv-tikv1
     network_mode: host
     volumes:
-      - /mnt/nvme/tikv/tikv1-data:/data
-      - /mnt/nvme/tikv/tikv1-logs:/logs
+      - /mnt/nvme_striped/zhangt/tikv/tikv1-data:/data
+      - /mnt/nvme_striped/zhangt/tikv/tikv1-logs:/logs
       - ./tikv.toml:/etc/tikv/tikv.toml:ro
     command:
       - --config=/etc/tikv/tikv.toml
@@ -94,8 +94,8 @@ services:
     container_name: tikv-tikv2
     network_mode: host
     volumes:
-      - /mnt/nvme/tikv/tikv2-data:/data
-      - /mnt/nvme/tikv/tikv2-logs:/logs
+      - /mnt/nvme_striped/zhangt/tikv/tikv2-data:/data
+      - /mnt/nvme_striped/zhangt/tikv/tikv2-logs:/logs
       - ./tikv.toml:/etc/tikv/tikv.toml:ro
     command:
       - --config=/etc/tikv/tikv.toml
@@ -114,8 +114,8 @@ services:
     container_name: tikv-tikv3
     network_mode: host
     volumes:
-      - /mnt/nvme/tikv/tikv3-data:/data
-      - /mnt/nvme/tikv/tikv3-logs:/logs
+      - /mnt/nvme_striped/zhangt/tikv/tikv3-data:/data
+      - /mnt/nvme_striped/zhangt/tikv/tikv3-logs:/logs
       - ./tikv.toml:/etc/tikv/tikv.toml:ro
     command:
       - --config=/etc/tikv/tikv.toml
