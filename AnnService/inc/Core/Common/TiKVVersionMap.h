@@ -108,38 +108,31 @@ namespace SPTAG
             ErrorCode WriteChunk(SizeType chunkId, const std::string& data)
             {
                 auto ret = m_db->Put(ChunkKey(chunkId), data, MaxTimeout, nullptr);
-                if (ret == ErrorCode::Success && m_cacheTTLMs > 0) {
+                if (ret == ErrorCode::Success) {
                     std::unique_lock<std::shared_mutex> lock(m_cacheMutex);
                     CachePut(chunkId, data, std::chrono::steady_clock::now());
                 }
                 return ret;
             }
 
-            // Read a chunk with LRU cache. Used by read-only paths (search).
+            // Read a chunk with pure LRU cache.
             // Uses shared_lock for cache hits (no LRU reorder) to allow concurrent reads.
             // Only takes exclusive lock on cache miss for insertion.
             std::string ReadChunkCached(SizeType chunkId) const
             {
-                if (m_cacheTTLMs <= 0) return ReadChunk(chunkId);
-
-                auto now = std::chrono::steady_clock::now();
                 // Try cache with shared lock — concurrent reads OK
                 {
                     std::shared_lock<std::shared_mutex> lock(m_cacheMutex);
                     auto it = m_cacheMap.find(chunkId);
                     if (it != m_cacheMap.end()) {
-                        auto ageMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second->fetchTime).count();
-                        if (ageMs < m_cacheTTLMs) {
-                            // Hit: return copy, skip LRU reorder to avoid exclusive lock
-                            return it->second->data;
-                        }
+                        return it->second->data;
                     }
                 }
-                // Cache miss or expired — fetch from TiKV, then exclusive lock to insert
+                // Cache miss — fetch from TiKV, then exclusive lock to insert
                 std::string data = ReadChunk(chunkId);
                 if (!data.empty()) {
                     std::unique_lock<std::shared_mutex> lock(m_cacheMutex);
-                    CachePut(chunkId, data, now);
+                    CachePut(chunkId, data, std::chrono::steady_clock::now());
                 }
                 return data;
             }
