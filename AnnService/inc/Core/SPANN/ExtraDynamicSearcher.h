@@ -2317,6 +2317,8 @@ namespace SPTAG::SPANN {
         ErrorCode AddIndex(ExtraWorkSpace* p_exWorkSpace, std::shared_ptr<VectorSet>& p_vectorSet,
             SizeType begin) override {
 
+            // Phase 1: RNGSelection + serialize + WAL for each vector, group by headID
+            std::unordered_map<SizeType, std::string> headAppends;
             for (int v = 0; v < p_vectorSet->Count(); v++) {
                 SizeType VID = begin + v;
                 if (m_versionMap->Deleted(VID)) m_versionMap->SetVersion(VID, -1);
@@ -2332,17 +2334,16 @@ namespace SPTAG::SPANN {
                 }
                 for (int i = 0; i < replicaCount; i++)
                 {
-                    // AppendAsync(selections[i].node, 1, appendPosting_ptr);
-                    ErrorCode ret;
-                    if (m_opt->m_asyncAppendQueueSize > 0) {
-                        if ((ret = AsyncAppend(p_exWorkSpace, selections[i].VID, 1, appendPosting)) != ErrorCode::Success)
-                            return ret;
-                    } else {
-                        if ((ret = Append(p_exWorkSpace, selections[i].VID, 1, appendPosting)) !=
-                            ErrorCode::Success)
-                            return ret;
-                    }
+                    headAppends[selections[i].VID] += appendPosting;
                 }
+            }
+
+            // Phase 2: Batch append to each headID (one Merge per head instead of per vector)
+            for (auto& [headID, posting] : headAppends) {
+                int appendNum = static_cast<int>(posting.size() / m_vectorInfoSize);
+                ErrorCode ret;
+                if ((ret = Append(p_exWorkSpace, headID, appendNum, posting)) != ErrorCode::Success)
+                    return ret;
             }
             return ErrorCode::Success;
         }

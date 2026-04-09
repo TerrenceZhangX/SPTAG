@@ -16,10 +16,12 @@
 
 #include <map>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <climits>
 #include <future>
 #include <mutex>
+#include <shared_mutex>
 #include <unordered_map>
 #include <sstream>
 #include <chrono>
@@ -752,9 +754,17 @@ namespace SPTAG::SPANN
         uint64_t m_clusterId = 0;
         bool m_available = false;
 
-        // TiKV store stubs keyed by store address
+        // TiKV store stub pools keyed by store address (multiple channels per store)
+        static constexpr int kStubPoolSize = 8;
+        struct StubPool {
+            std::vector<std::shared_ptr<tikvpb::Tikv::Stub>> stubs;
+            std::atomic<uint64_t> next{0};
+            tikvpb::Tikv::Stub* GetNext() {
+                return stubs[next.fetch_add(1, std::memory_order_relaxed) % stubs.size()].get();
+            }
+        };
         mutable std::mutex m_storeMutex;
-        std::unordered_map<std::string, std::shared_ptr<tikvpb::Tikv::Stub>> m_storeStubs;
+        std::unordered_map<std::string, std::shared_ptr<StubPool>> m_storeStubs;
 
         // Store address cache: store_id -> address
         mutable std::mutex m_storeAddrMutex;
@@ -770,7 +780,7 @@ namespace SPTAG::SPANN
             metapb::RegionEpoch epoch;
             metapb::Peer leaderPeer;  // Full peer info (id + store_id)
         };
-        mutable std::mutex m_regionMutex;
+        mutable std::shared_mutex m_regionMutex;
         std::vector<RegionInfo> m_regionCache;
 
         // Scan state
@@ -932,7 +942,7 @@ namespace SPTAG::SPANN
 
             // Cache the region info
             {
-                std::lock_guard<std::mutex> lock(m_regionMutex);
+                std::unique_lock<std::shared_mutex> lock(m_regionMutex);
                 // Replace existing entry for this region or add new
                 bool found = false;
                 for (auto& cached : m_regionCache) {
@@ -1004,7 +1014,7 @@ namespace SPTAG::SPANN
         // ---- Find cached region for a key ----
         bool FindRegionForKey(const std::string& key, RegionInfo& info) {
             {
-                std::lock_guard<std::mutex> lock(m_regionMutex);
+                std::shared_lock<std::shared_mutex> lock(m_regionMutex);
                 for (const auto& region : m_regionCache) {
                     if ((region.startKey.empty() || key >= region.startKey) &&
                         (region.endKey.empty() || key < region.endKey)) {
@@ -1019,7 +1029,7 @@ namespace SPTAG::SPANN
 
         // ---- Invalidate cached region for a key ----
         void InvalidateRegionCache(const std::string& key) {
-            std::lock_guard<std::mutex> lock(m_regionMutex);
+            std::unique_lock<std::shared_mutex> lock(m_regionMutex);
             m_regionCache.erase(
                 std::remove_if(m_regionCache.begin(), m_regionCache.end(),
                     [&key](const RegionInfo& r) {
@@ -1081,7 +1091,7 @@ namespace SPTAG::SPANN
 
             // Last resort: scan region cache for any known store address
             {
-                std::lock_guard<std::mutex> lock(m_regionMutex);
+                std::shared_lock<std::shared_mutex> lock(m_regionMutex);
                 for (const auto& r : m_regionCache) {
                     if (!r.leaderAddr.empty()) return r.leaderAddr;
                 }
@@ -1089,29 +1099,41 @@ namespace SPTAG::SPANN
             return "";
         }
 
-        // ---- Get or create a gRPC stub for a TiKV store ----
+        // ---- Get or create a gRPC stub pool for a TiKV store ----
         tikvpb::Tikv::Stub* GetOrCreateStub(const std::string& address) {
-            std::lock_guard<std::mutex> lock(m_storeMutex);
+            {
+                std::lock_guard<std::mutex> lock(m_storeMutex);
+                auto it = m_storeStubs.find(address);
+                if (it != m_storeStubs.end()) {
+                    return it->second->GetNext();
+                }
+            }
 
+            // Create a pool of stubs with separate channels
+            auto pool = std::make_shared<StubPool>();
+            pool->stubs.reserve(kStubPoolSize);
+            for (int i = 0; i < kStubPoolSize; i++) {
+                grpc::ChannelArguments args;
+                args.SetMaxReceiveMessageSize(64 * 1024 * 1024); // 64MB
+                args.SetMaxSendMessageSize(64 * 1024 * 1024);    // 64MB
+                auto channel = grpc::CreateCustomChannel(address, grpc::InsecureChannelCredentials(), args);
+                auto stub = tikvpb::Tikv::NewStub(channel);
+                if (!stub) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO: Failed to create stub for %s\n", address.c_str());
+                    return nullptr;
+                }
+                pool->stubs.push_back(std::move(stub));
+            }
+
+            std::lock_guard<std::mutex> lock(m_storeMutex);
+            // Double-check after acquiring lock
             auto it = m_storeStubs.find(address);
             if (it != m_storeStubs.end()) {
-                return it->second.get();
+                return it->second->GetNext();
             }
-
-            grpc::ChannelArguments args;
-            args.SetMaxReceiveMessageSize(64 * 1024 * 1024); // 64MB
-            args.SetMaxSendMessageSize(64 * 1024 * 1024);    // 64MB
-            auto channel = grpc::CreateCustomChannel(address, grpc::InsecureChannelCredentials(), args);
-            auto stub = tikvpb::Tikv::NewStub(channel);
-            if (!stub) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO: Failed to create stub for %s\n", address.c_str());
-                return nullptr;
-            }
-
-            auto* result = stub.get();
-            m_storeStubs[address] = std::move(stub);
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "TiKVIO: Created stub for TiKV store at %s\n", address.c_str());
-            return result;
+            m_storeStubs[address] = pool;
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "TiKVIO: Created %d stubs for TiKV store at %s\n", kStubPoolSize, address.c_str());
+            return pool->GetNext();
         }
 
         // ---- Vector search protocol encoding/decoding ----
