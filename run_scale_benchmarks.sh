@@ -13,7 +13,7 @@ cd "$SPTAG_DIR"
 BINARY=./Release/SPTAGTest
 TIKV_DIR="$SPTAG_DIR/docker/tikv"
 LOGDIR=benchmark_logs
-IDXROOT="$SPTAG_DIR"
+IDXROOT="/mnt/nvme_striped/zhangt"
 mkdir -p "$LOGDIR"
 
 # Cleanup on script exit/interrupt to prevent orphan processes
