@@ -29,6 +29,29 @@
 #include <ctime>
 #include <tuple>
 #include <vector>
+#include <execinfo.h>
+#include <signal.h>
+#include <unistd.h>
+
+static void segfault_handler(int sig) {
+    void *array[64];
+    int size = backtrace(array, 64);
+    fprintf(stderr, "\n===== SEGFAULT (signal %d) =====\n", sig);
+    backtrace_symbols_fd(array, size, STDERR_FILENO);
+    fprintf(stderr, "===== END BACKTRACE =====\n");
+    fflush(stderr);
+    _exit(1);
+}
+
+static __attribute__((constructor)) void install_segfault_handler() {
+    struct sigaction sa;
+    sa.sa_handler = segfault_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESETHAND;
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+}
 
 using namespace SPTAG;
 

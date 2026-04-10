@@ -613,7 +613,7 @@ namespace SPTAG::SPANN {
                         memcpy(ptr, postingList.c_str() + localIndices[first + j] * m_vectorInfoSize, m_vectorInfoSize);
                         //Serialize(ptr, localIndicesInsert[localIndices[first + j]], localIndicesInsertVersion[localIndices[first + j]], smallSample[localIndices[first + j]]);
                     }
-                    if (!theSameHead && m_headIndex->ComputeDistance(args.centers + k * args._D, headVec->c_str()) < Epsilon) {
+                    if (!theSameHead && headVec && m_headIndex->ComputeDistance(args.centers + k * args._D, headVec->c_str()) < Epsilon) {
                         newHeadsID.push_back(headID);
                         newHeadsVec.push_back(headVec);
                         newHeadVID = headID;
@@ -779,7 +779,7 @@ namespace SPTAG::SPANN {
             }
             
             m_stat.m_splitNum++;
-            if (reassign) {
+            if (reassign && headVec) {
                 auto reassignScanBegin = std::chrono::high_resolution_clock::now();
 
                 CollectReAssign(p_exWorkSpace, headID, headVec, newPostingLists, newHeadsID, newHeadsVec, theSameHead);
