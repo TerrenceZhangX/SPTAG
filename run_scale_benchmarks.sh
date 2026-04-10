@@ -14,16 +14,388 @@ BINARY=./Release/SPTAGTest
 TIKV_DIR="$SPTAG_DIR/docker/tikv"
 LOGDIR=benchmark_logs
 IDXROOT="/mnt/nvme_striped/zhangt"
+PERF_MONITOR=false
 mkdir -p "$LOGDIR"
 
 # Cleanup on script exit/interrupt to prevent orphan processes
-trap 'echo ""; echo "Interrupted, cleaning up..."; pkill -9 -f "SPTAGTest.*WorkerNode" 2>/dev/null; pkill -9 -f "SPTAGTest.*BenchmarkFromConfig" 2>/dev/null; cd "$TIKV_DIR" && docker compose down 2>/dev/null; exit 1' INT TERM
+trap 'echo ""; echo "Interrupted, cleaning up..."; stop_perf_collectors; pkill -9 -f "SPTAGTest.*WorkerNode" 2>/dev/null; pkill -9 -f "SPTAGTest.*BenchmarkFromConfig" 2>/dev/null; cd "$TIKV_DIR" && docker compose down 2>/dev/null; exit 1' INT TERM
+
+# ─── Perf Monitor Helpers ───
+
+PERF_COLLECTOR_PIDS=()
+PERF_START_TIME=""
+PERF_OUTDIR=""
+
+start_perf_collectors() {
+    # Usage: start_perf_collectors <phase_label>
+    $PERF_MONITOR || return 0
+    local LABEL=$1
+    PERF_OUTDIR="$LOGDIR/perf_diag_${LABEL}_$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$PERF_OUTDIR"
+    PERF_START_TIME=$(date +%s)
+    PERF_COLLECTOR_PIDS=()
+
+    echo "[PERF] Starting collectors for phase: $LABEL -> $PERF_OUTDIR"
+
+    # 1. iostat - per-device IO stats every 1s
+    iostat -xdmt 1 > "$PERF_OUTDIR/iostat.log" 2>&1 &
+    PERF_COLLECTOR_PIDS+=($!)
+
+    # 2. vmstat - system CPU/IO overview every 1s
+    vmstat 1 > "$PERF_OUTDIR/vmstat.log" 2>&1 &
+    PERF_COLLECTOR_PIDS+=($!)
+
+    # 3. mpstat - per-CPU iowait every 2s
+    mpstat -P ALL 2 > "$PERF_OUTDIR/mpstat.log" 2>&1 &
+    PERF_COLLECTOR_PIDS+=($!)
+
+    # 4. pidstat IO + CPU every 2s
+    pidstat -d -u 2 > "$PERF_OUTDIR/pidstat.log" 2>&1 &
+    PERF_COLLECTOR_PIDS+=($!)
+
+    # 5. Process /proc/PID/io auto-discovery poller
+    (
+        TRACKED_PIDS=""
+        while true; do
+            NEW_PIDS=$(pgrep -f "SPTAGTest\|SPFresh\|server\|sptag" 2>/dev/null || true)
+            for PID in $NEW_PIDS; do
+                if [[ ! " $TRACKED_PIDS " =~ " $PID " ]] && [ -f "/proc/$PID/io" ]; then
+                    TRACKED_PIDS="$TRACKED_PIDS $PID"
+                fi
+            done
+            TS=$(date +%s)
+            for PID in $TRACKED_PIDS; do
+                if [ -f "/proc/$PID/io" ]; then
+                    COMM=$(cat "/proc/$PID/comm" 2>/dev/null || echo "unknown")
+                    echo "--- ts=$TS pid=$PID comm=$COMM ---"
+                    cat "/proc/$PID/io" 2>/dev/null || true
+                fi
+            done
+            sleep 1
+        done
+    ) > "$PERF_OUTDIR/proc_io.log" 2>&1 &
+    PERF_COLLECTOR_PIDS+=($!)
+
+    # 6. perf record - on-CPU call stacks (sample all SPTAGTest threads)
+    #    Runs system-wide at low frequency to avoid overhead
+    perf record -a -g -F 99 -o "$PERF_OUTDIR/perf_oncpu.data" -- sleep 999999 > /dev/null 2>&1 &
+    PERF_COLLECTOR_PIDS+=($!)
+
+    # 7. Periodic perf-based off-CPU snapshot via /proc/PID/stack + wchan
+    (
+        while true; do
+            TS=$(date +%s)
+            for PID in $(pgrep -f "SPTAGTest" 2>/dev/null || true); do
+                # Sample all thread stacks
+                TIDS=$(ls "/proc/$PID/task/" 2>/dev/null || true)
+                for TID in $TIDS; do
+                    WCHAN=$(cat "/proc/$PID/task/$TID/wchan" 2>/dev/null || echo "?")
+                    STATUS=$(grep '^State:' "/proc/$PID/task/$TID/status" 2>/dev/null | awk '{print $2}' || echo "?")
+                    if [[ "$STATUS" == "S"* ]] || [[ "$STATUS" == "D"* ]]; then
+                        STACK=$(head -5 "/proc/$PID/task/$TID/stack" 2>/dev/null | tr '\n' '|' || echo "?")
+                        echo "ts=$TS pid=$PID tid=$TID state=$STATUS wchan=$WCHAN stack=$STACK"
+                    fi
+                done
+            done
+            sleep 2
+        done
+    ) > "$PERF_OUTDIR/thread_stacks.log" 2>&1 &
+    PERF_COLLECTOR_PIDS+=($!)
+
+    echo "[PERF]   iostat, vmstat, mpstat, pidstat, proc_io, perf_record, thread_stacks"
+}
+
+stop_perf_collectors() {
+    # Stop all collectors and generate summary
+    $PERF_MONITOR || return 0
+    [ ${#PERF_COLLECTOR_PIDS[@]} -eq 0 ] && return 0
+
+    local END_TIME=$(date +%s)
+    local ELAPSED=$((END_TIME - PERF_START_TIME))
+
+    echo "[PERF] Stopping collectors (ran ${ELAPSED}s)..."
+    for pid in "${PERF_COLLECTOR_PIDS[@]}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    wait "${PERF_COLLECTOR_PIDS[@]}" 2>/dev/null || true
+    PERF_COLLECTOR_PIDS=()
+
+    # Generate perf report from recorded data
+    if [ -f "$PERF_OUTDIR/perf_oncpu.data" ]; then
+        echo "[PERF] Generating perf report..."
+        perf report -i "$PERF_OUTDIR/perf_oncpu.data" --stdio --no-children \
+            -g fractal,0.5 --comm SPTAGTest 2>/dev/null | head -200 > "$PERF_OUTDIR/perf_report.txt" || true
+    fi
+
+    # Generate Python summary
+    generate_perf_summary "$ELAPSED"
+}
+
+generate_perf_summary() {
+    local ELAPSED=$1
+    local ODIR="$PERF_OUTDIR"
+    [ -z "$ODIR" ] && return
+    [ ! -d "$ODIR" ] && return
+
+    python3 - "$ODIR" "$ELAPSED" << 'PYANALYSIS'
+import re, os, sys
+from collections import Counter, defaultdict
+
+ODIR = sys.argv[1]
+ELAPSED = int(sys.argv[2])
+out_lines = []
+def P(s=""): out_lines.append(s)
+
+# ─── iostat parser (correct column mapping) ───
+# $1=Device $2=r/s $3=rMB/s $6=r_await $8=w/s $9=wMB/s $12=w_await $22=aqu-sz $23=%util
+def parse_iostat(filepath):
+    records = []
+    current_ts = None
+    with open(filepath) as f:
+        for line in f:
+            line = line.strip()
+            m = re.match(r'\d+/\d+/\d+\s+(\d+:\d+:\d+)', line)
+            if m:
+                current_ts = m.group(1)
+                continue
+            if not current_ts or line.startswith('Device') or line.startswith('Linux') or not line:
+                continue
+            parts = line.split()
+            if len(parts) < 23: continue
+            try:
+                records.append({
+                    'ts': current_ts, 'dev': parts[0],
+                    'r_s': float(parts[1]), 'rMB_s': float(parts[2]), 'r_await': float(parts[5]),
+                    'w_s': float(parts[7]), 'wMB_s': float(parts[8]), 'w_await': float(parts[11]),
+                    'aqu_sz': float(parts[21]), 'util': float(parts[22]),
+                })
+            except: pass
+    return records
+
+def s(vals): return (sum(vals)/len(vals), max(vals)) if vals else (0,0)
+
+P("=" * 90)
+P(f"  PERF MONITOR SUMMARY — Duration: {ELAPSED}s — {__import__('datetime').datetime.now()}")
+P("=" * 90)
+
+# ─── Section 1: IO (active periods only) ───
+iostat_path = os.path.join(ODIR, "iostat.log")
+if os.path.exists(iostat_path):
+    recs = parse_iostat(iostat_path)
+    ts_data = {}
+    for r in recs:
+        ts_data.setdefault(r['ts'], {})[r['dev']] = r
+    timestamps = sorted(ts_data.keys())[1:]  # skip cumulative
+
+    active = {'md0': [], 'sda': [], 'sdb': [], 'nvme_total': []}
+    for ts in timestamps:
+        d = ts_data[ts]
+        md0 = d.get('md0', {})
+        sda = d.get('sda', {})
+        sdb = d.get('sdb', {})
+        busy = (md0.get('r_s',0)>10 or md0.get('wMB_s',0)>0.5 or md0.get('util',0)>5 or
+                sda.get('r_s',0)>2 or sda.get('rMB_s',0)>0.5 or sda.get('util',0)>3 or
+                sdb.get('r_s',0)>50 or sdb.get('rMB_s',0)>1)
+        if not busy: continue
+        active['md0'].append(md0)
+        active['sda'].append(sda)
+        active['sdb'].append(sdb)
+        nvme_r = sum(d.get(f'nvme{i}n1',{}).get('r_s',0) for i in range(6))
+        nvme_rmb = sum(d.get(f'nvme{i}n1',{}).get('rMB_s',0) for i in range(6))
+        nvme_w = sum(d.get(f'nvme{i}n1',{}).get('w_s',0) for i in range(6))
+        nvme_wmb = sum(d.get(f'nvme{i}n1',{}).get('wMB_s',0) for i in range(6))
+        nvme_u = sum(d.get(f'nvme{i}n1',{}).get('util',0) for i in range(6))/6
+        active['nvme_total'].append({'r_s':nvme_r,'rMB_s':nvme_rmb,'w_s':nvme_w,'wMB_s':nvme_wmb,'util':nvme_u})
+
+    n = len(active['md0'])
+    P(f"\n=== IO (active periods: {n}/{len(timestamps)} samples) ===")
+    if n > 0:
+        for label, key in [("md0 (TiKV RAID)", 'md0'), ("sda (HDD /data_disk)", 'sda'),
+                           ("sdb (OS disk)", 'sdb'), ("NVMe 6x total", 'nvme_total')]:
+            samples = active[key]
+            if not samples: continue
+            avg_rs, peak_rs = s([x.get('r_s',0) for x in samples])
+            avg_rmb, peak_rmb = s([x.get('rMB_s',0) for x in samples])
+            avg_ws, peak_ws = s([x.get('w_s',0) for x in samples])
+            avg_wmb, peak_wmb = s([x.get('wMB_s',0) for x in samples])
+            avg_rawait, _ = s([x.get('r_await',0) for x in samples])
+            avg_wawait, peak_wawait = s([x.get('w_await',0) for x in samples])
+            avg_util, peak_util = s([x.get('util',0) for x in samples])
+            avg_aq, peak_aq = s([x.get('aqu_sz',0) for x in samples])
+            P(f"  {label}:")
+            P(f"    AVG:  r/s={avg_rs:8.0f}  rMB/s={avg_rmb:7.1f}  w/s={avg_ws:8.0f}  wMB/s={avg_wmb:7.1f}  r_await={avg_rawait:.2f}ms  w_await={avg_wawait:.2f}ms  util={avg_util:.1f}%  aq={avg_aq:.1f}")
+            P(f"    PEAK: r/s={peak_rs:8.0f}  rMB/s={peak_rmb:7.1f}  w/s={peak_ws:8.0f}  wMB/s={peak_wmb:7.1f}  w_await={peak_wawait:.2f}ms  util={peak_util:.1f}%  aq={peak_aq:.1f}")
+    else:
+        P("  NO ACTIVE IO DETECTED")
+
+# ─── Section 2: CPU (vmstat, active periods) ───
+vmstat_path = os.path.join(ODIR, "vmstat.log")
+if os.path.exists(vmstat_path):
+    P(f"\n=== CPU ===")
+    vals = []
+    with open(vmstat_path) as f:
+        for line in f.readlines()[2:]:
+            parts = line.split()
+            if len(parts) >= 17:
+                try:
+                    vals.append({'r':int(parts[0]),'b':int(parts[1]),'bi':int(parts[8]),'bo':int(parts[9]),
+                                 'us':int(parts[12]),'sy':int(parts[13]),'id':int(parts[14]),'wa':int(parts[15])})
+                except: pass
+    if vals:
+        n = len(vals)
+        avg = lambda k: sum(v[k] for v in vals)/n
+        peak = lambda k: max(v[k] for v in vals)
+        P(f"  vmstat ({n} samples):")
+        P(f"    AVG:  r={avg('r'):.1f}  b={avg('b'):.1f}  us={avg('us'):.1f}%  sy={avg('sy'):.1f}%  wa={avg('wa'):.1f}%  id={avg('id'):.1f}%")
+        P(f"    PEAK: r={peak('r')}  b={peak('b')}  us={peak('us')}%  sy={peak('sy')}%  wa={peak('wa')}%")
+
+# ─── Section 3: Thread wait analysis (off-CPU) ───
+stacks_path = os.path.join(ODIR, "thread_stacks.log")
+if os.path.exists(stacks_path):
+    P(f"\n=== THREAD WAIT ANALYSIS (off-CPU) ===")
+    wchan_counts = Counter()
+    state_counts = Counter()
+    stack_counts = Counter()
+    total_sleeping = 0
+    with open(stacks_path) as f:
+        for line in f:
+            m = re.match(r'ts=\d+ pid=\d+ tid=\d+ state=(\S+) wchan=(\S+) stack=(.*)', line)
+            if m:
+                state, wchan, stack = m.group(1), m.group(2), m.group(3)
+                state_counts[state] += 1
+                total_sleeping += 1
+                if wchan != '0' and wchan != '?':
+                    wchan_counts[wchan] += 1
+                # Simplify stack for grouping
+                frames = [f.strip() for f in stack.split('|') if f.strip() and '+0x' in f]
+                if frames:
+                    top3 = ' <- '.join(f.split('+')[0] for f in frames[:3])
+                    stack_counts[top3] += 1
+
+    if total_sleeping > 0:
+        P(f"  Total sleeping thread samples: {total_sleeping}")
+        P(f"\n  Thread states:")
+        for st, cnt in state_counts.most_common():
+            P(f"    {st}: {cnt} ({100*cnt/total_sleeping:.1f}%)")
+
+        P(f"\n  Top wait channels (wchan):")
+        for wc, cnt in wchan_counts.most_common(15):
+            P(f"    {wc}: {cnt} ({100*cnt/total_sleeping:.1f}%)")
+
+        if stack_counts:
+            P(f"\n  Top sleeping call stacks:")
+            for st, cnt in stack_counts.most_common(15):
+                P(f"    [{cnt:5d}] {st}")
+
+# ─── Section 4: perf on-CPU hotspots ───
+perf_report_path = os.path.join(ODIR, "perf_report.txt")
+if os.path.exists(perf_report_path):
+    P(f"\n=== ON-CPU HOTSPOTS (perf) ===")
+    with open(perf_report_path) as f:
+        lines = f.readlines()
+    # Extract top functions
+    func_lines = [l.rstrip() for l in lines if '%' in l and ('SPTAGTest' in l or 'libSPTAG' in l or 'libc' in l or 'kernel' in l)]
+    if func_lines:
+        for l in func_lines[:20]:
+            P(f"  {l}")
+    else:
+        P("  (no SPTAGTest samples found - try longer run)")
+
+# ─── Section 5: Process IO rates ───
+proc_io_path = os.path.join(ODIR, "proc_io.log")
+if os.path.exists(proc_io_path):
+    P(f"\n=== PROCESS IO RATES ===")
+    with open(proc_io_path) as f:
+        content = f.read()
+    pid_data = defaultdict(list)
+    current = {}
+    for line in content.split('\n'):
+        m = re.match(r'--- ts=(\d+) pid=(\d+) comm=(\S+) ---', line)
+        if m:
+            current = {'ts': int(m.group(1)), 'pid': m.group(2), 'comm': m.group(3)}
+            continue
+        m2 = re.match(r'(read_bytes|write_bytes):\s+(\d+)', line)
+        if m2 and current:
+            current[m2.group(1)] = int(m2.group(2))
+            if 'read_bytes' in current and 'write_bytes' in current:
+                pid_data[current['pid']].append(dict(current))
+                current = {}
+
+    for pid, samples in pid_data.items():
+        if len(samples) < 2: continue
+        first, last = samples[0], samples[-1]
+        dt = last['ts'] - first['ts']
+        if dt <= 0: continue
+        dr = (last['read_bytes'] - first['read_bytes']) / dt / 1048576
+        dw = (last['write_bytes'] - first['write_bytes']) / dt / 1048576
+        tr = (last['read_bytes'] - first['read_bytes']) / 1073741824
+        tw = (last['write_bytes'] - first['write_bytes']) / 1073741824
+        P(f"  PID {pid} ({first['comm']}): {dt}s  read={dr:.1f} MB/s  write={dw:.1f} MB/s  total_rd={tr:.2f} GB  total_wr={tw:.2f} GB")
+
+# ─── Verdict ───
+P(f"\n{'='*90}")
+P(f"  AUTO-VERDICT")
+P(f"{'='*90}")
+
+# Gather key metrics
+io_util = 0; io_wawait = 0; cpu_us = 0; cpu_sy = 0; cpu_wa = 0; cpu_id = 0
+if active.get('md0'):
+    io_util = sum(x.get('util',0) for x in active['md0'])/len(active['md0'])
+    io_wawait = sum(x.get('w_await',0) for x in active['md0'])/len(active['md0'])
+if vals:
+    cpu_us = sum(v['us'] for v in vals)/len(vals)
+    cpu_sy = sum(v['sy'] for v in vals)/len(vals)
+    cpu_wa = sum(v['wa'] for v in vals)/len(vals)
+    cpu_id = sum(v['id'] for v in vals)/len(vals)
+
+verdict = "UNKNOWN"
+if io_util > 80 or cpu_wa > 10:
+    verdict = "IO BOUND"
+    P(f"  >>> IO BOUND: md0 util={io_util:.1f}%, iowait={cpu_wa:.1f}%")
+elif cpu_us + cpu_sy > 80:
+    verdict = "CPU BOUND"
+    P(f"  >>> CPU BOUND: us+sy={cpu_us+cpu_sy:.1f}%")
+elif cpu_id > 50 and cpu_wa < 5 and io_util < 30:
+    # Check what they're waiting on
+    top_wchan = wchan_counts.most_common(1)[0] if wchan_counts else ("?", 0)
+    verdict = "WAIT/CONTENTION BOUND"
+    P(f"  >>> WAIT/CONTENTION BOUND: idle={cpu_id:.1f}%, io_util={io_util:.1f}%, iowait={cpu_wa:.1f}%")
+    P(f"      Top wait channel: {top_wchan[0]} ({top_wchan[1]} samples)")
+    P(f"      Threads are sleeping, neither CPU nor IO is saturated.")
+    P(f"      Likely cause: synchronous RPC waits, lock contention, or insufficient parallelism.")
+else:
+    P(f"  >>> MIXED: us={cpu_us:.1f}% sy={cpu_sy:.1f}% wa={cpu_wa:.1f}% id={cpu_id:.1f}% io_util={io_util:.1f}%")
+
+P(f"\n  Reference thresholds:")
+P(f"    IO BOUND:   md0 util>80%, await>1ms, iowait>10%")
+P(f"    CPU BOUND:  us+sy>80%")
+P(f"    WAIT BOUND: idle>50%, io_util<30%, iowait<5%")
+P(f"    NVMe 6x RAID0 limits: ~3M IOPS, ~18 GB/s seq read")
+
+# Write summary
+summary_path = os.path.join(ODIR, "summary.txt")
+with open(summary_path, 'w') as f:
+    f.write('\n'.join(out_lines) + '\n')
+
+# Print quick verdict to stdout
+print(f"[PERF] ─── {verdict} ───")
+print(f"[PERF]   IO: md0 util={io_util:.1f}%  w_await={io_wawait:.2f}ms")
+print(f"[PERF]   CPU: us={cpu_us:.1f}%  sy={cpu_sy:.1f}%  wa={cpu_wa:.1f}%  id={cpu_id:.1f}%")
+if wchan_counts:
+    top3 = ', '.join(f"{w}({c})" for w,c in wchan_counts.most_common(3))
+    print(f"[PERF]   Top waits: {top3}")
+print(f"[PERF]   Full report: {summary_path}")
+print(f"[PERF] ────────────────────")
+PYANALYSIS
+}
 
 # ─── Usage ───
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 <scale> [scale2] ..."
+    echo "Usage: $0 [--perf-monitor] <scale> [scale2] ..."
     echo ""
     echo "Scales: 100k, 1m, 10m, 100m, or 'all'"
+    echo ""
+    echo "Options: --perf-monitor  Enable IO + CPU + thread profiling per phase"
     echo ""
     echo "Available configs:"
     for s in 100k 1m 10m 100m; do
@@ -218,11 +590,14 @@ run_1node() {
     rm -rf "$IDXROOT/proidx_${SCALE}_1node" "truth_${SCALE}_1node" "output_${SCALE}_1node.json"
     mkdir -p "$IDXROOT/proidx_${SCALE}_1node"
 
+    start_perf_collectors "${SCALE}_1node"
+
     BENCHMARK_CONFIG="$INI" \
     BENCHMARK_OUTPUT="output_${SCALE}_1node.json" \
       $BINARY --run_test=SPFreshTest/BenchmarkFromConfig \
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_1node.log"
 
+    stop_perf_collectors
     echo "${SCALE} 1-node done: $(date)"
 }
 
@@ -248,11 +623,14 @@ run_2node() {
     # Disable router during build: worker isn't running yet
     sed 's/^RouterEnabled=true/RouterEnabled=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_2node_n0_build.ini"
 
+    start_perf_collectors "${SCALE}_2node_build"
+
     BENCHMARK_CONFIG="/tmp/benchmark_${SCALE}_2node_n0_build.ini" \
     BENCHMARK_OUTPUT="output_${SCALE}_2node_build.json" \
       $BINARY --run_test=SPFreshTest/BenchmarkFromConfig \
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_2node_build.log"
 
+    stop_perf_collectors
     echo "${SCALE} 2-node build done: $(date)"
     # Only balance leaders to the 2 stores mapped by RouterNodeStores
     rebalance_tikv_leaders
@@ -276,10 +654,14 @@ run_2node() {
     # Run driver n0 with Rebuild=false
     sed 's/^Rebuild=true/Rebuild=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_2node_n0_run.ini"
 
+    start_perf_collectors "${SCALE}_2node_query"
+
     BENCHMARK_CONFIG="/tmp/benchmark_${SCALE}_2node_n0_run.ini" \
     BENCHMARK_OUTPUT="output_${SCALE}_2node.json" \
       $BINARY --run_test=SPFreshTest/BenchmarkFromConfig \
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_2node_driver.log"
+
+    stop_perf_collectors
 
     # Stop workers
     stop_workers
@@ -309,11 +691,14 @@ run_3node() {
     # Disable router during build: workers aren't running yet
     sed 's/^RouterEnabled=true/RouterEnabled=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_3node_n0_build.ini"
 
+    start_perf_collectors "${SCALE}_3node_build"
+
     BENCHMARK_CONFIG="/tmp/benchmark_${SCALE}_3node_n0_build.ini" \
     BENCHMARK_OUTPUT="output_${SCALE}_3node_build.json" \
       $BINARY --run_test=SPFreshTest/BenchmarkFromConfig \
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_3node_build.log"
 
+    stop_perf_collectors
     echo "${SCALE} 3-node build done: $(date)"
     rebalance_tikv_leaders
 
@@ -344,10 +729,14 @@ run_3node() {
     # Run driver n0 with Rebuild=false
     sed 's/^Rebuild=true/Rebuild=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_3node_n0_run.ini"
 
+    start_perf_collectors "${SCALE}_3node_query"
+
     BENCHMARK_CONFIG="/tmp/benchmark_${SCALE}_3node_n0_run.ini" \
     BENCHMARK_OUTPUT="output_${SCALE}_3node.json" \
       $BINARY --run_test=SPFreshTest/BenchmarkFromConfig \
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_3node_driver.log"
+
+    stop_perf_collectors
 
     # Stop workers
     stop_workers
@@ -377,11 +766,14 @@ run_6node() {
 
     sed 's/^RouterEnabled=true/RouterEnabled=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_6node_n0_build.ini"
 
+    start_perf_collectors "${SCALE}_6node_build"
+
     BENCHMARK_CONFIG="/tmp/benchmark_${SCALE}_6node_n0_build.ini" \
     BENCHMARK_OUTPUT="output_${SCALE}_6node_build.json" \
       $BINARY --run_test=SPFreshTest/BenchmarkFromConfig \
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_6node_build.log"
 
+    stop_perf_collectors
     echo "${SCALE} 6-node build done: $(date)"
     rebalance_tikv_leaders
 
@@ -407,10 +799,14 @@ run_6node() {
     # Run driver n0 with Rebuild=false
     sed 's/^Rebuild=true/Rebuild=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_6node_n0_run.ini"
 
+    start_perf_collectors "${SCALE}_6node_query"
+
     BENCHMARK_CONFIG="/tmp/benchmark_${SCALE}_6node_n0_run.ini" \
     BENCHMARK_OUTPUT="output_${SCALE}_6node.json" \
       $BINARY --run_test=SPFreshTest/BenchmarkFromConfig \
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_6node_driver.log"
+
+    stop_perf_collectors
 
     stop_workers
     echo "${SCALE} 6-node done: $(date)"
@@ -453,6 +849,8 @@ for arg in "$@"; do
                 SCALES+=("$s")
             fi
         done
+    elif [ "$arg" = "--perf-monitor" ]; then
+        PERF_MONITOR=true
     else
         SCALES+=("$arg")
     fi
@@ -469,6 +867,7 @@ done
 echo "=========================================="
 echo " SPTAG Distributed Routing Scale Test"
 echo " Scales: ${SCALES[*]}"
+$PERF_MONITOR && echo " Perf Monitor: ENABLED"
 echo " $(date)"
 echo "=========================================="
 

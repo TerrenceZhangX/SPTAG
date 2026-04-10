@@ -328,11 +328,25 @@ namespace SPTAG
                 return 1;
             }
 
+            int GetLocalNodeIndex() const override {
+                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    return m_extraSearchers[0]->GetLocalNodeIndex();
+                }
+                return 0;
+            }
+
             void SetHeadSyncCallback() override {
                 if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
                     m_extraSearchers[0]->SetHeadSyncCallback();
                 }
             }
+
+            void SetFullSearchCallback();
+            int GetSearchNodeCount() const;
+            void BatchRouteSearch(
+                std::vector<QueryResult>& p_results,
+                std::vector<SearchStats>& p_stats,
+                int startIdx, int endIdx, int numThreads);
 
             void GetDBStat() { 
                 //if (m_options.m_storage != Storage::STATIC) m_extraSearcher->GetDBStats();

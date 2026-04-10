@@ -361,7 +361,9 @@ namespace SPTAG {
             virtual ErrorCode FlushRemoteAppends() { return ErrorCode::Success; }
             virtual size_t GetRemoteQueueSize() const { return 0; }
             virtual int GetNumNodes() const { return 1; }
+            virtual int GetLocalNodeIndex() const { return 0; }
             virtual void SetHeadSyncCallback() {}
+            virtual void* GetRouter() { return nullptr; }
         };
     } // SPANN
 } // SPTAG

@@ -501,6 +501,176 @@ ErrorCode Index<T>::SearchHeadIndex(QueryResult& p_query, int p_tolayer, ExtraWo
     return ErrorCode::Success;
 }
 
+template <typename T>
+void Index<T>::SetFullSearchCallback()
+{
+    if (m_extraSearchers.empty() || !m_extraSearchers[0]) return;
+
+    auto* routerPtr = m_extraSearchers[0]->GetRouter();
+    if (!routerPtr) return;
+    auto* router = static_cast<PostingRouter*>(routerPtr);
+
+    auto* self = this;
+    router->SetFullSearchCallback(
+        [self](const std::string& queryVec, int resultCount,
+               std::vector<SizeType>& outVIDs, std::vector<float>& outDists) -> ErrorCode {
+            const T* vecPtr = reinterpret_cast<const T*>(queryVec.data());
+            int internalNum = std::max(resultCount, self->m_options.m_searchInternalResultNum);
+            COMMON::QueryResultSet<T> results(vecPtr, internalNum);
+
+            ErrorCode ret = self->SearchIndex(results);
+            if (ret != ErrorCode::Success) return ret;
+
+            results.SortResult();
+            for (int i = 0; i < resultCount && i < results.GetResultNum(); i++) {
+                auto* r = results.GetResult(i);
+                if (r->VID < 0) break;
+                outVIDs.push_back(r->VID);
+                outDists.push_back(r->Dist);
+            }
+            return ErrorCode::Success;
+        });
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "FullSearchCallback set on router\n");
+}
+
+template <typename T>
+int Index<T>::GetSearchNodeCount() const
+{
+    if (m_extraSearchers.empty() || !m_extraSearchers[0]) return 1;
+    auto* routerPtr = m_extraSearchers[0]->GetRouter();
+    if (!routerPtr) return 1;
+    auto* router = static_cast<const PostingRouter*>(routerPtr);
+    if (!router->IsEnabled()) return 1;
+    return router->GetNumNodes();
+}
+
+template <typename T>
+void Index<T>::BatchRouteSearch(
+    std::vector<QueryResult>& p_results,
+    std::vector<SearchStats>& p_stats,
+    int startIdx, int endIdx, int numThreads)
+{
+    if (m_extraSearchers.empty() || !m_extraSearchers[0]) return;
+    auto* routerPtr = m_extraSearchers[0]->GetRouter();
+    if (!routerPtr) return;
+    auto* router = static_cast<PostingRouter*>(routerPtr);
+
+    int numNodes = router->GetNumNodes();
+    int localNode = router->GetLocalNodeIndex();
+    int numQueries = endIdx - startIdx;
+    if (numQueries <= 0) return;
+
+    size_t vecSize = static_cast<size_t>(m_options.m_dim) * sizeof(T);
+    int resultCount = p_results[startIdx].GetResultNum();
+
+    // Partition queries by round-robin into per-node groups
+    // nodeQueries[i] = list of original indices assigned to node i
+    std::vector<std::vector<int>> nodeQueries(numNodes);
+    for (int i = startIdx; i < endIdx; i++) {
+        int node = router->GetNextSearchNode();
+        nodeQueries[node].push_back(i);
+    }
+
+    // Fire batch RPCs to remote nodes
+    struct RemoteBatch {
+        int nodeIdx;
+        std::future<FullSearchBatchResponse> future;
+        std::vector<int> queryIndices;
+    };
+    std::vector<RemoteBatch> remoteBatches;
+
+    for (int n = 0; n < numNodes; n++) {
+        if (n == localNode || nodeQueries[n].empty()) continue;
+
+        // Pack query vectors into a contiguous buffer
+        std::string packedVecs;
+        packedVecs.reserve(nodeQueries[n].size() * vecSize);
+        for (int qi : nodeQueries[n]) {
+            packedVecs.append(
+                reinterpret_cast<const char*>(p_results[qi].GetTarget()), vecSize);
+        }
+
+        remoteBatches.push_back({
+            n,
+            router->SendBatchFullSearchAsync(
+                n, packedVecs,
+                static_cast<std::uint32_t>(vecSize),
+                static_cast<std::uint32_t>(nodeQueries[n].size()),
+                static_cast<std::uint32_t>(resultCount),
+                static_cast<std::uint32_t>(numThreads)),
+            nodeQueries[n]
+        });
+    }
+
+    // Process local queries with local threads
+    auto& localIndices = nodeQueries[localNode];
+    if (!localIndices.empty()) {
+        std::atomic_size_t nextLocal{0};
+        std::vector<std::thread> threads;
+        int localThreads = std::min(numThreads, static_cast<int>(localIndices.size()));
+        auto* self = this;
+
+        for (int t = 0; t < localThreads; t++) {
+            threads.emplace_back([&, self]() {
+                auto tStart = std::chrono::high_resolution_clock::now();
+                while (true) {
+                    size_t li = nextLocal.fetch_add(1);
+                    if (li >= localIndices.size()) break;
+                    int qi = localIndices[li];
+                    auto qStart = std::chrono::high_resolution_clock::now();
+
+                    self->SearchIndex(p_results[qi]);
+
+                    auto qEnd = std::chrono::high_resolution_clock::now();
+                    p_stats[qi].m_totalLatency = p_stats[qi].m_totalSearchLatency =
+                        std::chrono::duration<double, std::milli>(qEnd - qStart).count();
+                }
+            });
+        }
+        for (auto& t : threads) t.join();
+    }
+
+    // Collect remote results
+    for (auto& rb : remoteBatches) {
+        auto resp = rb.future.get();
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+            "BatchRouteSearch: node %d response: status=%d queryCount=%u resultCount=%u vids.size=%zu\n",
+            rb.nodeIdx, (int)resp.m_status, resp.m_queryCount, resp.m_resultCount, resp.m_vids.size());
+        if (resp.m_status != FullSearchBatchResponse::Status::Success) {
+            // Fallback: search locally for failed remote queries
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                "BatchRouteSearch: node %d batch failed, falling back to local for %d queries\n",
+                rb.nodeIdx, (int)rb.queryIndices.size());
+            for (int qi : rb.queryIndices) {
+                GetMemoryIndex()->SearchIndex(p_results[qi]);
+                SearchDiskIndex(p_results[qi], &(p_stats[qi]));
+            }
+            continue;
+        }
+
+        // Fill results from batch response
+        int filledCount = 0;
+        for (size_t i = 0; i < rb.queryIndices.size(); i++) {
+            int qi = rb.queryIndices[i];
+            size_t base = i * resp.m_resultCount;
+            for (std::uint32_t r = 0; r < resp.m_resultCount; r++) {
+                SizeType vid = resp.m_vids[base + r];
+                float dist = resp.m_dists[base + r];
+                if (vid >= 0) {
+                    p_results[qi].SetResult(r, vid, dist);
+                    filledCount++;
+                }
+            }
+        }
+        // Log first batch only
+        if (&rb == &remoteBatches[0]) {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "BatchRouteSearch: filled %d results for %d queries from node %d\n",
+                filledCount, (int)rb.queryIndices.size(), rb.nodeIdx);
+        }
+    }
+}
+
 template <typename T> 
 ErrorCode Index<T>::SearchDiskIndex(QueryResult &p_query, SearchStats *p_stats, int p_tolayer, ExtraWorkSpace *p_exWorkSpace) const
 {
@@ -1723,6 +1893,62 @@ ErrorCode Index<T>::AddIndex(const void *p_data, SizeType p_vectorNum, Dimension
     }
     workSpace->m_deduper.clear();
     workSpace->m_postingIDs.clear();
+
+    // Use multiple threads for RNGSelection + Append when vector count is large enough
+    if (p_vectorNum > 1 && m_options.m_iSSDNumberOfThreads > 1) {
+        int numThreads = std::min((int)p_vectorNum, m_options.m_iSSDNumberOfThreads);
+        std::atomic_int nextVec{0};
+        std::atomic<ErrorCode> globalError{ErrorCode::Success};
+
+        auto worker = [&](bool isFirst) {
+            std::unique_ptr<ExtraWorkSpace> ws;
+            ExtraWorkSpace* wsPtr;
+            if (isFirst) {
+                wsPtr = workSpace.get();
+            } else {
+                ws = m_workSpaceFactory->GetWorkSpace();
+                if (!ws) {
+                    ws.reset(new ExtraWorkSpace());
+                    m_extraSearchers.back()->InitWorkSpace(ws.get(), false);
+                } else {
+                    m_extraSearchers.back()->InitWorkSpace(ws.get(), true);
+                }
+                ws->m_deduper.clear();
+                ws->m_postingIDs.clear();
+                wsPtr = ws.get();
+            }
+
+            while (globalError.load(std::memory_order_relaxed) == ErrorCode::Success) {
+                int v = nextVec.fetch_add(1);
+                if (v >= p_vectorNum) break;
+
+                // Create a single-vector VectorSet view
+                std::shared_ptr<VectorSet> singleVec = std::make_shared<BasicVectorSet>(
+                    ByteArray((std::uint8_t*)vectorSet->GetVector(v),
+                              sizeof(T) * p_dimension, false),
+                    GetEnumValueType<T>(), p_dimension, 1);
+                ErrorCode ret = m_extraSearchers[0]->AddIndex(wsPtr, singleVec, begin + v);
+                if (ret != ErrorCode::Success) {
+                    globalError.store(ret, std::memory_order_relaxed);
+                }
+            }
+
+            if (!isFirst && ws) {
+                m_workSpaceFactory->ReturnWorkSpace(std::move(ws));
+            }
+        };
+
+        std::vector<std::thread> threads;
+        threads.reserve(numThreads - 1);
+        for (int t = 1; t < numThreads; t++) {
+            threads.emplace_back(worker, false);
+        }
+        worker(true);  // Use current thread + existing workspace
+        for (auto& t : threads) t.join();
+
+        return globalError.load();
+    }
+
     return m_extraSearchers[0]->AddIndex(workSpace.get(), vectorSet, begin);
 }
 

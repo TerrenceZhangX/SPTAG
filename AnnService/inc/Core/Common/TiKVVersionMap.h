@@ -25,16 +25,18 @@ namespace SPTAG
         /// TiKVVersionMap stores per-VID version bytes in TiKV as chunks.
         ///
         /// TiKV key schema:
-        ///   "vc:{layer}"         → uint64 (vector count)
-        ///   "v:{layer}:{chunkId}" → uint8_t[chunkSize]
+        ///   "vc:{nodeIndex}:{layer}"              → uint64 (vector count)
+        ///   "v:{nodeIndex}:{layer}:{chunkId}"     → uint8_t[chunkSize]
         ///
         /// Each chunk holds chunkSize VIDs' version bytes.
         /// chunk_id = VID / chunkSize, offset = VID % chunkSize.
+        /// nodeIndex isolates version maps across compute nodes.
         class TiKVVersionMap : public IVersionMap
         {
         private:
             std::shared_ptr<Helper::KeyValueIO> m_db;
             int m_layer;
+            int m_nodeIndex;
             int m_chunkSize;
             std::atomic<SizeType> m_count{0};
             std::atomic<SizeType> m_deleted{0};
@@ -82,12 +84,12 @@ namespace SPTAG
 
             std::string CountKey() const
             {
-                return "vc:" + std::to_string(m_layer);
+                return "vc:" + std::to_string(m_nodeIndex) + ":" + std::to_string(m_layer);
             }
 
             std::string ChunkKey(SizeType chunkId) const
             {
-                return "v:" + std::to_string(m_layer) + ":" + std::to_string(chunkId);
+                return "v:" + std::to_string(m_nodeIndex) + ":" + std::to_string(m_layer) + ":" + std::to_string(chunkId);
             }
 
             SizeType ChunkId(SizeType vid) const { return vid / m_chunkSize; }
@@ -174,10 +176,11 @@ namespace SPTAG
             }
 
         public:
-            TiKVVersionMap() : m_layer(0), m_chunkSize(4096) {}
+            TiKVVersionMap() : m_layer(0), m_nodeIndex(0), m_chunkSize(4096) {}
 
             void SetDB(std::shared_ptr<Helper::KeyValueIO> db) { m_db = db; }
             void SetLayer(int layer) { m_layer = layer; }
+            void SetNodeIndex(int nodeIndex) { m_nodeIndex = nodeIndex; }
             void SetChunkSize(int chunkSize) { m_chunkSize = chunkSize; }
             void SetCacheTTL(int ttlMs) { m_cacheTTLMs = ttlMs; }
             void SetCacheMaxChunks(int maxChunks) { m_cacheMaxChunks = maxChunks; }

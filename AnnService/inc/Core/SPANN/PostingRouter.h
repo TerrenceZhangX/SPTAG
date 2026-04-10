@@ -12,7 +12,10 @@
 #include "inc/Socket/SimpleSerialization.h"
 #include <string>
 #include <unordered_map>
+#include <map>
+#include <set>
 #include <mutex>
+#include <memory>
 #include <vector>
 #include <atomic>
 #include <future>
@@ -127,13 +130,17 @@ namespace SPTAG::SPANN {
             return p_buffer;
         }
 
-        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
+        const std::uint8_t* Read(const std::uint8_t* p_buffer, std::uint32_t bodyLength = 0) {
             using namespace Socket::SimpleSerialization;
             std::uint16_t majorVer = 0, mirrorVer = 0;
             p_buffer = SimpleReadBuffer(p_buffer, majorVer);
             p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
             if (majorVer != MajorVersion()) return nullptr;
             p_buffer = SimpleReadBuffer(p_buffer, m_count);
+            // Validate count against body length if provided
+            if (bodyLength > 0 && m_count > bodyLength / sizeof(RemoteAppendRequest)) {
+                return nullptr;
+            }
             m_items.resize(m_count);
             for (std::uint32_t i = 0; i < m_count; i++) {
                 p_buffer = m_items[i].Read(p_buffer);
@@ -172,78 +179,6 @@ namespace SPTAG::SPANN {
             if (majorVer != MajorVersion()) return nullptr;
             p_buffer = SimpleReadBuffer(p_buffer, m_successCount);
             p_buffer = SimpleReadBuffer(p_buffer, m_failCount);
-            return p_buffer;
-        }
-    };
-
-    /// Request to have a remote node perform full insert (head search + append) for a batch of vectors.
-    struct InsertBatchRequest {
-        static constexpr std::uint16_t MajorVersion() { return 1; }
-        static constexpr std::uint16_t MirrorVersion() { return 0; }
-
-        SizeType m_startVID = 0;
-        std::uint32_t m_count = 0;
-        std::string m_vectorData;  // raw bytes: count * dimension * sizeof(ValueType)
-
-        std::size_t EstimateBufferSize() const {
-            return sizeof(std::uint16_t) * 2 + sizeof(SizeType) + sizeof(std::uint32_t)
-                   + sizeof(std::uint32_t) + m_vectorData.size();
-        }
-
-        std::uint8_t* Write(std::uint8_t* p_buffer) const {
-            using namespace Socket::SimpleSerialization;
-            p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
-            p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
-            p_buffer = SimpleWriteBuffer(m_startVID, p_buffer);
-            p_buffer = SimpleWriteBuffer(m_count, p_buffer);
-            p_buffer = SimpleWriteBuffer(m_vectorData, p_buffer);
-            return p_buffer;
-        }
-
-        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
-            using namespace Socket::SimpleSerialization;
-            std::uint16_t majorVer = 0, mirrorVer = 0;
-            p_buffer = SimpleReadBuffer(p_buffer, majorVer);
-            p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
-            if (majorVer != MajorVersion()) return nullptr;
-            p_buffer = SimpleReadBuffer(p_buffer, m_startVID);
-            p_buffer = SimpleReadBuffer(p_buffer, m_count);
-            p_buffer = SimpleReadBuffer(p_buffer, m_vectorData);
-            return p_buffer;
-        }
-    };
-
-    struct InsertBatchResponse {
-        static constexpr std::uint16_t MajorVersion() { return 1; }
-        static constexpr std::uint16_t MirrorVersion() { return 0; }
-
-        enum class Status : std::uint8_t { Success = 0, Failed = 1 };
-        Status m_status = Status::Failed;
-        std::uint32_t m_insertedCount = 0;
-
-        std::size_t EstimateBufferSize() const {
-            return sizeof(std::uint16_t) * 2 + sizeof(std::uint8_t) + sizeof(std::uint32_t);
-        }
-
-        std::uint8_t* Write(std::uint8_t* p_buffer) const {
-            using namespace Socket::SimpleSerialization;
-            p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
-            p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
-            p_buffer = SimpleWriteBuffer(static_cast<std::uint8_t>(m_status), p_buffer);
-            p_buffer = SimpleWriteBuffer(m_insertedCount, p_buffer);
-            return p_buffer;
-        }
-
-        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
-            using namespace Socket::SimpleSerialization;
-            std::uint16_t majorVer = 0, mirrorVer = 0;
-            p_buffer = SimpleReadBuffer(p_buffer, majorVer);
-            p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
-            if (majorVer != MajorVersion()) return nullptr;
-            std::uint8_t s = 0;
-            p_buffer = SimpleReadBuffer(p_buffer, s);
-            m_status = static_cast<Status>(s);
-            p_buffer = SimpleReadBuffer(p_buffer, m_insertedCount);
             return p_buffer;
         }
     };
@@ -362,12 +297,297 @@ namespace SPTAG::SPANN {
         }
     };
 
+    /// Request to search posting lists on a remote node.
+    /// Driver sends query vector + candidate headIDs; worker reads postings,
+    /// computes distances, and returns top candidates.
+    struct SearchPostingRequest {
+        static constexpr std::uint16_t MajorVersion() { return 1; }
+        static constexpr std::uint16_t MirrorVersion() { return 0; }
+
+        std::uint32_t m_resultCount = 0;   // Max results to return
+        std::uint32_t m_headIDCount = 0;   // Number of candidate headIDs
+        std::string m_queryVector;         // Raw query vector bytes (dim * sizeof(ValueType))
+        std::vector<SizeType> m_headIDs;   // Candidate headIDs to search
+
+        std::size_t EstimateBufferSize() const {
+            return sizeof(std::uint16_t) * 2
+                 + sizeof(std::uint32_t) * 2
+                 + sizeof(std::uint32_t) + m_queryVector.size()
+                 + m_headIDCount * sizeof(SizeType);
+        }
+
+        std::uint8_t* Write(std::uint8_t* p_buffer) const {
+            using namespace Socket::SimpleSerialization;
+            p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(m_resultCount, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_headIDCount, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_queryVector, p_buffer);
+            for (std::uint32_t i = 0; i < m_headIDCount; i++) {
+                p_buffer = SimpleWriteBuffer(m_headIDs[i], p_buffer);
+            }
+            return p_buffer;
+        }
+
+        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
+            using namespace Socket::SimpleSerialization;
+            std::uint16_t majorVer = 0, mirrorVer = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, majorVer);
+            p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
+            if (majorVer != MajorVersion()) return nullptr;
+            p_buffer = SimpleReadBuffer(p_buffer, m_resultCount);
+            p_buffer = SimpleReadBuffer(p_buffer, m_headIDCount);
+            p_buffer = SimpleReadBuffer(p_buffer, m_queryVector);
+            m_headIDs.resize(m_headIDCount);
+            for (std::uint32_t i = 0; i < m_headIDCount; i++) {
+                p_buffer = SimpleReadBuffer(p_buffer, m_headIDs[i]);
+            }
+            return p_buffer;
+        }
+    };
+
+    /// Response from a remote search: top candidates with VID and distance.
+    struct SearchPostingResponse {
+        static constexpr std::uint16_t MajorVersion() { return 1; }
+        static constexpr std::uint16_t MirrorVersion() { return 0; }
+
+        enum class Status : std::uint8_t { Success = 0, Failed = 1 };
+        Status m_status = Status::Failed;
+        std::uint32_t m_resultCount = 0;
+        std::uint32_t m_listElements = 0;  // For stats: total elements scanned
+        std::vector<SizeType> m_vids;
+        std::vector<float> m_dists;
+
+        std::size_t EstimateBufferSize() const {
+            return sizeof(std::uint16_t) * 2
+                 + sizeof(std::uint8_t)
+                 + sizeof(std::uint32_t) * 2
+                 + m_resultCount * (sizeof(SizeType) + sizeof(float));
+        }
+
+        std::uint8_t* Write(std::uint8_t* p_buffer) const {
+            using namespace Socket::SimpleSerialization;
+            p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(static_cast<std::uint8_t>(m_status), p_buffer);
+            p_buffer = SimpleWriteBuffer(m_resultCount, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_listElements, p_buffer);
+            for (std::uint32_t i = 0; i < m_resultCount; i++) {
+                p_buffer = SimpleWriteBuffer(m_vids[i], p_buffer);
+                p_buffer = SimpleWriteBuffer(m_dists[i], p_buffer);
+            }
+            return p_buffer;
+        }
+
+        const std::uint8_t* Read(const std::uint8_t* p_buffer, std::uint32_t bodyLength = 0) {
+            using namespace Socket::SimpleSerialization;
+            std::uint16_t majorVer = 0, mirrorVer = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, majorVer);
+            p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
+            if (majorVer != MajorVersion()) return nullptr;
+            std::uint8_t s = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, s);
+            m_status = static_cast<Status>(s);
+            p_buffer = SimpleReadBuffer(p_buffer, m_resultCount);
+            p_buffer = SimpleReadBuffer(p_buffer, m_listElements);
+            // Validate: each result = sizeof(SizeType) + sizeof(float) = 8 bytes
+            // Header overhead = 4(ver) + 1(status) + 4(resultCount) + 4(listElements) = 13
+            if (bodyLength > 0 && m_resultCount > (bodyLength - 13) / (sizeof(SizeType) + sizeof(float))) {
+                return nullptr;
+            }
+            m_vids.resize(m_resultCount);
+            m_dists.resize(m_resultCount);
+            for (std::uint32_t i = 0; i < m_resultCount; i++) {
+                p_buffer = SimpleReadBuffer(p_buffer, m_vids[i]);
+                p_buffer = SimpleReadBuffer(p_buffer, m_dists[i]);
+            }
+            return p_buffer;
+        }
+    };
+
+    /// Consistent hash ring for distributing headIDs across compute nodes.
+
+    /// Batch full-search request: multiple query vectors sent in one RPC.
+    /// Worker runs head search + disk search for all queries using local threads.
+    struct FullSearchBatchRequest {
+        static constexpr std::uint16_t MajorVersion() { return 1; }
+        static constexpr std::uint16_t MirrorVersion() { return 0; }
+
+        std::uint32_t m_queryCount = 0;
+        std::uint32_t m_resultCount = 0;   // topK per query
+        std::uint32_t m_vectorSize = 0;    // bytes per query vector
+        std::uint32_t m_numThreads = 8;    // threads for worker to use
+        std::string m_queryVectors;        // all queries concatenated
+
+        std::size_t EstimateBufferSize() const {
+            return sizeof(std::uint16_t) * 2
+                 + sizeof(std::uint32_t) * 4
+                 + sizeof(std::uint32_t) + m_queryVectors.size();
+        }
+
+        std::uint8_t* Write(std::uint8_t* p_buffer) const {
+            using namespace Socket::SimpleSerialization;
+            p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(m_queryCount, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_resultCount, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_vectorSize, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_numThreads, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_queryVectors, p_buffer);
+            return p_buffer;
+        }
+
+        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
+            using namespace Socket::SimpleSerialization;
+            std::uint16_t majorVer = 0, mirrorVer = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, majorVer);
+            p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
+            if (majorVer != MajorVersion()) return nullptr;
+            p_buffer = SimpleReadBuffer(p_buffer, m_queryCount);
+            p_buffer = SimpleReadBuffer(p_buffer, m_resultCount);
+            p_buffer = SimpleReadBuffer(p_buffer, m_vectorSize);
+            p_buffer = SimpleReadBuffer(p_buffer, m_numThreads);
+            p_buffer = SimpleReadBuffer(p_buffer, m_queryVectors);
+            return p_buffer;
+        }
+    };
+
+    /// Batch full-search response: results for all queries.
+    struct FullSearchBatchResponse {
+        static constexpr std::uint16_t MajorVersion() { return 1; }
+        static constexpr std::uint16_t MirrorVersion() { return 0; }
+
+        enum class Status : std::uint8_t { Success = 0, Failed = 1 };
+        Status m_status = Status::Failed;
+        std::uint32_t m_queryCount = 0;
+        std::uint32_t m_resultCount = 0;   // per query
+        // Flat arrays: m_queryCount * m_resultCount entries
+        std::vector<SizeType> m_vids;
+        std::vector<float> m_dists;
+
+        std::size_t EstimateBufferSize() const {
+            std::uint32_t total = m_queryCount * m_resultCount;
+            return sizeof(std::uint16_t) * 2
+                 + sizeof(std::uint8_t)
+                 + sizeof(std::uint32_t) * 2
+                 + total * (sizeof(SizeType) + sizeof(float));
+        }
+
+        std::uint8_t* Write(std::uint8_t* p_buffer) const {
+            using namespace Socket::SimpleSerialization;
+            p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(static_cast<std::uint8_t>(m_status), p_buffer);
+            p_buffer = SimpleWriteBuffer(m_queryCount, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_resultCount, p_buffer);
+            std::uint32_t total = m_queryCount * m_resultCount;
+            for (std::uint32_t i = 0; i < total; i++) {
+                p_buffer = SimpleWriteBuffer(m_vids[i], p_buffer);
+                p_buffer = SimpleWriteBuffer(m_dists[i], p_buffer);
+            }
+            return p_buffer;
+        }
+
+        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
+            using namespace Socket::SimpleSerialization;
+            std::uint16_t majorVer = 0, mirrorVer = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, majorVer);
+            p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
+            if (majorVer != MajorVersion()) return nullptr;
+            std::uint8_t s = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, s);
+            m_status = static_cast<Status>(s);
+            p_buffer = SimpleReadBuffer(p_buffer, m_queryCount);
+            p_buffer = SimpleReadBuffer(p_buffer, m_resultCount);
+            std::uint32_t total = m_queryCount * m_resultCount;
+            m_vids.resize(total);
+            m_dists.resize(total);
+            for (std::uint32_t i = 0; i < total; i++) {
+                p_buffer = SimpleReadBuffer(p_buffer, m_vids[i]);
+                p_buffer = SimpleReadBuffer(p_buffer, m_dists[i]);
+            }
+            return p_buffer;
+        }
+    };
+
+    /// Consistent hash ring for distributing headIDs across compute nodes.
+    /// Uses virtual nodes (vnodes) for balanced distribution.
+    /// When nodes are added/removed, only ~1/N of keys are remapped.
+    class ConsistentHashRing {
+    public:
+        explicit ConsistentHashRing(int vnodeCount = 150)
+            : m_vnodeCount(vnodeCount) {}
+
+        /// Add a physical node to the ring with its virtual nodes.
+        void AddNode(int nodeIndex) {
+            for (int i = 0; i < m_vnodeCount; i++) {
+                uint32_t h = HashVNode(nodeIndex, i);
+                m_ring[h] = nodeIndex;
+            }
+            m_nodes.insert(nodeIndex);
+        }
+
+        /// Remove a physical node and all its virtual nodes from the ring.
+        void RemoveNode(int nodeIndex) {
+            for (int i = 0; i < m_vnodeCount; i++) {
+                uint32_t h = HashVNode(nodeIndex, i);
+                m_ring.erase(h);
+            }
+            m_nodes.erase(nodeIndex);
+        }
+
+        /// Find the owner node for a given key (headID).
+        /// Returns -1 if the ring is empty.
+        int GetOwner(SizeType headID) const {
+            if (m_ring.empty()) return -1;
+            uint32_t h = HashKey(headID);
+            auto it = m_ring.lower_bound(h);
+            if (it == m_ring.end()) it = m_ring.begin();
+            return it->second;
+        }
+
+        bool Empty() const { return m_ring.empty(); }
+        size_t NodeCount() const { return m_nodes.size(); }
+        bool HasNode(int nodeIndex) const { return m_nodes.count(nodeIndex) > 0; }
+        const std::set<int>& GetNodes() const { return m_nodes; }
+        int GetVNodeCount() const { return m_vnodeCount; }
+
+    private:
+        static uint32_t HashKey(SizeType headID) {
+            uint32_t hash = 2166136261u; // FNV-1a offset basis
+            uint32_t val = static_cast<uint32_t>(headID);
+            for (int i = 0; i < 4; i++) {
+                hash ^= (val >> (i * 8)) & 0xFF;
+                hash *= 16777619u; // FNV prime
+            }
+            return hash;
+        }
+
+        static uint32_t HashVNode(int nodeIndex, int vnodeIdx) {
+            uint32_t hash = 2166136261u;
+            auto mix = [&](uint32_t v) {
+                for (int i = 0; i < 4; i++) {
+                    hash ^= (v >> (i * 8)) & 0xFF;
+                    hash *= 16777619u;
+                }
+            };
+            mix(static_cast<uint32_t>(nodeIndex));
+            mix(static_cast<uint32_t>(vnodeIdx));
+            return hash;
+        }
+
+        int m_vnodeCount;
+        std::map<uint32_t, int> m_ring;  // hash position → nodeIndex
+        std::set<int> m_nodes;           // active physical node indices
+    };
+
     /// Distributed routing layer for SPFRESH posting writes.
     ///
     /// Architecture: N compute nodes, each with a full head index replica,
     /// sharing a TiKV cluster for posting storage. When a write arrives,
     /// PostingRouter determines which compute node should handle it using
-    /// hash-based routing: hash(headID) % NumNodes → Owner Node.
+    /// consistent hashing on headID, ensuring minimal key remapping on
+    /// node join/leave.
     ///
     /// This guarantees that the same headID always routes to the same compute
     /// node, enabling local per-headID locking for Append/Split/Merge correctness.
@@ -381,13 +601,6 @@ namespace SPTAG::SPANN {
             int appendNum,
             std::string& appendPosting)>;
 
-        /// Callback type for handling a distributed insert batch (head search + append).
-        /// Params: vectorData (raw bytes), startVID, count
-        using InsertCallback = std::function<ErrorCode(
-            const std::string& vectorData,
-            SizeType startVID,
-            std::uint32_t count)>;
-
         /// Callback to apply a head sync entry on the local head index.
         /// For Add: call AddHeadIndex with (vectorData, headVID, dim).
         /// For Delete: call DeleteIndex with (headVID, layer).
@@ -396,6 +609,25 @@ namespace SPTAG::SPANN {
         /// Callback for remote lock: try_lock or unlock a headID on this node.
         /// Returns true if lock was acquired (Lock) or released (Unlock).
         using RemoteLockCallback = std::function<bool(SizeType headID, bool lock)>;
+
+        /// Callback for handling a distributed search request on a worker node.
+        /// Params: queryVec (raw bytes), headIDs to search, max result count
+        /// Outputs: outVIDs, outDists (top candidates), listElements (stats)
+        using SearchCallback = std::function<ErrorCode(
+            const std::string& queryVec,
+            const std::vector<SizeType>& headIDs,
+            int resultCount,
+            std::vector<SizeType>& outVIDs,
+            std::vector<float>& outDists,
+            int& listElements)>;
+
+        /// Callback for full search (head search + disk search) on a worker node.
+        /// Used for query routing: worker does the entire search locally.
+        using FullSearchCallback = std::function<ErrorCode(
+            const std::string& queryVec,
+            int resultCount,
+            std::vector<SizeType>& outVIDs,
+            std::vector<float>& outDists)>;
 
         PostingRouter()
             : m_enabled(false), m_localNodeIndex(-1) {}
@@ -406,11 +638,13 @@ namespace SPTAG::SPANN {
         /// @param nodeAddrs    "host:port" pairs for all compute nodes' router ports.
         /// @param nodeStores   TiKV store addresses. Can be >= nodeAddrs.size();
         ///                     stores are assigned to nodes round-robin.
+        /// @param vnodeCount   Virtual nodes per physical node for consistent hashing (default 150).
         bool Initialize(
             std::shared_ptr<Helper::KeyValueIO> p_db,
             int localNodeIdx,
             const std::vector<std::pair<std::string, std::string>>& nodeAddrs,
-            const std::vector<std::string>& nodeStores)
+            const std::vector<std::string>& nodeStores,
+            int vnodeCount = 150)
         {
             if (nodeAddrs.empty() || localNodeIdx < 0 ||
                 localNodeIdx >= static_cast<int>(nodeAddrs.size()) ||
@@ -447,6 +681,18 @@ namespace SPTAG::SPANN {
                 "PostingRouter: %d stores mapped to %d nodes (sub-partitioned)\n",
                 numStores, numNodes);
 
+            // Build consistent hash ring (lock-free via atomic shared_ptr)
+            {
+                auto ring = std::make_shared<ConsistentHashRing>(vnodeCount);
+                for (int i = 0; i < numNodes; i++) {
+                    ring->AddNode(i);
+                }
+                std::atomic_store(&m_hashRing, std::shared_ptr<const ConsistentHashRing>(std::move(ring)));
+            }
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "PostingRouter: Consistent hash ring built with %d nodes, %d vnodes/node\n",
+                numNodes, vnodeCount);
+
             m_enabled = true;
             return true;
         }
@@ -454,11 +700,6 @@ namespace SPTAG::SPANN {
         /// Set the callback for handling appends locally (called for incoming RPCs).
         void SetAppendCallback(AppendCallback cb) {
             m_appendCallback = std::move(cb);
-        }
-
-        /// Set the callback for handling full insert batches (head search + append).
-        void SetInsertCallback(InsertCallback cb) {
-            m_insertCallback = std::move(cb);
         }
 
         /// Set the callback for applying head sync entries on the local head index.
@@ -469,6 +710,23 @@ namespace SPTAG::SPANN {
         /// Set the callback for remote lock/unlock of headIDs on this node.
         void SetRemoteLockCallback(RemoteLockCallback cb) {
             m_remoteLockCallback = std::move(cb);
+        }
+
+        /// Set the callback for handling distributed search requests on this worker node.
+        void SetSearchCallback(SearchCallback cb) {
+            m_searchCallback = std::move(cb);
+        }
+
+        /// Set the callback for full search (query routing) on this node.
+        void SetFullSearchCallback(FullSearchCallback cb) {
+            m_fullSearchCallback = std::move(cb);
+        }
+
+        /// Round-robin node selection for query routing.
+        int GetNextSearchNode() {
+            int numNodes = GetNumNodes();
+            if (numNodes <= 1) return m_localNodeIndex;
+            return static_cast<int>(m_searchRoundRobin.fetch_add(1, std::memory_order_relaxed) % numNodes);
         }
 
         /// Start the router server (listens for incoming remote appends)
@@ -486,10 +744,6 @@ namespace SPTAG::SPANN {
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
                     HandleBatchAppendRequest(connID, std::move(packet));
                 });
-            serverHandlers->emplace(Socket::PacketType::InsertBatchRequest,
-                [this](Socket::ConnectionID connID, Socket::Packet packet) {
-                    HandleInsertBatchRequest(connID, std::move(packet));
-                });
             serverHandlers->emplace(Socket::PacketType::HeadSyncRequest,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
                     HandleHeadSyncRequest(connID, std::move(packet));
@@ -497,6 +751,14 @@ namespace SPTAG::SPANN {
             serverHandlers->emplace(Socket::PacketType::RemoteLockRequest,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
                     HandleRemoteLockRequest(connID, std::move(packet));
+                });
+            serverHandlers->emplace(Socket::PacketType::SearchRequest,
+                [this](Socket::ConnectionID connID, Socket::Packet packet) {
+                    HandleSearchRequest(connID, std::move(packet));
+                });
+            serverHandlers->emplace(Socket::PacketType::BatchSearchRequest,
+                [this](Socket::ConnectionID connID, Socket::Packet packet) {
+                    HandleBatchSearchRequest(connID, std::move(packet));
                 });
 
             const auto& localAddr = m_nodeAddrs[m_localNodeIndex];
@@ -516,13 +778,17 @@ namespace SPTAG::SPANN {
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
                     HandleBatchAppendResponse(connID, std::move(packet));
                 });
-            clientHandlers->emplace(Socket::PacketType::InsertBatchResponse,
-                [this](Socket::ConnectionID connID, Socket::Packet packet) {
-                    HandleInsertBatchResponse(connID, std::move(packet));
-                });
             clientHandlers->emplace(Socket::PacketType::RemoteLockResponse,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
                     HandleRemoteLockResponse(connID, std::move(packet));
+                });
+            clientHandlers->emplace(Socket::PacketType::SearchResponse,
+                [this](Socket::ConnectionID connID, Socket::Packet packet) {
+                    HandleSearchResponse(connID, std::move(packet));
+                });
+            clientHandlers->emplace(Socket::PacketType::BatchSearchResponse,
+                [this](Socket::ConnectionID connID, Socket::Packet packet) {
+                    HandleBatchSearchResponse(connID, std::move(packet));
                 });
 
             m_client.reset(new Socket::Client(clientHandlers, 2, 30));
@@ -538,8 +804,8 @@ namespace SPTAG::SPANN {
         }
 
         /// Determine whether a headID should be handled by this node.
-        /// Uses hash-based routing: hash(headID) % NumNodes → Owner Node
-        /// Stable and independent of TiKV Region/Store topology.
+        /// Uses consistent hashing: headID → hash ring → Owner Node.
+        /// Minimal key remapping when nodes are added/removed (~1/N affected).
         RouteTarget GetOwner(SizeType headID) {
             RouteTarget target;
             target.isLocal = true;
@@ -550,13 +816,15 @@ namespace SPTAG::SPANN {
                 return target;
             }
 
-            int numNodes = static_cast<int>(m_nodeAddrs.size());
-            if (numNodes <= 1) {
-                m_routeStats.local++;
-                return target;
-            }
+            {
+                auto ring = std::atomic_load(&m_hashRing);
+                if (!ring || ring->NodeCount() <= 1) {
+                    m_routeStats.local++;
+                    return target;
+                }
 
-            target.nodeIndex = static_cast<unsigned>(headID) % numNodes;
+                target.nodeIndex = ring->GetOwner(headID);
+            }
             target.isLocal = (target.nodeIndex == m_localNodeIndex);
 
             if (target.isLocal) m_routeStats.local++;
@@ -565,7 +833,10 @@ namespace SPTAG::SPANN {
             return target;
         }
 
-        int GetNumNodes() const { return static_cast<int>(m_nodeAddrs.size()); }
+        int GetNumNodes() const {
+            auto ring = std::atomic_load(&m_hashRing);
+            return ring ? static_cast<int>(ring->NodeCount()) : 0;
+        }
         int GetLocalNodeIndex() const { return m_localNodeIndex; }
 
         void LogRouteStats(const char* context = "") {
@@ -582,6 +853,107 @@ namespace SPTAG::SPANN {
             m_routeStats.disabled.store(0);
             m_routeStats.keyMiss.store(0);
             m_routeStats.noMapping.store(0);
+        }
+
+        /// Dynamically add a new compute node to the consistent hash ring.
+        /// Connects to the new peer and updates the ring. After this call,
+        /// some headIDs previously owned by existing nodes will route to the new node.
+        /// Use ComputeMigration() to determine which headIDs need to be migrated.
+        /// @param nodeIndex  The index for the new node (must not already exist).
+        /// @param addr       host:port pair for the new node's router port.
+        /// @param store      TiKV store address for the new node.
+        /// @return true if the node was added successfully.
+        bool AddNode(int nodeIndex, const std::pair<std::string, std::string>& addr,
+                     const std::string& store) {
+            {
+                std::lock_guard<std::mutex> guard(m_ringWriteMutex);
+                auto oldRing = std::atomic_load(&m_hashRing);
+                if (oldRing && oldRing->HasNode(nodeIndex)) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                        "PostingRouter::AddNode: node %d already exists\n", nodeIndex);
+                    return false;
+                }
+                auto newRing = oldRing
+                    ? std::make_shared<ConsistentHashRing>(*oldRing)
+                    : std::make_shared<ConsistentHashRing>();
+                newRing->AddNode(nodeIndex);
+                std::atomic_store(&m_hashRing, std::shared_ptr<const ConsistentHashRing>(std::move(newRing)));
+            }
+
+            // Expand connection and address arrays if needed
+            {
+                std::lock_guard<std::mutex> lock(m_connMutex);
+                if (nodeIndex >= static_cast<int>(m_nodeAddrs.size())) {
+                    m_nodeAddrs.resize(nodeIndex + 1);
+                    m_peerConnections.resize(nodeIndex + 1, Socket::c_invalidConnectionID);
+                }
+                m_nodeAddrs[nodeIndex] = addr;
+            }
+
+            if (!store.empty()) {
+                m_storeToNodes[store].push_back(nodeIndex);
+            }
+
+            // Connect to the new peer
+            if (nodeIndex != m_localNodeIndex) {
+                ConnectToPeer(nodeIndex, 5, 1000);
+            }
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "PostingRouter::AddNode: node %d (%s:%s) added to ring, total nodes=%d\n",
+                nodeIndex, addr.first.c_str(), addr.second.c_str(),
+                GetNumNodes());
+            return true;
+        }
+
+        /// Remove a compute node from the consistent hash ring.
+        /// HeadIDs owned by this node will be redistributed to remaining nodes.
+        /// No data migration is performed (the node's data is considered lost).
+        /// @param nodeIndex  The index of the node to remove.
+        void RemoveNode(int nodeIndex) {
+            {
+                std::lock_guard<std::mutex> guard(m_ringWriteMutex);
+                auto oldRing = std::atomic_load(&m_hashRing);
+                if (!oldRing || !oldRing->HasNode(nodeIndex)) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                        "PostingRouter::RemoveNode: node %d not in ring\n", nodeIndex);
+                    return;
+                }
+                auto newRing = std::make_shared<ConsistentHashRing>(*oldRing);
+                newRing->RemoveNode(nodeIndex);
+                std::atomic_store(&m_hashRing, std::shared_ptr<const ConsistentHashRing>(std::move(newRing)));
+            }
+
+            // Invalidate connection
+            InvalidatePeerConnection(nodeIndex);
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "PostingRouter::RemoveNode: node %d removed from ring, remaining nodes=%d\n",
+                nodeIndex, GetNumNodes());
+        }
+
+        /// Given a list of headIDs that this node currently owns locally,
+        /// compute which ones need to be migrated to other nodes.
+        /// Returns a map of targetNodeIndex → vector of headIDs to send there.
+        /// Typical usage after AddNode(): enumerate local headIDs, call this,
+        /// then send posting data for each headID to its new owner.
+        std::unordered_map<int, std::vector<SizeType>> ComputeMigration(
+            const std::vector<SizeType>& localHeadIDs) const {
+            auto ring = std::atomic_load(&m_hashRing);
+            std::unordered_map<int, std::vector<SizeType>> result;
+            if (!ring) return result;
+            for (SizeType hid : localHeadIDs) {
+                int owner = ring->GetOwner(hid);
+                if (owner != m_localNodeIndex) {
+                    result[owner].push_back(hid);
+                }
+            }
+            return result;
+        }
+
+        /// Get a snapshot of the consistent hash ring (for inspection/debugging).
+        std::shared_ptr<const ConsistentHashRing> GetHashRing() const {
+            return std::atomic_load(&m_hashRing);
         }
 
         /// Send an append request to a remote compute node and wait for the response.
@@ -915,9 +1287,9 @@ namespace SPTAG::SPANN {
             }
 
             BatchRemoteAppendRequest batchReq;
-            if (batchReq.Read(packet.Body()) == nullptr) {
+            if (batchReq.Read(packet.Body(), packet.Header().m_bodyLength) == nullptr) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: BatchAppendRequest version mismatch\n");
+                    "PostingRouter: BatchAppendRequest parse failed\n");
                 SendBatchAppendResponse(packet, 0, 1);
                 return;
             }
@@ -1007,37 +1379,51 @@ namespace SPTAG::SPANN {
             promise.set_value(resp.m_failCount == 0 ? ErrorCode::Success : ErrorCode::Fail);
         }
 
+        /// Send a search request to a remote worker node (non-blocking).
+        /// Returns a future that will hold the SearchPostingResponse when the
+        /// remote node replies.  The calling search thread can do local work
+        /// while the network round-trip is in flight, then call future.get().
     public:
-        /// Send an insert batch to a remote node for distributed head search + append.
-        ErrorCode SendInsertBatch(int targetNodeIndex,
-            const void* vectorData, SizeType startVID, std::uint32_t count, size_t dataSize)
+        std::future<SearchPostingResponse> SendSearchRequestAsync(int targetNodeIndex,
+            const void* queryVec, size_t queryVecSize,
+            const std::vector<SizeType>& headIDs, int resultCount)
         {
+            // Pre-create a ready future for early-exit error paths
+            auto makeFailFuture = []() {
+                std::promise<SearchPostingResponse> p;
+                SearchPostingResponse fail;
+                fail.m_status = SearchPostingResponse::Status::Failed;
+                p.set_value(std::move(fail));
+                return p.get_future();
+            };
+
             Socket::ConnectionID connID = GetPeerConnection(targetNodeIndex);
             if (connID == Socket::c_invalidConnectionID) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: Cannot connect to node %d for insert batch\n", targetNodeIndex);
-                return ErrorCode::Fail;
+                    "PostingRouter: Cannot connect to node %d for search\n", targetNodeIndex);
+                return makeFailFuture();
             }
 
-            InsertBatchRequest req;
-            req.m_startVID = startVID;
-            req.m_count = count;
-            req.m_vectorData.assign(reinterpret_cast<const char*>(vectorData), dataSize);
-
-            Socket::Packet packet;
-            packet.Header().m_packetType = Socket::PacketType::InsertBatchRequest;
-            packet.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
-            packet.Header().m_connectionID = Socket::c_invalidConnectionID;
+            SearchPostingRequest req;
+            req.m_resultCount = static_cast<std::uint32_t>(resultCount);
+            req.m_headIDCount = static_cast<std::uint32_t>(headIDs.size());
+            req.m_queryVector.assign(reinterpret_cast<const char*>(queryVec), queryVecSize);
+            req.m_headIDs = headIDs;
 
             Socket::ResourceID resID = m_nextResourceId.fetch_add(1);
-            packet.Header().m_resourceID = resID;
 
-            std::promise<ErrorCode> promise;
-            std::future<ErrorCode> future = promise.get_future();
+            std::promise<SearchPostingResponse> promise;
+            std::future<SearchPostingResponse> future = promise.get_future();
             {
-                std::lock_guard<std::mutex> lock(m_pendingMutex);
-                m_pendingResponses.emplace(resID, std::move(promise));
+                std::lock_guard<std::mutex> lock(m_pendingSearchMutex);
+                m_pendingSearchResponses.emplace(resID, std::move(promise));
             }
+
+            Socket::Packet packet;
+            packet.Header().m_packetType = Socket::PacketType::SearchRequest;
+            packet.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+            packet.Header().m_connectionID = Socket::c_invalidConnectionID;
+            packet.Header().m_resourceID = resID;
 
             auto bodySize = static_cast<std::uint32_t>(req.EstimateBufferSize());
             packet.Header().m_bodyLength = bodySize;
@@ -1045,30 +1431,29 @@ namespace SPTAG::SPANN {
             req.Write(packet.Body());
             packet.Header().WriteBuffer(packet.HeaderBuffer());
 
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "PostingRouter: Sending insert batch of %u vectors to node %d (startVID=%d)\n",
-                count, targetNodeIndex, startVID);
-
             m_client->SendPacket(connID, std::move(packet),
                 [resID, this](bool success) {
                     if (!success) {
-                        std::lock_guard<std::mutex> lock(m_pendingMutex);
-                        auto it = m_pendingResponses.find(resID);
-                        if (it != m_pendingResponses.end()) {
-                            it->second.set_value(ErrorCode::Fail);
-                            m_pendingResponses.erase(it);
+                        std::lock_guard<std::mutex> lock(m_pendingSearchMutex);
+                        auto it = m_pendingSearchResponses.find(resID);
+                        if (it != m_pendingSearchResponses.end()) {
+                            SearchPostingResponse fail;
+                            fail.m_status = SearchPostingResponse::Status::Failed;
+                            it->second.set_value(std::move(fail));
+                            m_pendingSearchResponses.erase(it);
                         }
                     }
                 });
 
-            return future.get();
+            return future;  // non-blocking: caller collects later via .get()
         }
 
-        /// Handle an incoming InsertBatchRequest from a peer node.
-        void HandleInsertBatchRequest(Socket::ConnectionID connID, Socket::Packet packet) {
+    private:
+        /// Handle an incoming SearchRequest on the worker side.
+        void HandleSearchRequest(Socket::ConnectionID connID, Socket::Packet packet) {
             if (packet.Header().m_bodyLength == 0) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: Empty InsertBatchRequest received\n");
+                    "PostingRouter: Empty SearchRequest received\n");
                 return;
             }
 
@@ -1076,37 +1461,39 @@ namespace SPTAG::SPANN {
                 packet.Header().m_connectionID = connID;
             }
 
-            InsertBatchRequest req;
+            SearchPostingRequest req;
             if (req.Read(packet.Body()) == nullptr) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: InsertBatchRequest version mismatch\n");
-                SendInsertBatchResponse(packet, InsertBatchResponse::Status::Failed, 0);
+                    "PostingRouter: SearchRequest version mismatch\n");
+                SearchPostingResponse failResp;
+                failResp.m_status = SearchPostingResponse::Status::Failed;
+                SendSearchResponse(packet, failResp);
                 return;
             }
 
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "PostingRouter: Received insert batch of %u vectors (startVID=%d)\n",
-                req.m_count, req.m_startVID);
+            SearchPostingResponse resp;
+            resp.m_status = SearchPostingResponse::Status::Failed;
 
-            ErrorCode result = ErrorCode::Fail;
-            if (m_insertCallback) {
-                result = m_insertCallback(req.m_vectorData, req.m_startVID, req.m_count);
+            if (m_searchCallback) {
+                int listElements = 0;
+                ErrorCode ret = m_searchCallback(
+                    req.m_queryVector, req.m_headIDs,
+                    static_cast<int>(req.m_resultCount),
+                    resp.m_vids, resp.m_dists, listElements);
+                if (ret == ErrorCode::Success) {
+                    resp.m_status = SearchPostingResponse::Status::Success;
+                    resp.m_resultCount = static_cast<std::uint32_t>(resp.m_vids.size());
+                    resp.m_listElements = static_cast<std::uint32_t>(listElements);
+                }
             }
 
-            auto status = (result == ErrorCode::Success)
-                ? InsertBatchResponse::Status::Success
-                : InsertBatchResponse::Status::Failed;
-            SendInsertBatchResponse(packet, status, req.m_count);
+            SendSearchResponse(packet, resp);
         }
 
-        void SendInsertBatchResponse(Socket::Packet& srcPacket,
-            InsertBatchResponse::Status status, std::uint32_t insertedCount) {
-            InsertBatchResponse resp;
-            resp.m_status = status;
-            resp.m_insertedCount = insertedCount;
-
+        /// Send a SearchResponse back to the requesting driver.
+        void SendSearchResponse(Socket::Packet& srcPacket, const SearchPostingResponse& resp) {
             Socket::Packet ret;
-            ret.Header().m_packetType = Socket::PacketType::InsertBatchResponse;
+            ret.Header().m_packetType = Socket::PacketType::SearchResponse;
             ret.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
             ret.Header().m_connectionID = srcPacket.Header().m_connectionID;
             ret.Header().m_resourceID = srcPacket.Header().m_resourceID;
@@ -1117,43 +1504,249 @@ namespace SPTAG::SPANN {
             resp.Write(ret.Body());
             ret.Header().WriteBuffer(ret.HeaderBuffer());
 
-            m_server->SendPacket(srcPacket.Header().m_connectionID, std::move(ret),
-                [](bool) {});
+            m_server->SendPacket(srcPacket.Header().m_connectionID, std::move(ret), nullptr);
         }
 
-        void HandleInsertBatchResponse(Socket::ConnectionID connID, Socket::Packet packet) {
+        /// Handle an incoming SearchResponse (client/driver side).
+        void HandleSearchResponse(Socket::ConnectionID connID, Socket::Packet packet) {
             Socket::ResourceID resID = packet.Header().m_resourceID;
 
-            std::promise<ErrorCode> promise;
+            std::promise<SearchPostingResponse> promise;
             {
-                std::lock_guard<std::mutex> lock(m_pendingMutex);
-                auto it = m_pendingResponses.find(resID);
-                if (it == m_pendingResponses.end()) {
+                std::lock_guard<std::mutex> lock(m_pendingSearchMutex);
+                auto it = m_pendingSearchResponses.find(resID);
+                if (it == m_pendingSearchResponses.end()) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                        "PostingRouter: Received InsertBatchResponse for unknown resourceID %u\n",
+                        "PostingRouter: Received SearchResponse for unknown resourceID %u\n",
                         resID);
                     return;
                 }
                 promise = std::move(it->second);
-                m_pendingResponses.erase(it);
+                m_pendingSearchResponses.erase(it);
             }
 
             if (packet.Header().m_processStatus != Socket::PacketProcessStatus::Ok) {
-                promise.set_value(ErrorCode::Fail);
+                SearchPostingResponse fail;
+                fail.m_status = SearchPostingResponse::Status::Failed;
+                promise.set_value(std::move(fail));
                 return;
             }
 
-            InsertBatchResponse resp;
+            SearchPostingResponse resp;
+            if (resp.Read(packet.Body(), packet.Header().m_bodyLength) == nullptr) {
+                resp.m_status = SearchPostingResponse::Status::Failed;
+            }
+            promise.set_value(std::move(resp));
+        }
+
+        /// Send a batch of full-search queries to a remote node. Returns future with batch response.
+    public:
+        std::future<FullSearchBatchResponse> SendBatchFullSearchAsync(
+            int targetNodeIndex,
+            const std::string& queryVectors,
+            std::uint32_t vectorSize,
+            std::uint32_t queryCount,
+            std::uint32_t resultCount,
+            std::uint32_t numThreads)
+        {
+            auto makeFailFuture = []() {
+                std::promise<FullSearchBatchResponse> p;
+                FullSearchBatchResponse fail;
+                fail.m_status = FullSearchBatchResponse::Status::Failed;
+                p.set_value(std::move(fail));
+                return p.get_future();
+            };
+
+            Socket::ConnectionID connID = GetPeerConnection(targetNodeIndex);
+            if (connID == Socket::c_invalidConnectionID) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "PostingRouter: Cannot connect to node %d for batch search\n", targetNodeIndex);
+                return makeFailFuture();
+            }
+
+            FullSearchBatchRequest req;
+            req.m_queryCount = queryCount;
+            req.m_resultCount = resultCount;
+            req.m_vectorSize = vectorSize;
+            req.m_numThreads = numThreads;
+            req.m_queryVectors = queryVectors;
+
+            Socket::ResourceID resID = m_nextResourceId.fetch_add(1);
+
+            std::promise<FullSearchBatchResponse> promise;
+            std::future<FullSearchBatchResponse> future = promise.get_future();
+            {
+                std::lock_guard<std::mutex> lock(m_pendingBatchSearchMutex);
+                m_pendingBatchSearchResponses.emplace(resID, std::move(promise));
+            }
+
+            Socket::Packet packet;
+            packet.Header().m_packetType = Socket::PacketType::BatchSearchRequest;
+            packet.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+            packet.Header().m_connectionID = Socket::c_invalidConnectionID;
+            packet.Header().m_resourceID = resID;
+
+            auto bodySize = static_cast<std::uint32_t>(req.EstimateBufferSize());
+            packet.Header().m_bodyLength = bodySize;
+            packet.AllocateBuffer(bodySize);
+            req.Write(packet.Body());
+            packet.Header().WriteBuffer(packet.HeaderBuffer());
+
+            m_client->SendPacket(connID, std::move(packet),
+                [resID, this](bool success) {
+                    if (!success) {
+                        std::lock_guard<std::mutex> lock(m_pendingBatchSearchMutex);
+                        auto it = m_pendingBatchSearchResponses.find(resID);
+                        if (it != m_pendingBatchSearchResponses.end()) {
+                            FullSearchBatchResponse fail;
+                            fail.m_status = FullSearchBatchResponse::Status::Failed;
+                            it->second.set_value(std::move(fail));
+                            m_pendingBatchSearchResponses.erase(it);
+                        }
+                    }
+                });
+
+            return future;
+        }
+
+    private:
+        /// Handle an incoming BatchSearchRequest on the worker side.
+        void HandleBatchSearchRequest(Socket::ConnectionID connID, Socket::Packet packet) {
+            if (Socket::c_invalidConnectionID == packet.Header().m_connectionID) {
+                packet.Header().m_connectionID = connID;
+            }
+
+            FullSearchBatchRequest req;
+            if (req.Read(packet.Body()) == nullptr) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "PostingRouter: BatchSearchRequest version mismatch\n");
+                FullSearchBatchResponse failResp;
+                failResp.m_status = FullSearchBatchResponse::Status::Failed;
+                SendBatchSearchResponse(packet, failResp);
+                return;
+            }
+
+            FullSearchBatchResponse resp;
+            resp.m_status = FullSearchBatchResponse::Status::Failed;
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "HandleBatchSearchRequest: queryCount=%u resultCount=%u vecSize=%u threads=%u callbackSet=%d\n",
+                req.m_queryCount, req.m_resultCount, req.m_vectorSize, req.m_numThreads,
+                m_fullSearchCallback ? 1 : 0);
+
+            if (m_fullSearchCallback && req.m_queryCount > 0) {
+                resp.m_queryCount = req.m_queryCount;
+                resp.m_resultCount = req.m_resultCount;
+                std::uint32_t total = req.m_queryCount * req.m_resultCount;
+                resp.m_vids.resize(total, -1);
+                resp.m_dists.resize(total, std::numeric_limits<float>::max());
+
+                std::atomic<bool> hasError{false};
+                std::atomic<int> successCount{0};
+                std::atomic<int> emptyCount{0};
+                std::atomic_size_t nextQuery{0};
+                int numThreads = std::max(1u, req.m_numThreads);
+                numThreads = std::min(numThreads, static_cast<int>(req.m_queryCount));
+
+                std::vector<std::thread> threads;
+                for (int t = 0; t < numThreads; t++) {
+                    threads.emplace_back([&]() {
+                        while (true) {
+                            size_t qi = nextQuery.fetch_add(1);
+                            if (qi >= req.m_queryCount) break;
+
+                            std::string qvec(
+                                req.m_queryVectors.data() + qi * req.m_vectorSize,
+                                req.m_vectorSize);
+
+                            std::vector<SizeType> vids;
+                            std::vector<float> dists;
+                            ErrorCode ret = m_fullSearchCallback(
+                                qvec, static_cast<int>(req.m_resultCount), vids, dists);
+
+                            if (ret == ErrorCode::Success) {
+                                successCount.fetch_add(1);
+                                if (vids.empty()) emptyCount.fetch_add(1);
+                                size_t base = qi * req.m_resultCount;
+                                for (size_t r = 0; r < vids.size() && r < req.m_resultCount; r++) {
+                                    resp.m_vids[base + r] = vids[r];
+                                    resp.m_dists[base + r] = dists[r];
+                                }
+                            } else {
+                                hasError.store(true);
+                            }
+                        }
+                    });
+                }
+                for (auto& t : threads) t.join();
+
+                // Count valid results for diagnostic
+                int validResults = 0;
+                for (std::uint32_t i = 0; i < total; i++) {
+                    if (resp.m_vids[i] >= 0) validResults++;
+                }
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                    "HandleBatchSearchRequest done: success=%d empty=%d errors=%d validResults=%d/%u\n",
+                    successCount.load(), emptyCount.load(), hasError.load() ? 1 : 0,
+                    validResults, total);
+
+                if (!hasError.load()) {
+                    resp.m_status = FullSearchBatchResponse::Status::Success;
+                }
+            }
+
+            SendBatchSearchResponse(packet, resp);
+        }
+
+        void SendBatchSearchResponse(Socket::Packet& srcPacket, const FullSearchBatchResponse& resp) {
+            Socket::Packet ret;
+            ret.Header().m_packetType = Socket::PacketType::BatchSearchResponse;
+            ret.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+            ret.Header().m_connectionID = srcPacket.Header().m_connectionID;
+            ret.Header().m_resourceID = srcPacket.Header().m_resourceID;
+
+            auto bodySize = static_cast<std::uint32_t>(resp.EstimateBufferSize());
+            ret.Header().m_bodyLength = bodySize;
+            ret.AllocateBuffer(bodySize);
+            resp.Write(ret.Body());
+            ret.Header().WriteBuffer(ret.HeaderBuffer());
+
+            m_server->SendPacket(srcPacket.Header().m_connectionID, std::move(ret), nullptr);
+        }
+
+        void HandleBatchSearchResponse(Socket::ConnectionID connID, Socket::Packet packet) {
+            Socket::ResourceID resID = packet.Header().m_resourceID;
+
+            std::promise<FullSearchBatchResponse> promise;
+            {
+                std::lock_guard<std::mutex> lock(m_pendingBatchSearchMutex);
+                auto it = m_pendingBatchSearchResponses.find(resID);
+                if (it == m_pendingBatchSearchResponses.end()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                        "PostingRouter: Received BatchSearchResponse for unknown resourceID %u\n",
+                        resID);
+                    return;
+                }
+                promise = std::move(it->second);
+                m_pendingBatchSearchResponses.erase(it);
+            }
+
+            if (packet.Header().m_processStatus != Socket::PacketProcessStatus::Ok) {
+                FullSearchBatchResponse fail;
+                fail.m_status = FullSearchBatchResponse::Status::Failed;
+                promise.set_value(std::move(fail));
+                return;
+            }
+
+            FullSearchBatchResponse resp;
             if (resp.Read(packet.Body()) == nullptr) {
-                promise.set_value(ErrorCode::Fail);
-                return;
+                resp.m_status = FullSearchBatchResponse::Status::Failed;
             }
-
-            promise.set_value(resp.m_status == InsertBatchResponse::Status::Success
-                ? ErrorCode::Success : ErrorCode::Fail);
+            promise.set_value(std::move(resp));
         }
 
         /// Handle an incoming head sync request (fire-and-forget, no response sent).
+    public:
         void HandleHeadSyncRequest(Socket::ConnectionID connID, Socket::Packet packet) {
             if (!m_headSyncCallback) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
@@ -1327,6 +1920,12 @@ namespace SPTAG::SPANN {
         int m_localNodeIndex;
         std::shared_ptr<Helper::KeyValueIO> m_db;
 
+        // Consistent hash ring for headID → node routing (lock-free RCU)
+        // Readers: atomic_load gives a snapshot, zero overhead
+        // Writers: copy-on-write under m_ringWriteMutex, then atomic_store
+        std::shared_ptr<const ConsistentHashRing> m_hashRing;
+        std::mutex m_ringWriteMutex;  // serializes AddNode/RemoveNode (rare)
+
         // Node configuration
         std::vector<std::pair<std::string, std::string>> m_nodeAddrs;  // host:port per node
         std::vector<std::string> m_nodeStores;  // TiKV store addr per node
@@ -1348,14 +1947,28 @@ namespace SPTAG::SPANN {
         // Append callback (set by ExtraDynamicSearcher)
         AppendCallback m_appendCallback;
 
-        // Insert callback for distributed insert (head search + append on worker)
-        InsertCallback m_insertCallback;
-
         // Head sync callback (set by ExtraDynamicSearcher)
         HeadSyncCallback m_headSyncCallback;
 
         // Remote lock callback (set by ExtraDynamicSearcher for cross-node Merge)
         RemoteLockCallback m_remoteLockCallback;
+
+        // Search callback (set by ExtraDynamicSearcher for distributed search)
+        SearchCallback m_searchCallback;
+
+        // Full search callback (query routing: head search + disk search on worker)
+        FullSearchCallback m_fullSearchCallback;
+
+        // Round-robin counter for query routing
+        std::atomic<size_t> m_searchRoundRobin{0};
+
+        // Pending search responses (separate from m_pendingResponses since different value type)
+        std::mutex m_pendingSearchMutex;
+        std::unordered_map<Socket::ResourceID, std::promise<SearchPostingResponse>> m_pendingSearchResponses;
+
+        // Pending batch search responses
+        std::mutex m_pendingBatchSearchMutex;
+        std::unordered_map<Socket::ResourceID, std::promise<FullSearchBatchResponse>> m_pendingBatchSearchResponses;
 
         // Batched remote append queue (queue items from multiple AddIndex calls, flush once)
         mutable std::mutex m_appendQueueMutex;
@@ -1411,6 +2024,7 @@ namespace SPTAG::SPANN {
             for (auto& t : threads) t.join();
             return errors > 0 ? ErrorCode::Fail : ErrorCode::Success;
         }
+
     };
 
 } // namespace SPTAG::SPANN

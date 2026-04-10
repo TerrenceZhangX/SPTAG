@@ -31,11 +31,11 @@ enum class PacketType : std::uint8_t
 
     BatchAppendRequest = 0x05,
 
-    InsertBatchRequest = 0x06,
-
     HeadSyncRequest = 0x07,
 
     RemoteLockRequest = 0x08,
+
+    BatchSearchRequest = 0x09,
 
     ResponseMask = 0x80,
 
@@ -49,9 +49,9 @@ enum class PacketType : std::uint8_t
 
     BatchAppendResponse = ResponseMask | BatchAppendRequest,
 
-    InsertBatchResponse = ResponseMask | InsertBatchRequest,
+    RemoteLockResponse = ResponseMask | RemoteLockRequest,
 
-    RemoteLockResponse = ResponseMask | RemoteLockRequest
+    BatchSearchResponse = ResponseMask | BatchSearchRequest
 };
 
 

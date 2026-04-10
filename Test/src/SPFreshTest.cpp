@@ -17,6 +17,7 @@
 #include "inc/Test.h"
 #include "inc/TestDataGenerator.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -416,41 +417,17 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
     std::vector<std::thread> threads;
 
     int printstep = step / 50;
-    std::atomic_size_t vectorsSent(start);
+    // Single bulk AddIndex call — multi-threading happens inside SPANNIndex::AddIndex
     auto func = [&]() {
-        size_t index = start;
-        while (true)
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "InsertVectors: bulk AddIndex for %d vectors\n", step);
+        ErrorCode ret = p_index->AddIndex(addset->GetVector((SizeType)start), step, addset->Dimension(), metaset, true);
+        if (ret != ErrorCode::Success)
         {
-            index = vectorsSent.fetch_add(1);
-            if (index < start + step)
-            {
-                if ((index % (printstep - 1)) == 0)
-                {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Sent %.2lf%%...\n", index * 100.0 / step);
-                }
-                ByteArray p_meta = metaset->GetMetadata((SizeType)index);
-                std::uint64_t *offsets = new std::uint64_t[2]{0, p_meta.Length()};
-                std::shared_ptr<MetadataSet> meta(new MemMetadataSet(
-                    p_meta, ByteArray((std::uint8_t *)offsets, 2 * sizeof(std::uint64_t), true), 1));
-                // For quantized index, pass GetFeatureDim() which returns reconstruct dimension
-                ErrorCode ret = p_index->AddIndex(addset->GetVector((SizeType)index), 1, addset->Dimension(), meta, true);
-                if (ret != ErrorCode::Success)
-                {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                                 "AddIndex failed. VID:%zu Dim:%d IndexDim:%d Storage:%s Error:%d\n",
-                                 index,
-                                 addset->Dimension(),
-                                 p_index->GetFeatureDim(),
-                                 p_index->GetParameter("Storage", "BuildSSDIndex").c_str(),
-                                 static_cast<int>(ret));
-                }
-                BOOST_REQUIRE(ret == ErrorCode::Success);
-            }
-            else
-            {
-                return;
-            }
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                         "AddIndex bulk failed. start:%d count:%d Dim:%d Error:%d\n",
+                         start, step, addset->Dimension(), static_cast<int>(ret));
         }
+        BOOST_REQUIRE(ret == ErrorCode::Success);
     };
 
     if (searchThreads > 0 && queryset != nullptr && numQueries != 0 && benchmarkData != nullptr) {
@@ -478,7 +455,7 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
             duration[tid] = std::chrono::duration_cast<std::chrono::microseconds>(s2 - s1).count() / 1000.0f;
         };
 
-        for (int j = 0; j < insertThreads; j++)
+        for (int j = 0; j < 1; j++)  // Single insert thread; parallelism is inside AddIndex
         {
             threads.emplace_back(func);
         }
@@ -521,6 +498,10 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
         *benchmarkData << "        \"maxLatency\": " << maxLat << ",\n";
         *benchmarkData << "        \"qps\": " << qps << ",\n";
     }
+    else {
+        // No search threads — just run the insert
+        func();
+    }
     while (!p_index->AllFinished())
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -544,27 +525,41 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
         results[i] = QueryResult((const T *)queryset->GetVector(i), searchK, false);
     }
 
-    std::vector<std::thread> threads;
-    threads.reserve(numThreads);
+    auto* spannIndex = static_cast<SPANN::Index<T>*>(index.get());
+    int nodeCount = spannIndex->GetSearchNodeCount();
 
     auto batchStart = std::chrono::high_resolution_clock::now();
 
-    for (int i = 0; i < numThreads; i++)
-    {
-        threads.emplace_back([&]() {
-            size_t qid;
-            while ((qid = queriesSent.fetch_add(1)) < numQueries)
-            {
-                auto t1 = std::chrono::high_resolution_clock::now();
-                index->SearchIndex(results[qid]);
-                auto t2 = std::chrono::high_resolution_clock::now();
-                latencies[qid] = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000.0f;
-            }
-        });
-    }
+    if (nodeCount > 1) {
+        // Multi-node: batch route all queries
+        std::vector<SPANN::SearchStats> stats(numQueries);
+        spannIndex->BatchRouteSearch(results, stats, 0, numQueries, numThreads);
+        // Distribute per-query latency from stats
+        for (int i = 0; i < numQueries; i++) {
+            latencies[i] = static_cast<float>(stats[i].m_totalSearchLatency);
+        }
+    } else {
+        // Single-node: per-query multi-threaded search
+        std::vector<std::thread> threads;
+        threads.reserve(numThreads);
 
-    for (auto &thread : threads)
-        thread.join();
+        for (int i = 0; i < numThreads; i++)
+        {
+            threads.emplace_back([&]() {
+                size_t qid;
+                while ((qid = queriesSent.fetch_add(1)) < numQueries)
+                {
+                    auto t1 = std::chrono::high_resolution_clock::now();
+                    index->SearchIndex(results[qid]);
+                    auto t2 = std::chrono::high_resolution_clock::now();
+                    latencies[qid] = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000.0f;
+                }
+            });
+        }
+
+        for (auto &thread : threads)
+            thread.join();
+    }
 
     auto batchEnd = std::chrono::high_resolution_clock::now();
     float batchLatency =
@@ -712,6 +707,31 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     int insertBatchSize = insertVectorCount / max(batches, 1);
     int deleteBatchSize = deleteVectorCount / max(batches, 1);
 
+    // Detect multi-node partitioning from router params
+    int nodeIndex = 0;
+    int numNodes = 1;
+    std::string barrierDir;
+    {
+        bool routerEnabled = false;
+        auto itEn = ssdOverrides.find("routerenabled");
+        if (itEn != ssdOverrides.end() && itEn->second == "true") routerEnabled = true;
+        auto it = ssdOverrides.find("routerlocalnodeindex");
+        if (it != ssdOverrides.end()) nodeIndex = std::stoi(it->second);
+        if (routerEnabled) {
+            auto it2 = ssdOverrides.find("routernodeaddrs");
+            if (it2 != ssdOverrides.end() && !it2->second.empty()) {
+                numNodes = (int)std::count(it2->second.begin(), it2->second.end(), ',') + 1;
+            }
+        }
+        if (numNodes > 1) {
+            barrierDir = indexPath + "/barriers";
+            std::filesystem::create_directories(barrierDir);
+        }
+    }
+    int perNodeBatch = (numNodes > 1) ? insertBatchSize / numNodes : insertBatchSize;
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "RunBenchmark: nodeIndex=%d numNodes=%d insertBatchSize=%d perNodeBatch=%d\n",
+                 nodeIndex, numNodes, insertBatchSize, perNodeBatch);
+
     // Variables to collect JSON output data
     std::ostringstream tmpbenchmark;
 
@@ -830,6 +850,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     // Enable distributed routing if configured
     ApplyRouterParams(index, ssdOverrides);
     index->SetHeadSyncCallback();
+    index->SetFullSearchCallback();
     std::shared_ptr<VectorIndex> routerOwner = index; // track who owns the router
 
     auto queryset = TestUtils::TestDataGenerator<T>::LoadVectorSet(pqueryset, M);
@@ -958,11 +979,20 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                 ApplyRouterParams(cloneIndex, ssdOverrides, true);
                 cloneIndex->AdoptRouter(routerOwner.get());
                 cloneIndex->SetHeadSyncCallback();
+                cloneIndex->SetFullSearchCallback();
                 routerOwner = cloneIndex;
 
-                int insertStart = iter * insertBatchSize;
+                // Signal workers to start this batch (before timing)
+                if (numNodes > 1) {
+                    std::string startSignal = barrierDir + "/start_batch_" + std::to_string(iter);
+                    std::ofstream(startSignal).close();
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Driver: signaled start for batch %d\n", iter + 1);
+                }
+
+                // Each node inserts its partition: [iter*batchSize + nodeIndex*perNodeBatch, +perNodeBatch)
+                int insertStart = iter * insertBatchSize + nodeIndex * perNodeBatch;
                 {
-                    std::shared_ptr<VectorSet> addset = TestUtils::TestDataGenerator<T>::LoadVectorSet(paddset, M, insertStart, insertBatchSize);
+                    std::shared_ptr<VectorSet> addset = TestUtils::TestDataGenerator<T>::LoadVectorSet(paddset, M, insertStart, perNodeBatch);
                     ByteArray quantizedAddBytes;
                     if (enableQuantization) {
                         auto addFloat = ConvertToFloatVectorSet(addset);
@@ -974,19 +1004,34 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                                                                  quantizer->GetNumSubvectors(),
                                                                  addFloat->Count());
                     }
-                    std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<T>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, insertBatchSize);
+                    std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<T>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
                     start = std::chrono::high_resolution_clock::now();
-                    InsertVectors<T>(static_cast<SPANN::Index<T> *>(cloneIndex.get()), numInsertThreads, insertBatchSize,
+                    InsertVectors<T>(static_cast<SPANN::Index<T> *>(cloneIndex.get()), numInsertThreads, perNodeBatch,
                                      addset, addmetaset, numSearchThreads, queryset, numQueries, SearchK, &jsonFile, 0);
-                    end = std::chrono::high_resolution_clock::now();
                 }
                 // Flush any pending remote appends
                 cloneIndex->FlushRemoteAppends();
+
+                // Wait for all worker nodes to finish this batch
+                if (numNodes > 1) {
+                    for (int n = 1; n < numNodes; n++) {
+                        std::string doneFile = barrierDir + "/done_" + std::to_string(n) + "_batch_" + std::to_string(iter);
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Driver: waiting for node %d batch %d\n", n, iter + 1);
+                        while (!std::filesystem::exists(doneFile)) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        }
+                        std::filesystem::remove(doneFile);
+                    }
+                    std::filesystem::remove(barrierDir + "/start_batch_" + std::to_string(iter));
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Driver: all nodes finished batch %d\n", iter + 1);
+                }
+
+                end = std::chrono::high_resolution_clock::now();
                 seconds =
                     std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000000.0f;
                 double throughput = insertBatchSize / seconds;
 
-                BOOST_TEST_MESSAGE("  Inserted: " << insertBatchSize << " vectors");
+                BOOST_TEST_MESSAGE("  Inserted: " << insertBatchSize << " vectors (" << perNodeBatch << " local)");
                 BOOST_TEST_MESSAGE("  Time: " << seconds << " seconds");
                 BOOST_TEST_MESSAGE("  Throughput: " << throughput << " vectors/sec");
 
@@ -2211,9 +2256,10 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     //std::filesystem::remove_all(indexPath);
 }
 
-/// Worker node for distributed routing benchmark.
-/// Loads a pre-built head index, connects to TiKV, starts PostingRouter
-/// to handle incoming remote append requests from the driver node.
+/// Worker node for distributed benchmark.
+/// Loads a pre-built head index, connects to TiKV, starts PostingRouter,
+/// and actively inserts its shard of vectors using file-based barriers
+/// to synchronize with the driver node.
 BOOST_AUTO_TEST_CASE(WorkerNode)
 {
     using namespace SPFreshTest;
@@ -2230,6 +2276,23 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
     std::string indexPath = iniReader.GetParameter("Benchmark", "IndexPath", std::string(""));
     BOOST_REQUIRE(!indexPath.empty());
 
+    // Read benchmark parameters for active insert
+    std::string vectorPath = iniReader.GetParameter("Benchmark", "VectorPath", std::string(""));
+    std::string queryPath = iniReader.GetParameter("Benchmark", "QueryPath", std::string(""));
+    int dimension = iniReader.GetParameter("Benchmark", "Dimension", 128);
+    int baseVectorCount = iniReader.GetParameter("Benchmark", "BaseVectorCount", 0);
+    int insertVectorCount = iniReader.GetParameter("Benchmark", "InsertVectorCount", 0);
+    int batches = iniReader.GetParameter("Benchmark", "BatchNum", 1);
+    int numInsertThreads = iniReader.GetParameter("Benchmark", "NumInsertThreads", 8);
+    int numQueries = iniReader.GetParameter("Benchmark", "NumQueries", 200);
+    int topK = iniReader.GetParameter("Benchmark", "TopK", 5);
+    DistCalcMethod distMethod = iniReader.GetParameter("Benchmark", "DistMethod", DistCalcMethod::L2);
+
+    VectorValueType valueType = VectorValueType::Float;
+    std::string valueTypeStr = iniReader.GetParameter("Benchmark", "ValueType", std::string("Float"));
+    if (valueTypeStr == "UInt8") valueType = VectorValueType::UInt8;
+    else if (valueTypeStr == "Int8") valueType = VectorValueType::Int8;
+
     std::map<std::string, std::string> ssdOverrides;
     std::string storage = iniReader.GetParameter("Benchmark", "Storage", std::string(""));
     if (!storage.empty()) ssdOverrides["Storage"] = storage;
@@ -2243,6 +2306,19 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
         ssdOverrides[key] = val;
     }
 
+    // Get node info
+    int nodeIndex = std::stoi(ssdOverrides.count("routerlocalnodeindex")
+        ? ssdOverrides.at("routerlocalnodeindex") : "0");
+    std::string nodeAddrs = ssdOverrides.count("routernodeaddrs")
+        ? ssdOverrides.at("routernodeaddrs") : "";
+    int numNodes = 1;
+    if (!nodeAddrs.empty()) {
+        numNodes = (int)std::count(nodeAddrs.begin(), nodeAddrs.end(), ',') + 1;
+    }
+
+    int insertBatchSize = insertVectorCount / std::max(batches, 1);
+    int perNodeBatch = (numNodes > 1) ? insertBatchSize / numNodes : insertBatchSize;
+
     BOOST_TEST_MESSAGE("WorkerNode: Loading index from " << indexPath);
     std::shared_ptr<VectorIndex> index;
     BOOST_REQUIRE(VectorIndex::LoadIndex(indexPath, index) == ErrorCode::Success);
@@ -2250,15 +2326,96 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
 
     ApplyRouterParams(index, ssdOverrides);
     index->SetHeadSyncCallback();
+    index->SetFullSearchCallback();
 
-    int nodeIndex = std::stoi(ssdOverrides.count("routerlocalnodeindex")
-        ? ssdOverrides.at("routerlocalnodeindex") : "0");
-    BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Router started, waiting for requests...");
+    BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Ready, numNodes=" << numNodes
+                       << " perNodeBatch=" << perNodeBatch);
 
+    // Generate data file paths (files already exist from driver's build phase)
+    int oldN = N, oldM = M, oldK = K, oldQ = queries;
+    N = baseVectorCount; M = dimension; K = topK; queries = numQueries;
+    std::string dist = Helper::Convert::ConvertToString(distMethod);
+    std::string pvecset, paddset, pqueryset, ptruth, pmeta, pmetaidx, paddmeta, paddmetaidx;
+
+    // Dispatch insert loop by value type
+    if (insertBatchSize > 0 && perNodeBatch > 0) {
+        // Use driver's barrier directory (same indexPath root, node 0's path)
+        // The barrier dir is at the DRIVER's indexPath + "/barriers"
+        // Worker needs to know the driver's indexPath — derive from our path
+        // Convention: driver path = replace last _nX with _n0
+        std::string driverIndexPath = indexPath;
+        {
+            // e.g. /mnt/.../proidx_10m_3node_n1/spann_index → .../proidx_10m_3node_n0/spann_index
+            auto pos = driverIndexPath.rfind("_n" + std::to_string(nodeIndex));
+            if (pos != std::string::npos) {
+                driverIndexPath.replace(pos, std::string("_n" + std::to_string(nodeIndex)).length(), "_n0");
+            }
+        }
+        std::string barrierDir = driverIndexPath + "/barriers";
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: barrierDir=%s\n", nodeIndex, barrierDir.c_str());
+
+        for (int iter = 0; iter < batches; iter++) {
+            // Wait for start signal from driver
+            std::string startFile = barrierDir + "/start_batch_" + std::to_string(iter);
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Waiting for start signal batch %d/%d\n",
+                         nodeIndex, iter + 1, batches);
+            while (!std::filesystem::exists(startFile)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+
+            // Load this node's shard
+            int insertStart = iter * insertBatchSize + nodeIndex * perNodeBatch;
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Batch %d - inserting %d vectors (offset %d)\n",
+                         nodeIndex, iter + 1, perNodeBatch, insertStart);
+
+            auto t1 = std::chrono::high_resolution_clock::now();
+
+            if (valueType == VectorValueType::UInt8) {
+                paddset = "perftest_addvector.bin.UInt8_" + std::to_string(insertVectorCount) + "_" + std::to_string(dimension);
+                paddmeta = "perftest_addmeta.bin." + std::to_string(baseVectorCount) + "_" + std::to_string(insertVectorCount);
+                paddmetaidx = "perftest_addmetaidx.bin." + std::to_string(baseVectorCount) + "_" + std::to_string(insertVectorCount);
+                auto addset = TestUtils::TestDataGenerator<std::uint8_t>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
+                std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<std::uint8_t>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
+                InsertVectors<std::uint8_t>(static_cast<SPANN::Index<std::uint8_t>*>(index.get()),
+                                            numInsertThreads, perNodeBatch, addset, addmetaset);
+            } else if (valueType == VectorValueType::Int8) {
+                paddset = "perftest_addvector.bin.Int8_" + std::to_string(insertVectorCount) + "_" + std::to_string(dimension);
+                paddmeta = "perftest_addmeta.bin." + std::to_string(baseVectorCount) + "_" + std::to_string(insertVectorCount);
+                paddmetaidx = "perftest_addmetaidx.bin." + std::to_string(baseVectorCount) + "_" + std::to_string(insertVectorCount);
+                auto addset = TestUtils::TestDataGenerator<std::int8_t>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
+                std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<std::int8_t>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
+                InsertVectors<std::int8_t>(static_cast<SPANN::Index<std::int8_t>*>(index.get()),
+                                           numInsertThreads, perNodeBatch, addset, addmetaset);
+            } else {
+                paddset = "perftest_addvector.bin.Float_" + std::to_string(insertVectorCount) + "_" + std::to_string(dimension);
+                paddmeta = "perftest_addmeta.bin." + std::to_string(baseVectorCount) + "_" + std::to_string(insertVectorCount);
+                paddmetaidx = "perftest_addmetaidx.bin." + std::to_string(baseVectorCount) + "_" + std::to_string(insertVectorCount);
+                auto addset = TestUtils::TestDataGenerator<float>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
+                std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<float>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
+                InsertVectors<float>(static_cast<SPANN::Index<float>*>(index.get()),
+                                     numInsertThreads, perNodeBatch, addset, addmetaset);
+            }
+
+            index->FlushRemoteAppends();
+            auto t2 = std::chrono::high_resolution_clock::now();
+            double secs = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000000.0;
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Batch %d done - %d vectors in %.2f s (%.1f vec/s)\n",
+                         nodeIndex, iter + 1, perNodeBatch, secs, perNodeBatch / secs);
+
+            // Signal done to driver
+            std::string doneFile = barrierDir + "/done_" + std::to_string(nodeIndex) + "_batch_" + std::to_string(iter);
+            std::ofstream(doneFile).close();
+        }
+
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: All %d batches completed\n", nodeIndex, batches);
+    }
+
+    // Wait for stop file or timeout
     std::string stopFile = iniReader.GetParameter("Benchmark", "StopFile",
         std::string("worker_stop_") + std::to_string(nodeIndex));
     int timeoutSec = iniReader.GetParameter("Benchmark", "WorkerTimeout", 3600);
 
+    BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Insert complete, waiting for stop signal...");
     auto startTime = std::chrono::steady_clock::now();
     while (!std::filesystem::exists(stopFile)) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -2270,6 +2427,7 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
         }
     }
 
+    N = oldN; M = oldM; K = oldK; queries = oldQ;
     BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Shutting down");
     if (std::filesystem::exists(stopFile)) {
         std::filesystem::remove(stopFile);

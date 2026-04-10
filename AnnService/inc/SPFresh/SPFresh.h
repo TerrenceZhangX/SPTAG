@@ -267,41 +267,47 @@ namespace SPTAG {
             {
                 int numQueries = min(static_cast<int>(p_results.size()), p_maxQueryCount);
 
-                std::atomic_size_t queriesSent(0);
-
-                std::vector<std::thread> threads;
-
                 StopWSPFresh sw;
 
-                auto func = [&]()
-                {
-                    StopWSPFresh threadws;
-                    size_t index = 0;
-                    while (true)
+                int nodeCount = p_index->GetSearchNodeCount();
+                if (nodeCount > 1) {
+                    // Batch dispatch: partition queries across nodes, one RPC per remote node
+                    p_index->BatchRouteSearch(p_results, p_stats, 0, numQueries, p_numThreads);
+                } else {
+                    // Single-node: local multi-threaded search
+                    std::atomic_size_t queriesSent(0);
+                    std::vector<std::thread> threads;
+
+                    auto func = [&]()
                     {
-                        index = queriesSent.fetch_add(1);
-                        if (index < numQueries)
+                        StopWSPFresh threadws;
+                        size_t index = 0;
+                        while (true)
                         {
-                            double startTime = threadws.getElapsedMs();
-                            p_index->GetMemoryIndex()->SearchIndex(p_results[index]);
-                            double endTime = threadws.getElapsedMs();
+                            index = queriesSent.fetch_add(1);
+                            if (index < numQueries)
+                            {
+                                double startTime = threadws.getElapsedMs();
+                                p_index->GetMemoryIndex()->SearchIndex(p_results[index]);
+                                double endTime = threadws.getElapsedMs();
 
-                            p_stats[index].m_totalLatency = endTime - startTime;
+                                p_stats[index].m_totalLatency = endTime - startTime;
 
-                            p_index->SearchDiskIndex(p_results[index], &(p_stats[index]));
-                            double exEndTime = threadws.getElapsedMs();
+                                p_index->SearchDiskIndex(p_results[index], &(p_stats[index]));
+                                double exEndTime = threadws.getElapsedMs();
 
-                            p_stats[index].m_exLatency = exEndTime - endTime;
-                            p_stats[index].m_totalLatency = p_stats[index].m_totalSearchLatency = exEndTime - startTime;
+                                p_stats[index].m_exLatency = exEndTime - endTime;
+                                p_stats[index].m_totalLatency = p_stats[index].m_totalSearchLatency = exEndTime - startTime;
+                            }
+                            else
+                            {
+                                return;
+                            }
                         }
-                        else
-                        {
-                            return;
-                        }
-                    }
-                };
-                for (int i = 0; i < p_numThreads; i++) { threads.emplace_back(func); }
-                for (auto& thread : threads) { thread.join(); }
+                    };
+                    for (int i = 0; i < p_numThreads; i++) { threads.emplace_back(func); }
+                    for (auto& thread : threads) { thread.join(); }
+                }
 
                 auto sendingCost = sw.getElapsedSec();
 
