@@ -64,13 +64,17 @@ Verify TiKV support is enabled (cmake output should contain):
 
 ### 4.1 Configuration Files
 
-Docker Compose file: `docker/tikv/docker-compose.yml`
+These files are **not** checked into git. Create them before starting the cluster:
+
+```bash
+mkdir -p docker/tikv
+```
 
 Cluster composition:
 - **3 PD nodes** (Docker): ports 23791, 23792, 23793
 - **3 TiKV nodes** (Docker): ports 20161, 20162, 20163
 
-TiKV configuration file: `docker/tikv/tikv.toml`
+#### `docker/tikv/tikv.toml`
 
 ```toml
 memory-usage-limit = "80GB"
@@ -82,9 +86,175 @@ grpc-memory-pool-quota = "4GB"
 [raftstore]
 region-max-size = "512MB"
 region-split-size = "384MB"
+region-max-keys = 5120000
+region-split-keys = 3840000
+
+[rocksdb]
+max-background-jobs = 8
+max-sub-compactions = 3
+rate-bytes-per-sec = "0"
+
+[rocksdb.defaultcf]
+write-buffer-size = "256MB"
+max-write-buffer-number = 5
+min-write-buffer-number-to-merge = 2
+level0-file-num-compaction-trigger = 8
+level0-slowdown-writes-trigger = 20
+level0-stop-writes-trigger = 36
+max-bytes-for-level-base = "1GB"
+compression-per-level = ["no", "no", "lz4", "lz4", "lz4", "zstd", "zstd"]
+target-file-size-base = "64MB"
+
+[rocksdb.writecf]
+write-buffer-size = "128MB"
+max-write-buffer-number = 5
+
+[storage]
+reserve-space = "1GB"
 
 [storage.block-cache]
 capacity = "40GB"
+
+[coprocessor]
+region-max-size = "512MB"
+region-split-size = "384MB"
+region-max-keys = 5120000
+region-split-keys = 3840000
+```
+
+#### `docker/tikv/docker-compose.yml`
+
+```yaml
+# TiKV cluster for SPTAG/SPFRESH benchmarks.
+# 3 PD + 3 TiKV (standard Docker image, BatchGet mode).
+# For Coprocessor mode, replace TiKV containers with Qianxi's custom binary.
+# Matches BENCHMARK_GUIDE.md Section 4.
+#
+# Usage:
+#   docker compose -f docker/tikv/docker-compose.yml up -d
+#   curl http://127.0.0.1:23791/pd/api/v1/health
+#   curl http://127.0.0.1:23791/pd/api/v1/stores
+#
+# PD endpoints: 127.0.0.1:23791, 127.0.0.1:23792, 127.0.0.1:23793
+# TiKV stores:  127.0.0.1:20161, 127.0.0.1:20162, 127.0.0.1:20163
+
+services:
+  pd1:
+    image: pingcap/pd:v8.5.5
+    container_name: tikv-pd1
+    network_mode: host
+    volumes:
+      - <NVME_DIR>/tikv/pd1-data:/data
+      - <NVME_DIR>/tikv/pd1-logs:/logs
+    command:
+      - --name=pd1
+      - --client-urls=http://0.0.0.0:23791
+      - --peer-urls=http://0.0.0.0:23801
+      - --advertise-client-urls=http://127.0.0.1:23791
+      - --advertise-peer-urls=http://127.0.0.1:23801
+      - --initial-cluster=pd1=http://127.0.0.1:23801,pd2=http://127.0.0.1:23802,pd3=http://127.0.0.1:23803
+      - --data-dir=/data/pd1
+      - --log-file=/logs/pd.log
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:23791/pd/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  pd2:
+    image: pingcap/pd:v8.5.5
+    container_name: tikv-pd2
+    network_mode: host
+    volumes:
+      - <NVME_DIR>/tikv/pd2-data:/data
+      - <NVME_DIR>/tikv/pd2-logs:/logs
+    command:
+      - --name=pd2
+      - --client-urls=http://0.0.0.0:23792
+      - --peer-urls=http://0.0.0.0:23802
+      - --advertise-client-urls=http://127.0.0.1:23792
+      - --advertise-peer-urls=http://127.0.0.1:23802
+      - --initial-cluster=pd1=http://127.0.0.1:23801,pd2=http://127.0.0.1:23802,pd3=http://127.0.0.1:23803
+      - --data-dir=/data/pd2
+      - --log-file=/logs/pd.log
+
+  pd3:
+    image: pingcap/pd:v8.5.5
+    container_name: tikv-pd3
+    network_mode: host
+    volumes:
+      - <NVME_DIR>/tikv/pd3-data:/data
+      - <NVME_DIR>/tikv/pd3-logs:/logs
+    command:
+      - --name=pd3
+      - --client-urls=http://0.0.0.0:23793
+      - --peer-urls=http://0.0.0.0:23803
+      - --advertise-client-urls=http://127.0.0.1:23793
+      - --advertise-peer-urls=http://127.0.0.1:23803
+      - --initial-cluster=pd1=http://127.0.0.1:23801,pd2=http://127.0.0.1:23802,pd3=http://127.0.0.1:23803
+      - --data-dir=/data/pd3
+      - --log-file=/logs/pd.log
+
+  tikv1:
+    image: pingcap/tikv:v8.5.5
+    container_name: tikv-tikv1
+    network_mode: host
+    volumes:
+      - <NVME_DIR>/tikv/tikv1-data:/data
+      - <NVME_DIR>/tikv/tikv1-logs:/logs
+      - ./tikv.toml:/etc/tikv/tikv.toml:ro
+    command:
+      - --config=/etc/tikv/tikv.toml
+      - --addr=0.0.0.0:20161
+      - --advertise-addr=127.0.0.1:20161
+      - --status-addr=0.0.0.0:20181
+      - --pd-endpoints=http://127.0.0.1:23791,http://127.0.0.1:23792,http://127.0.0.1:23793
+      - --data-dir=/data/tikv1
+      - --log-file=/logs/tikv.log
+    depends_on:
+      pd1:
+        condition: service_healthy
+
+  tikv2:
+    image: pingcap/tikv:v8.5.5
+    container_name: tikv-tikv2
+    network_mode: host
+    volumes:
+      - <NVME_DIR>/tikv/tikv2-data:/data
+      - <NVME_DIR>/tikv/tikv2-logs:/logs
+      - ./tikv.toml:/etc/tikv/tikv.toml:ro
+    command:
+      - --config=/etc/tikv/tikv.toml
+      - --addr=0.0.0.0:20162
+      - --advertise-addr=127.0.0.1:20162
+      - --status-addr=0.0.0.0:20182
+      - --pd-endpoints=http://127.0.0.1:23791,http://127.0.0.1:23792,http://127.0.0.1:23793
+      - --data-dir=/data/tikv2
+      - --log-file=/logs/tikv.log
+    depends_on:
+      pd1:
+        condition: service_healthy
+
+  tikv3:
+    image: pingcap/tikv:v8.5.5
+    container_name: tikv-tikv3
+    network_mode: host
+    volumes:
+      - <NVME_DIR>/tikv/tikv3-data:/data
+      - <NVME_DIR>/tikv/tikv3-logs:/logs
+      - ./tikv.toml:/etc/tikv/tikv.toml:ro
+    command:
+      - --config=/etc/tikv/tikv.toml
+      - --addr=0.0.0.0:20163
+      - --advertise-addr=127.0.0.1:20163
+      - --status-addr=0.0.0.0:20183
+      - --pd-endpoints=http://127.0.0.1:23791,http://127.0.0.1:23792,http://127.0.0.1:23793
+      - --data-dir=/data/tikv3
+      - --log-file=/logs/tikv.log
+    depends_on:
+      pd1:
+        condition: service_healthy
 ```
 
 ### 4.2 Start Cluster
