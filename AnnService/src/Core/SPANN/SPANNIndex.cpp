@@ -521,7 +521,7 @@ void Index<T>::SetFullSearchCallback()
             ErrorCode ret = self->SearchIndex(results);
             if (ret != ErrorCode::Success) return ret;
 
-            results.SortResult();
+            // Results are already sorted by SearchDiskIndex; do NOT re-sort
             for (int i = 0; i < resultCount && i < results.GetResultNum(); i++) {
                 auto* r = results.GetResult(i);
                 if (r->VID < 0) break;

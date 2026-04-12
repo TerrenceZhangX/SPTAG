@@ -534,6 +534,7 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
         // Multi-node: batch route all queries
         std::vector<SPANN::SearchStats> stats(numQueries);
         spannIndex->BatchRouteSearch(results, stats, 0, numQueries, numThreads);
+
         // Distribute per-query latency from stats
         for (int i = 0; i < numQueries; i++) {
             latencies[i] = static_cast<float>(stats[i].m_totalSearchLatency);
@@ -696,7 +697,8 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                   const std::string &outputFile = "output.json", const bool rebuild = true, const int resume = -1,
                   const std::string &quantizerFilePath = std::string(""), int quantizedDim = 0, int layers = 1,
                   const std::map<std::string, std::string>& ssdOverrides = {},
-                  bool rebuildSsdOnly = false)
+                  bool rebuildSsdOnly = false,
+                  bool buildOnly = false)
 {
     int oldM = M, oldK = K, oldN = N, oldQueries = queries;
     N = baseVectorCount;
@@ -897,7 +899,11 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
 
 
     // Benchmark 1: Insert performance
-    if (insertBatchSize > 0)
+    if (buildOnly) {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "BuildOnly=true: skipping insert batches, index saved to %s\n", indexPath.c_str());
+        jsonFile << "    \"benchmark1_insert\": {}\n";
+    }
+    else if (insertBatchSize > 0)
     {
         BOOST_TEST_MESSAGE("\n=== Benchmark 1: Insert Performance ===");
         {
@@ -2176,6 +2182,7 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     DistCalcMethod distMethod = iniReader.GetParameter("Benchmark", "DistMethod", DistCalcMethod::L2);
     bool rebuild = iniReader.GetParameter("Benchmark", "Rebuild", true);
     bool rebuildSsdOnly = iniReader.GetParameter("Benchmark", "RebuildSSDOnly", false);
+    bool buildOnly = iniReader.GetParameter("Benchmark", "BuildOnly", false);
     int resume = iniReader.GetParameter("Benchmark", "Resume", -1);
 
     // Read storage backend overrides for BuildSSDIndex
@@ -2238,19 +2245,19 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     {
         RunBenchmark<float>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                     insertVectorCount, deleteVectorCount, batchNum, topK, numSearchThreads, numInsertThreads, numQueries, outputFile, 
-                    rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly);
+                    rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly, buildOnly);
     }
     else if (valueType == VectorValueType::Int8)
     {
         RunBenchmark<std::int8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                       insertVectorCount, deleteVectorCount, batchNum, topK, numSearchThreads, numInsertThreads, numQueries,
-                      outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly);
+                      outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly, buildOnly);
     }
     else if (valueType == VectorValueType::UInt8)
     {
         RunBenchmark<std::uint8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                        insertVectorCount, deleteVectorCount, batchNum, topK, numSearchThreads, numInsertThreads, numQueries,
-                       outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly);
+                       outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly, buildOnly);
     }
 
     //std::filesystem::remove_all(indexPath);
