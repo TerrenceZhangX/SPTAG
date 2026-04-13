@@ -28,6 +28,7 @@
 #include <future>
 #include <numeric>
 #include <utility>
+#include <unordered_map>
 #include <random>
 #include <deque>
 #include <condition_variable>
@@ -50,24 +51,6 @@ namespace SPTAG::SPANN {
     template <typename ValueType>
     class ExtraDynamicSearcher : public IExtraSearcher
     {
-        struct AppendPair
-        {
-            std::string BKTID;
-            int headID;
-            std::string posting;
-
-            AppendPair(std::string p_BKTID = "", int p_headID = -1, std::string p_posting = "") : BKTID(p_BKTID), headID(p_headID), posting(p_posting) {}
-            inline bool operator < (const AppendPair& rhs) const
-            {
-                return std::strcmp(BKTID.c_str(), rhs.BKTID.c_str()) < 0;
-            }
-
-            inline bool operator > (const AppendPair& rhs) const
-            {
-                return std::strcmp(BKTID.c_str(), rhs.BKTID.c_str()) > 0;
-            }
-        };
-
         class MergeAsyncJob : public Helper::ThreadPool::Job
         {
         private:
@@ -181,9 +164,6 @@ namespace SPTAG::SPANN {
         std::shared_ptr<Helper::Concurrent::ConcurrentQueue<int>> m_freeWorkSpaceIds;
         std::atomic<int> m_workspaceCount = 0;
 
-        std::mutex m_asyncAppendLock;
-        Helper::Concurrent::ConcurrentPriorityQueue<AppendPair> m_asyncAppendQueue;
-             
         std::shared_ptr<Helper::KeyValueIO> db;
 
         SPANN::Index<ValueType>* m_headIndex;
@@ -204,6 +184,13 @@ namespace SPTAG::SPANN {
         std::shared_timed_mutex m_mergeListLock;
         Helper::Concurrent::ConcurrentSet<SizeType> m_mergeList;
         std::atomic_size_t m_mergeJobsInFlight{ 0 };
+
+        // ---- Posting write-through cache ----
+        // Caches full posting lists so consecutive Appends to the same headID
+        // skip the TiKV Get (cache hit → 0 Get + 1 Put instead of 1 Get + 1 Put).
+        // Always writes through to TiKV (no dirty entries) so Search sees latest data.
+        std::mutex m_postingCacheMu;
+        std::unordered_map<SizeType, std::string> m_postingCache;
 
     public:
         ExtraDynamicSearcher(SPANN::Options& p_opt, int layer, SPANN::Index<ValueType>* headIndex, std::shared_ptr<Helper::KeyValueIO> p_db) {
@@ -476,13 +463,17 @@ namespace SPTAG::SPANN {
 
                 std::string postingList;
                 auto splitGetBegin = std::chrono::high_resolution_clock::now();
-                if ((ret=db->Get(DBKey(headID), &postingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) !=
-                    ErrorCode::Success)
                 {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                                 "Split fail to get oversized postings: key=%lld read size=%d\n",
-                                 (std::int64_t)headID, (int)(postingList.size()), (int)(ret == ErrorCode::Success));
-                    return ret;
+                    if (!TakeCachedPosting(headID, postingList)) {
+                        if ((ret=db->Get(DBKey(headID), &postingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) !=
+                            ErrorCode::Success)
+                        {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                                         "Split fail to get oversized postings: key=%lld read size=%d\n",
+                                         (std::int64_t)headID, (int)(postingList.size()), (int)(ret == ErrorCode::Success));
+                            return ret;
+                        }
+                    }
                 }
                 auto splitGetEnd = std::chrono::high_resolution_clock::now();
                 elapsedMSeconds = std::chrono::duration_cast<std::chrono::microseconds>(splitGetEnd - splitGetBegin).count();
@@ -549,6 +540,7 @@ namespace SPTAG::SPANN {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split Fail to write back posting %lld\n", (std::int64_t)(headID));
                         return ret;
                     }
+                    CachePosting(headID, std::move(postingList));
                     m_stat.m_garbageNum++;
                     auto GCEnd = std::chrono::high_resolution_clock::now();
                     elapsedMSeconds = std::chrono::duration_cast<std::chrono::microseconds>(GCEnd - splitBegin).count();
@@ -593,6 +585,7 @@ namespace SPTAG::SPANN {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split fail to override posting cut to limit for posting %lld\n", (std::int64_t)(headID));
                         return ret;
                     }
+                    CachePosting(headID, std::move(newpostingList));
                     {
                         std::unique_lock<std::shared_timed_mutex> tmplock(m_splitListLock);
                         m_splitList.unsafe_erase(headID);
@@ -624,6 +617,7 @@ namespace SPTAG::SPANN {
                             SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to override posting %lld\n", (std::int64_t)(newHeadVID));
                             return ret;
                         }
+                        CachePosting(newHeadVID, newPostingLists[k]);
                         auto splitPutEnd = std::chrono::high_resolution_clock::now();
                         elapsedMSeconds = std::chrono::duration_cast<std::chrono::microseconds>(splitPutEnd - splitPutBegin).count();
                         m_stat.m_putCost += elapsedMSeconds;
@@ -664,12 +658,16 @@ namespace SPTAG::SPANN {
                             std::string mergedPostingList;
                             std::set<SizeType> vectorIdSet;
                             std::string currentPostingList;
-                            if ((ret = db->Get(DBKey(newHeadVID), &currentPostingList, MaxTimeout,
-                                               &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success)
                             {
-                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to get posting %lld\n",
-                                             (std::int64_t)(newHeadVID));
-                                return ret;
+                                if (!TakeCachedPosting(newHeadVID, currentPostingList)) {
+                                    if ((ret = db->Get(DBKey(newHeadVID), &currentPostingList, MaxTimeout,
+                                                       &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success)
+                                    {
+                                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to get posting %lld\n",
+                                                     (std::int64_t)(newHeadVID));
+                                        return ret;
+                                    }
+                                }
                             }
 
                             auto *postingP = reinterpret_cast<uint8_t *>(newPostingLists[k].data());
@@ -722,6 +720,7 @@ namespace SPTAG::SPANN {
                                              (std::int64_t)(newHeadVID));
                                 return ret;
                             }
+                            CachePosting(newHeadVID, std::move(mergedPostingList));
                             auto splitPutEnd = std::chrono::high_resolution_clock::now();
                             elapsedMSeconds =
                                 std::chrono::duration_cast<std::chrono::microseconds>(splitPutEnd - splitPutBegin)
@@ -737,7 +736,8 @@ namespace SPTAG::SPANN {
                             if ((ret=db->Put(DBKey(newHeadVID), newPostingLists[k], MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
                                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to add new posting %lld\n", (std::int64_t)(newHeadVID));
                                 return ret;
-                            }                        
+                            }
+                            CachePosting(newHeadVID, newPostingLists[k]);
                             auto splitPutEnd = std::chrono::high_resolution_clock::now();
                             elapsedMSeconds = std::chrono::duration_cast<std::chrono::microseconds>(splitPutEnd - splitPutBegin).count();
                             m_stat.m_putCost += elapsedMSeconds;
@@ -761,6 +761,7 @@ namespace SPTAG::SPANN {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to delete old posting in Split\n");
                         return ret;
                     }
+                    InvalidatePostingCache(headID);
                 }
 
                 {
@@ -817,15 +818,19 @@ namespace SPTAG::SPANN {
 
             std::string currentPostingList;
             ErrorCode ret;
-            if ((ret = db->Get(DBKey(headID), &currentPostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) !=
-                    ErrorCode::Success)
             {
-                SPTAGLIB_LOG(
-                    Helper::LogLevel::LL_Error,
-                    "Fail to get original merge postings: %lld, get size:%d\n",
-                    (std::int64_t)headID, (int)(currentPostingList.size()));
-                PrintErrorInPosting(currentPostingList, headID);
-                return ret;
+                if (!TakeCachedPosting(headID, currentPostingList)) {
+                    if ((ret = db->Get(DBKey(headID), &currentPostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) !=
+                            ErrorCode::Success)
+                    {
+                        SPTAGLIB_LOG(
+                            Helper::LogLevel::LL_Error,
+                            "Fail to get original merge postings: %lld, get size:%d\n",
+                            (std::int64_t)headID, (int)(currentPostingList.size()));
+                        PrintErrorInPosting(currentPostingList, headID);
+                        return ret;
+                    }
+                }
             }
 
             auto* postingP = reinterpret_cast<uint8_t*>(currentPostingList.data());
@@ -1242,27 +1247,27 @@ namespace SPTAG::SPANN {
             }
         }
 
-        ErrorCode AsyncAppend(ExtraWorkSpace* p_exWorkSpace, SizeType headID, int appendNum, std::string& appendPosting, int reassignThreshold = 0)
-        {
-            if (m_asyncAppendQueue.size() >= m_opt->m_asyncAppendQueueSize) {
-                std::lock_guard<std::mutex> lock(m_asyncAppendLock);
-                if (m_asyncAppendQueue.size() < m_opt->m_asyncAppendQueueSize) {
-                    m_asyncAppendQueue.push(AppendPair(m_headIndex->GetPriorityID(headID, m_layer + 1), headID, appendPosting));
-                    return ErrorCode::Success;
-                }
+        // ---- Posting write-through cache helpers ----
+        // Takes cached posting (moves data out, removes entry). Returns true if found.
+        bool TakeCachedPosting(SizeType headID, std::string& data) {
+            std::lock_guard<std::mutex> lock(m_postingCacheMu);
+            auto it = m_postingCache.find(headID);
+            if (it == m_postingCache.end()) return false;
+            data = std::move(it->second);
+            m_postingCache.erase(it);
+            return true;
+        }
 
-                AppendPair workPair;
-                ErrorCode ret;
-                while (m_asyncAppendQueue.try_pop(workPair)) {
-                    if ((ret = Append(p_exWorkSpace, workPair.headID, 1, workPair.posting, reassignThreshold)) != ErrorCode::Success) {
-                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "AsyncAppend: Append failed in async queue processing, headID: %d\n", workPair.headID);
-                        return ret;
-                    }
-                }
-            } else {
-                m_asyncAppendQueue.push(AppendPair(m_headIndex->GetPriorityID(headID, m_layer + 1), headID, appendPosting));
-            }
-            return ErrorCode::Success;
+        // Stores a posting in cache (write-through: TiKV already has this data).
+        void CachePosting(SizeType headID, std::string data) {
+            std::lock_guard<std::mutex> lock(m_postingCacheMu);
+            m_postingCache[headID] = std::move(data);
+        }
+
+        // Removes entry from cache.
+        void InvalidatePostingCache(SizeType headID) {
+            std::lock_guard<std::mutex> lock(m_postingCacheMu);
+            m_postingCache.erase(headID);
         }
 
         ErrorCode Append(ExtraWorkSpace* p_exWorkSpace, SizeType headID, int appendNum, std::string& appendPosting, int reassignThreshold = 0)
@@ -1320,12 +1325,22 @@ namespace SPTAG::SPANN {
                 }
 
                 auto appendIOBegin = std::chrono::high_resolution_clock::now();
-                if ((ret = db->Merge(
-                         DBKey(headID), appendPosting, MaxTimeout, &(p_exWorkSpace->m_diskRequests), postingSize)) != ErrorCode::Success)
                 {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Merge failed for %lld! Posting Size:%d, limit: %d\n", (std::int64_t)headID, postingSize, m_postingSizeLimit);
-                    GetDBStats();
-                    return ret;
+                    // Write-through cache: use cached posting to skip Get, always Put.
+                    std::string fullPosting;
+                    if (!TakeCachedPosting(headID, fullPosting)) {
+                        auto getRet = db->Get(DBKey(headID), &fullPosting, MaxTimeout, &(p_exWorkSpace->m_diskRequests));
+                        if (getRet != ErrorCode::Success) fullPosting.clear();
+                    }
+                    fullPosting.append(appendPosting);
+                    postingSize = static_cast<int>(fullPosting.size());
+                    if ((ret = db->Put(DBKey(headID), fullPosting, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Merge failed for %lld! Posting Size:%d, limit: %d\n", (std::int64_t)headID, postingSize, m_postingSizeLimit);
+                        InvalidatePostingCache(headID);
+                        GetDBStats();
+                        return ret;
+                    }
+                    CachePosting(headID, std::move(fullPosting));
                 }
                 auto appendIOEnd = std::chrono::high_resolution_clock::now();
                 appendIOSeconds = std::chrono::duration_cast<std::chrono::microseconds>(appendIOEnd - appendIOBegin).count();
@@ -2448,6 +2463,12 @@ namespace SPTAG::SPANN {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "Checkpoint: resetting transient async error (code=%d) for layer %d\n",
                              (int)m_asyncStatus, m_layer);
                 m_asyncStatus = ErrorCode::Success;
+            }
+            // Clear write-through cache (no dirty entries to flush)
+            {
+                std::lock_guard<std::mutex> lock(m_postingCacheMu);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Checkpoint: clearing posting cache (%zu entries) for layer %d\n", m_postingCache.size(), m_layer);
+                m_postingCache.clear();
             }
 
             std::string p_persistenMap = prefix + FolderSep + m_opt->m_deleteIDFile + "_" + std::to_string(m_layer);
