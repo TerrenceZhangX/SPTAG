@@ -2363,7 +2363,7 @@ namespace SPTAG::SPANN {
 
             size_t totalJobs = m_splitThreadPool->jobsize();
             unsigned int runningJobs = static_cast<unsigned int>(m_splitThreadPool->runningJobs());
-            if (totalJobs % 10000 == 0) {
+            if (totalJobs > 0 && (totalJobs % 500 == 0 || totalJobs <= 10)) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
                              "layer %d jobsize total:%zu split:%zu merge:%zu running:%u\n",
                              m_layer, totalJobs, m_splitJobsInFlight.load(),
@@ -2429,10 +2429,20 @@ namespace SPTAG::SPANN {
         ErrorCode Checkpoint(std::string prefix) override {
             /**flush SPTAG, versionMap, block mapping, block pool**/
             /** Wait **/
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Waiting for index update complete\n");
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Checkpoint: waiting for index update complete (layer %d)\n", m_layer);
+            auto waitStart = std::chrono::steady_clock::now();
+            int pollCount = 0;
             while(!AllFinished())
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                if (++pollCount % 250 == 0) { // every ~5 seconds
+                    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - waitStart).count();
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Checkpoint: layer %d still waiting (%lld s elapsed)\n", m_layer, (long long)elapsed);
+                }
+            }
+            {
+                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - waitStart).count();
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Checkpoint: layer %d background jobs done (waited %lld s)\n", m_layer, (long long)elapsed);
             }
             if (m_asyncStatus != ErrorCode::Success) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "Checkpoint: resetting transient async error (code=%d) for layer %d\n",
