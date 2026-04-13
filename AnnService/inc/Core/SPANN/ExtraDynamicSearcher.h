@@ -300,23 +300,6 @@ namespace SPTAG::SPANN {
             return m_initialVectorSize + (localVID - m_initialVectorSize) * numNodes + GetLocalNodeIndex();
         }
 
-        SizeType GlobalToLocalVID(SizeType globalVID, int& ownerNode) const {
-            int numNodes = GetNumNodes();
-            if (numNodes <= 1 || globalVID < m_initialVectorSize) {
-                ownerNode = -1;
-                return globalVID;
-            }
-            SizeType offset = globalVID - m_initialVectorSize;
-            ownerNode = static_cast<int>(offset % numNodes);
-            return m_initialVectorSize + offset / numNodes;
-        }
-
-        bool IsLocalVID(SizeType globalVID, SizeType& localVID) const {
-            int ownerNode;
-            localVID = GlobalToLocalVID(globalVID, ownerNode);
-            return (ownerNode < 0 || ownerNode == GetLocalNodeIndex());
-        }
-
         void InitializeRouter(SPANN::Options& p_opt) {
             std::vector<std::pair<std::string, std::string>> nodeAddrs;
             {
