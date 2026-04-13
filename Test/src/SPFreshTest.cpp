@@ -417,9 +417,52 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
     std::vector<std::thread> threads;
 
     int printstep = step / 50;
-    // Single bulk AddIndex call — multi-threading happens inside SPANNIndex::AddIndex
-    auto func = [&]() {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "InsertVectors: bulk AddIndex for %d vectors\n", step);
+
+    // When router is enabled, use bulk AddIndex to amortize RPC overhead:
+    // ExtraDynamicSearcher::AddIndex batches all remote appends and flushes
+    // once, instead of one RPC per vector in the per-vector path.
+    bool useBulk = (p_index->GetSearchNodeCount() > 1);
+
+    // Per-vector insert (original path): each thread grabs one vector at a time
+    std::atomic_size_t vectorsSent(start);
+    auto perVecFunc = [&]() {
+        size_t index = start;
+        while (true)
+        {
+            index = vectorsSent.fetch_add(1);
+            if (index < start + step)
+            {
+                if ((index % (printstep - 1)) == 0)
+                {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Sent %.2lf%%...\n", index * 100.0 / step);
+                }
+                ByteArray p_meta = metaset->GetMetadata((SizeType)index);
+                std::uint64_t *offsets = new std::uint64_t[2]{0, p_meta.Length()};
+                std::shared_ptr<MetadataSet> meta(new MemMetadataSet(
+                    p_meta, ByteArray((std::uint8_t *)offsets, 2 * sizeof(std::uint64_t), true), 1));
+                ErrorCode ret = p_index->AddIndex(addset->GetVector((SizeType)index), 1, addset->Dimension(), meta, true);
+                if (ret != ErrorCode::Success)
+                {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                                 "AddIndex failed. VID:%zu Dim:%d IndexDim:%d Storage:%s Error:%d\n",
+                                 index,
+                                 addset->Dimension(),
+                                 p_index->GetFeatureDim(),
+                                 p_index->GetParameter("Storage", "BuildSSDIndex").c_str(),
+                                 static_cast<int>(ret));
+                }
+                BOOST_REQUIRE(ret == ErrorCode::Success);
+            }
+            else
+            {
+                return;
+            }
+        }
+    };
+
+    // Bulk insert (router path): single call, parallelism inside SPANNIndex::AddIndex
+    auto bulkFunc = [&]() {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "InsertVectors: bulk AddIndex for %d vectors (router enabled)\n", step);
         ErrorCode ret = p_index->AddIndex(addset->GetVector((SizeType)start), step, addset->Dimension(), metaset, true);
         if (ret != ErrorCode::Success)
         {
@@ -429,6 +472,16 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
         }
         BOOST_REQUIRE(ret == ErrorCode::Success);
     };
+
+    std::function<void()> func;
+    int insertThreadCount;
+    if (useBulk) {
+        func = bulkFunc;
+        insertThreadCount = 1;
+    } else {
+        func = perVecFunc;
+        insertThreadCount = insertThreads;
+    }
 
     if (searchThreads > 0 && queryset != nullptr && numQueries != 0 && benchmarkData != nullptr) {
         std::vector<float> latencies(numQueries);
@@ -455,7 +508,7 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
             duration[tid] = std::chrono::duration_cast<std::chrono::microseconds>(s2 - s1).count() / 1000.0f;
         };
 
-        for (int j = 0; j < 1; j++)  // Single insert thread; parallelism is inside AddIndex
+        for (int j = 0; j < insertThreadCount; j++)
         {
             threads.emplace_back(func);
         }

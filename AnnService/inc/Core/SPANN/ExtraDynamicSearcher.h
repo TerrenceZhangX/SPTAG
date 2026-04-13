@@ -2581,11 +2581,14 @@ namespace SPTAG::SPANN {
         ErrorCode AddIndex(ExtraWorkSpace* p_exWorkSpace, std::shared_ptr<VectorSet>& p_vectorSet,
             SizeType begin) override {
 
-            // When router is enabled, do RNGSelection locally for ALL vectors,
-            // then route Append by headID ownership (peer-to-peer, no central coordinator).
+            // When router is enabled, do RNGSelection locally for ALL vectors in this
+            // node's shard, then route Append by headID ownership. The caller (SPFreshTest)
+            // already partitions the insert batch across nodes — each node only calls
+            // AddIndex with its own perNodeBatch vectors.
             if (m_router && m_router->IsEnabled()) {
                 for (int v = 0; v < p_vectorSet->Count(); v++) {
                     SizeType VID = begin + v;
+                    // Map local VID to interleaved globalVID for cross-node uniqueness
                     SizeType globalVID = LocalToGlobalVID(VID);
 
                     // Local RNGSelection for every vector (head index is replicated)
