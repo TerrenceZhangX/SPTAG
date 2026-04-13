@@ -245,6 +245,12 @@ namespace SPTAG {
 
 #include "inc/Core/SPANN/ParameterDefinitionList.h"
 #undef DefineSSDParameter
+
+#define DefineRouterParameter(VarName, VarType, DefaultValue, RepresentStr) \
+                VarName = DefaultValue; \
+
+#include "inc/Core/SPANN/ParameterDefinitionList.h"
+#undef DefineRouterParameter
             }
 
             ~Options() {}
@@ -321,6 +327,23 @@ namespace SPTAG {
 
                     ;
                 }
+                else if (Helper::StrUtils::StrEqualIgnoreCase(p_section, "Router")) {
+#define DefineRouterParameter(VarName, VarType, DefaultValue, RepresentStr) \
+    if (Helper::StrUtils::StrEqualIgnoreCase(p_param, RepresentStr)) \
+    { \
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Setting %s with value %s\n", RepresentStr, p_value); \
+        VarType tmp; \
+        if (Helper::Convert::ConvertStringTo<VarType>(p_value, tmp)) \
+        { \
+            VarName = tmp; \
+        } \
+    } else \
+
+#include "inc/Core/SPANN/ParameterDefinitionList.h"
+#undef DefineRouterParameter
+
+                    ;
+                }
                 return ErrorCode::Success;
             }
             
@@ -373,6 +396,18 @@ namespace SPTAG {
 
 #include "inc/Core/SPANN/ParameterDefinitionList.h"
 #undef DefineSSDParameter
+
+                    ;
+                }
+                else if (Helper::StrUtils::StrEqualIgnoreCase(p_section, "Router")) {
+#define DefineRouterParameter(VarName, VarType, DefaultValue, RepresentStr) \
+        if (Helper::StrUtils::StrEqualIgnoreCase(p_param, RepresentStr)) \
+        { \
+            return SPTAG::Helper::Convert::ConvertToString(VarName); \
+        } else \
+
+#include "inc/Core/SPANN/ParameterDefinitionList.h"
+#undef DefineRouterParameter
 
                     ;
                 }

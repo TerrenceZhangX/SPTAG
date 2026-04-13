@@ -731,7 +731,7 @@ void ApplyRouterParams(std::shared_ptr<VectorIndex>& index,
     for (const auto& [lowerKey, paramName] : routerKeys) {
         auto it = ssdOverrides.find(lowerKey);
         if (it != ssdOverrides.end() && !it->second.empty()) {
-            index->SetParameter(paramName.c_str(), it->second.c_str(), "BuildSSDIndex");
+            index->SetParameter(paramName.c_str(), it->second.c_str(), "Router");
             if (lowerKey == "routerenabled" && it->second == "true") hasRouter = true;
         }
     }
@@ -2256,6 +2256,12 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
         ssdOverrides[key] = val;
     }
 
+    // Pass through [Router] section params
+    auto routerParams = iniReader.GetParameters("Router");
+    for (const auto &[key, val] : routerParams) {
+        ssdOverrides[key] = val;
+    }
+
     // Pass through [SelectHead] and [BuildHead] params as overrides too
     auto selectHeadParams = iniReader.GetParameters("SelectHead");
     for (const auto &[key, val] : selectHeadParams) {
@@ -2360,6 +2366,12 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
 
     auto buildSSDParams = iniReader.GetParameters("BuildSSDIndex");
     for (const auto &[key, val] : buildSSDParams) {
+        ssdOverrides[key] = val;
+    }
+
+    // Pass through [Router] section params
+    auto routerParams = iniReader.GetParameters("Router");
+    for (const auto &[key, val] : routerParams) {
         ssdOverrides[key] = val;
     }
 

@@ -364,8 +364,11 @@ PostingPageLimit=12
 BufferLength=8
 VersionCacheTTLMs=60000
 VersionCacheMaxChunks={VersionCacheMaxChunks}
+
 {RouterBlock}
 ```
+
+The `{RouterBlock}` expands to a `[Router]` section (multi-node only) or nothing (1-node/build).
 
 #### Per-file variable resolution
 
@@ -379,9 +382,10 @@ VersionCacheMaxChunks={VersionCacheMaxChunks}
 For 1-node: `IndexPath` uses `proidx_{scale}_1node/spann_index` (no `_n{i}` suffix).
 For 1-node: `TruthPath` uses `truth_{scale}_1node`.
 
-#### Router block (multi-node only)
+#### Router block (multi-node driver and worker only)
 
 ```ini
+[Router]
 RouterEnabled=true
 RouterLocalNodeIndex={i}
 RouterNodeAddrs={addr_list}
@@ -463,7 +467,8 @@ def router_block(node_count, node_index):
     if node_count == 1:
         return ""
     addrs = ",".join(f"127.0.0.1:{30001+j}" for j in range(node_count))
-    return (f"RouterEnabled=true\n"
+    return (f"\n[Router]\n"
+            f"RouterEnabled=true\n"
             f"RouterLocalNodeIndex={node_index}\n"
             f"RouterNodeAddrs={addrs}\n"
             f"RouterNodeStores={TIKV_STORES}")
