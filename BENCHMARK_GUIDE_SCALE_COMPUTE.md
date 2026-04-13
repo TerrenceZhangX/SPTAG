@@ -312,8 +312,18 @@ Rule: `BaseVectorCount = scale * 0.99`, `InsertVectorCount = scale * 0.01`.
 
 ### 5.3 INI Generation Rules
 
-Each configuration produces one INI file per node: `Test/benchmark_{scale}_{topo}_n{i}.ini`
-(1-node has no `_n{i}` suffix, just `Test/benchmark_{scale}_1node.ini`).
+For **1-node** there is a single file: `Test/benchmark_{scale}_1node.ini`.
+
+For **multi-node** (2-node, 3-node, …) there are three kinds of INI file:
+
+| File | Purpose | Rebuild | Router | IndexPath |
+|------|---------|---------|--------|-----------|
+| `benchmark_{scale}_{topo}_build.ini` | Build index (each node runs once) | `true` | **Disabled** | `_n0` |
+| `benchmark_{scale}_{topo}_driver.ini` | Driver (n0) insert + query phase | `false` | Enabled, `NodeIndex=0` | `_n0` |
+| `benchmark_{scale}_{topo}_n{i}.ini` | Worker nodes (i=1,2,…) | `false` | Enabled, `NodeIndex={i}` | `_n{i}` |
+
+**Key difference**: the build INI has `Rebuild=true` and **no** Router keys (single-node build),
+while the driver INI has `Rebuild=false` and Router enabled. They share the same `_n0` IndexPath.
 
 #### Template (complete INI file)
 
@@ -357,14 +367,14 @@ VersionCacheMaxChunks={VersionCacheMaxChunks}
 {RouterBlock}
 ```
 
-#### Per-node variable resolution
+#### Per-file variable resolution
 
-| Variable | 1-node | Multi-node n0 (driver) | Multi-node n1+ (worker) |
-|----------|--------|----------------------|------------------------|
-| `{i}` | (omitted from filename/IndexPath) | `0` | `1`, `2`, ... |
-| `{Rebuild}` | `true` | `true` | `false` |
-| `{RouterBlock}` | (empty — no Router keys) | See below | See below |
-| `{TiKVKeyPrefix}` | `bench{scaleTag}_{topo}` | `bench{scaleTag}_{topo}` | `bench{scaleTag}_{topo}` (same for all nodes in a topology) |
+| Variable | 1-node | Multi-node build | Multi-node driver (n0) | Multi-node worker (n1+) |
+|----------|--------|-----------------|----------------------|------------------------|
+| `{i}` | (omitted) | `0` | `0` | `1`, `2`, ... |
+| `{Rebuild}` | `true` | `true` | `false` | `false` |
+| `{RouterBlock}` | (empty) | (empty — no Router) | See below | See below |
+| `{TiKVKeyPrefix}` | `bench{scaleTag}_{topo}` | same | same | same |
 
 For 1-node: `IndexPath` uses `proidx_{scale}_1node/spann_index` (no `_n{i}` suffix).
 For 1-node: `TruthPath` uses `truth_{scale}_1node`.
@@ -458,27 +468,37 @@ def router_block(node_count, node_index):
             f"RouterNodeAddrs={addrs}\n"
             f"RouterNodeStores={TIKV_STORES}")
 
+def write_ini(fname, **kwargs):
+    content = TEMPLATE.format(**kwargs).rstrip() + "\n"
+    with open(fname, "w") as f:
+        f.write(content)
+    print(f"  Generated {fname}")
+
 os.makedirs("Test", exist_ok=True)
 for scale, sp in SCALES.items():
     for topo, n_nodes in TOPOS.items():
-        for i in range(n_nodes):
-            if n_nodes == 1:
-                fname = f"Test/benchmark_{scale}_{topo}.ini"
-                node_suffix = ""
-            else:
-                fname = f"Test/benchmark_{scale}_{topo}_n{i}.ini"
-                node_suffix = f"_n{i}"
-            content = TEMPLATE.format(
-                scale=scale, topo=topo, node_suffix=node_suffix,
-                base=sp["base"], insert=sp["insert"],
-                cache_chunks=sp["cache_chunks"],
-                scale_tag=sp["tag"],
-                rebuild="true" if (n_nodes == 1 or i == 0) else "false",
-                router_block=router_block(n_nodes, i),
-            ).rstrip() + "\n"
-            with open(fname, "w") as f:
-                f.write(content)
-            print(f"  Generated {fname}")
+        common = dict(scale=scale, topo=topo, base=sp["base"],
+                      insert=sp["insert"], cache_chunks=sp["cache_chunks"],
+                      scale_tag=sp["tag"])
+        if n_nodes == 1:
+            # Single file for 1-node
+            write_ini(f"Test/benchmark_{scale}_{topo}.ini",
+                      node_suffix="", rebuild="true",
+                      router_block="", **common)
+        else:
+            # Build INI: Rebuild=true, no Router, IndexPath=_n0
+            write_ini(f"Test/benchmark_{scale}_{topo}_build.ini",
+                      node_suffix="_n0", rebuild="true",
+                      router_block="", **common)
+            # Driver INI: Rebuild=false, Router enabled, IndexPath=_n0
+            write_ini(f"Test/benchmark_{scale}_{topo}_driver.ini",
+                      node_suffix="_n0", rebuild="false",
+                      router_block=router_block(n_nodes, 0), **common)
+            # Worker INIs: Rebuild=false, Router enabled, IndexPath=_n{i}
+            for i in range(1, n_nodes):
+                write_ini(f"Test/benchmark_{scale}_{topo}_n{i}.ini",
+                          node_suffix=f"_n{i}", rebuild="false",
+                          router_block=router_block(n_nodes, i), **common)
 
 print("Done.")
 ```
@@ -487,7 +507,9 @@ Run: `python3 generate_benchmark_ini.py` from the repo root.
 
 ### 5.5 Quick verification
 
-After generation, verify file count: `ls Test/benchmark_*.ini | wc -l` should be **24** (4 scales × (1 + 2 + 3) nodes = 24 files).
+After generation, verify file count: `ls Test/benchmark_*.ini | wc -l` should be **20**
+(4 scales × (1 + 3 + 4) files ÷ 4 = 5 per scale × 4 scales = 20).
+Breakdown per scale: 1-node (1 file) + 2-node (build + driver + n1 = 3) + 3-node (build + driver + n1 + n2 = 4) = 8 files per scale, 32 total.
 
 ## 6. Running Benchmarks
 
@@ -521,11 +543,11 @@ cd <SPTAG_ROOT>
 
 #### 2-node / 3-node
 1. `restart_tikv` — restart TiKV and clear all data
-2. **Build phase**: Run BenchmarkFromConfig as n0 (RouterEnabled temporarily disabled)
+2. **Build phase**: Run BenchmarkFromConfig with `_build.ini` (Rebuild=true, no Router)
 3. `rebalance_tikv_leaders` — rebalance region leaders across TiKV stores
 4. Copy head index to other node directories
-5. **Start workers**: Run `SPTAGTest --run_test=SPFreshTest/WorkerNode` as n1/n2
-6. **Query phase**: Run BenchmarkFromConfig as n0 (Rebuild=false), queries distributed via router
+5. **Start workers**: Run `SPTAGTest --run_test=SPFreshTest/WorkerNode` with `_n1.ini` (and `_n2.ini` for 3-node)
+6. **Driver phase**: Run BenchmarkFromConfig with `_driver.ini` (Rebuild=false, Router enabled)
 7. Stop all worker processes
 8. Output: `output_{scale}_{topo}.json`
 
@@ -1156,10 +1178,11 @@ run_1node() {
 
 run_2node() {
     local SCALE=$1
-    local INI_N0="Test/benchmark_${SCALE}_2node_n0.ini"
+    local INI_BUILD="Test/benchmark_${SCALE}_2node_build.ini"
+    local INI_DRIVER="Test/benchmark_${SCALE}_2node_driver.ini"
     local INI_N1="Test/benchmark_${SCALE}_2node_n1.ini"
-    if [ ! -f "$INI_N0" ] || [ ! -f "$INI_N1" ]; then
-        echo "  SKIP 2-node: configs not found ($INI_N0, $INI_N1)"
+    if [ ! -f "$INI_BUILD" ] || [ ! -f "$INI_DRIVER" ] || [ ! -f "$INI_N1" ]; then
+        echo "  SKIP 2-node: configs not found ($INI_BUILD, $INI_DRIVER, $INI_N1)"
         return
     fi
 
@@ -1169,16 +1192,13 @@ run_2node() {
 
     restart_tikv
 
-    # Build index with n0 (router disabled - worker not started yet)
+    # Build index with build INI (Rebuild=true, no Router)
     rm -rf "$IDXROOT/proidx_${SCALE}_2node_n0" "$IDXROOT/proidx_${SCALE}_2node_n1" "truth_${SCALE}_2node" "output_${SCALE}_2node"*.json
     mkdir -p "$IDXROOT/proidx_${SCALE}_2node_n0"
 
-    # Disable router during build: worker isn't running yet
-    sed 's/^RouterEnabled=true/RouterEnabled=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_2node_n0_build.ini"
-
     start_perf_collectors "${SCALE}_2node_build"
 
-    BENCHMARK_CONFIG="/tmp/benchmark_${SCALE}_2node_n0_build.ini" \
+    BENCHMARK_CONFIG="$INI_BUILD" \
     BENCHMARK_OUTPUT="output_${SCALE}_2node_build.json" \
       $BINARY --run_test=SPFreshTest/BenchmarkFromConfig \
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_2node_build.log"
@@ -1204,12 +1224,10 @@ run_2node() {
     WORKER1_PID=$!
     sleep 12
 
-    # Run driver n0 with Rebuild=false
-    sed 's/^Rebuild=true/Rebuild=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_2node_n0_run.ini"
-
+    # Run driver with driver INI (Rebuild=false, Router enabled)
     start_perf_collectors "${SCALE}_2node_query"
 
-    BENCHMARK_CONFIG="/tmp/benchmark_${SCALE}_2node_n0_run.ini" \
+    BENCHMARK_CONFIG="$INI_DRIVER" \
     BENCHMARK_OUTPUT="output_${SCALE}_2node.json" \
       $BINARY --run_test=SPFreshTest/BenchmarkFromConfig \
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_2node_driver.log"
@@ -1223,10 +1241,11 @@ run_2node() {
 
 run_3node() {
     local SCALE=$1
-    local INI_N0="Test/benchmark_${SCALE}_3node_n0.ini"
+    local INI_BUILD="Test/benchmark_${SCALE}_3node_build.ini"
+    local INI_DRIVER="Test/benchmark_${SCALE}_3node_driver.ini"
     local INI_N1="Test/benchmark_${SCALE}_3node_n1.ini"
     local INI_N2="Test/benchmark_${SCALE}_3node_n2.ini"
-    if [ ! -f "$INI_N0" ] || [ ! -f "$INI_N1" ] || [ ! -f "$INI_N2" ]; then
+    if [ ! -f "$INI_BUILD" ] || [ ! -f "$INI_DRIVER" ] || [ ! -f "$INI_N1" ] || [ ! -f "$INI_N2" ]; then
         echo "  SKIP 3-node: configs not found"
         return
     fi
@@ -1237,16 +1256,13 @@ run_3node() {
 
     restart_tikv
 
-    # Build index with n0 (router disabled - workers not started yet)
+    # Build index with build INI (Rebuild=true, no Router)
     rm -rf "$IDXROOT/proidx_${SCALE}_3node_n0" "$IDXROOT/proidx_${SCALE}_3node_n1" "$IDXROOT/proidx_${SCALE}_3node_n2" "truth_${SCALE}_3node" "output_${SCALE}_3node"*.json
     mkdir -p "$IDXROOT/proidx_${SCALE}_3node_n0"
 
-    # Disable router during build: workers aren't running yet
-    sed 's/^RouterEnabled=true/RouterEnabled=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_3node_n0_build.ini"
-
     start_perf_collectors "${SCALE}_3node_build"
 
-    BENCHMARK_CONFIG="/tmp/benchmark_${SCALE}_3node_n0_build.ini" \
+    BENCHMARK_CONFIG="$INI_BUILD" \
     BENCHMARK_OUTPUT="output_${SCALE}_3node_build.json" \
       $BINARY --run_test=SPFreshTest/BenchmarkFromConfig \
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_3node_build.log"
@@ -1279,12 +1295,10 @@ run_3node() {
     WORKER2_PID=$!
     sleep 12
 
-    # Run driver n0 with Rebuild=false
-    sed 's/^Rebuild=true/Rebuild=false/' "$INI_N0" > "/tmp/benchmark_${SCALE}_3node_n0_run.ini"
-
+    # Run driver with driver INI (Rebuild=false, Router enabled)
     start_perf_collectors "${SCALE}_3node_query"
 
-    BENCHMARK_CONFIG="/tmp/benchmark_${SCALE}_3node_n0_run.ini" \
+    BENCHMARK_CONFIG="$INI_DRIVER" \
     BENCHMARK_OUTPUT="output_${SCALE}_3node.json" \
       $BINARY --run_test=SPFreshTest/BenchmarkFromConfig \
       2>&1 | tee "$LOGDIR/benchmark_${SCALE}_3node_driver.log"
