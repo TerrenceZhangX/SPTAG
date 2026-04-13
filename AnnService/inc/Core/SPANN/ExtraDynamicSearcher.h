@@ -1851,15 +1851,13 @@ namespace SPTAG::SPANN {
                 int fetchCount = static_cast<int>(std::ceil(K * (1.0f + m_opt->m_oversampleFactor)));
                 fetchCount = std::min(fetchCount, K + 100); // safety cap
 
+                // Collect candidate VIDs from the top results
                 std::vector<SizeType> candidateVIDs;
-                std::vector<int> candidateIndices;
                 candidateVIDs.reserve(fetchCount);
-                candidateIndices.reserve(fetchCount);
                 for (int i = 0; i < fetchCount && i < queryResults.GetResultNum(); i++) {
                     auto* result = queryResults.GetResult(i);
                     if (result->VID >= 0) {
                         candidateVIDs.push_back(result->VID);
-                        candidateIndices.push_back(i);
                     }
                 }
 
@@ -1867,12 +1865,17 @@ namespace SPTAG::SPANN {
                 std::vector<uint8_t> versions;
                 m_versionMap->BatchGetVersions(candidateVIDs, versions);
 
-                // Filter: mark deleted entries with MaxDist so they sort to the end
-                for (size_t j = 0; j < candidateVIDs.size(); j++) {
-                    if (versions[j] == 0xfe) {
-                        auto* result = queryResults.GetResult(candidateIndices[j]);
-                        result->VID = -1;
-                        result->Dist = (std::numeric_limits<float>::max)();
+                // Filter: rebuild results without deleted entries
+                // We mark deleted entries with MaxDist so they sort to the end
+                int vidIdx = 0;
+                for (int i = 0; i < fetchCount && i < queryResults.GetResultNum(); i++) {
+                    auto* result = queryResults.GetResult(i);
+                    if (result->VID >= 0) {
+                        if (versions[vidIdx] == 0xfe) {
+                            result->VID = -1;
+                            result->Dist = (std::numeric_limits<float>::max)();
+                        }
+                        vidIdx++;
                     }
                 }
                 queryResults.SortResult();
