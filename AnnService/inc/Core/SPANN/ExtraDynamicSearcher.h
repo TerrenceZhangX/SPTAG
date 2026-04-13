@@ -215,6 +215,7 @@ namespace SPTAG::SPANN {
 
         ErrorCode m_asyncStatus = ErrorCode::Success;
 
+        // Moved from bottom of class — no logic change, just reordered near member variables.
         inline SizeType DBKey(SizeType postingID) {
             return m_opt->m_maxID * m_layer + postingID;
         }
@@ -252,7 +253,6 @@ namespace SPTAG::SPANN {
                 auto tikvMap = std::make_unique<COMMON::TiKVVersionMap>();
                 tikvMap->SetDB(db);
                 tikvMap->SetLayer(layer);
-                tikvMap->SetNodeIndex(p_opt.m_routerLocalNodeIndex);
                 tikvMap->SetChunkSize(p_opt.m_versionChunkSize);
                 tikvMap->SetCacheTTL(p_opt.m_versionCacheTTLMs);
                 tikvMap->SetCacheMaxChunks(p_opt.m_versionCacheMaxChunks);
@@ -367,6 +367,10 @@ namespace SPTAG::SPANN {
             }
         }
 
+        // Transfer the live PostingRouter from a previous searcher instance.
+        // Called during Split/Rebuild when SPANN replaces the ExtraDynamicSearcher
+        // with a fresh one. We move the router (preserving TCP connections and hash
+        // ring) and re-bind callbacks so the `this` pointer targets the new object.
         void AdoptRouter(IExtraSearcher* source) override
         {
             auto* src = dynamic_cast<ExtraDynamicSearcher*>(source);
@@ -531,8 +535,7 @@ namespace SPTAG::SPANN {
 
                                 if (VID == globalID) vecStr = std::make_shared<std::string>((char*)vectorId + m_metaDataSize, m_vectorDataSize);
                                 
-                                SizeType localVID;
-                                if (IsLocalVID(VID, localVID) && (m_versionMap->Deleted(localVID) || m_versionMap->GetVersion(localVID) != version))
+                                if (m_versionMap->Deleted(VID) || m_versionMap->GetVersion(VID) != version)
                                     continue;
 
                                 if (VID == globalID) hasHead = true;
@@ -658,8 +661,7 @@ namespace SPTAG::SPANN {
                         headVec = std::make_shared<std::string>((char*)vectorId + m_metaDataSize, m_vectorDataSize);
                     }
                         //if (VID >= m_versionMap->Count()) SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "DEBUG: vector ID:%d total size:%d\n", VID, m_versionMap->Count());
-                    SizeType localVID;
-                    if (IsLocalVID(VID, localVID) && (m_versionMap->Deleted(localVID) || m_versionMap->GetVersion(localVID) != version)) continue;
+                    if (m_versionMap->Deleted(VID) || m_versionMap->GetVersion(VID) != version) continue;
 
                     if (VID == headID) hasHead = true;
                     localIndices.push_back(j);
@@ -814,8 +816,7 @@ namespace SPTAG::SPANN {
                             {
                                 SizeType VID = *((SizeType *)(postingP));
                                 uint8_t version = *(postingP + sizeof(SizeType));
-                                SizeType localVID;
-                                if (IsLocalVID(VID, localVID) && (m_versionMap->Deleted(localVID) || m_versionMap->GetVersion(localVID) != version))
+                                if (m_versionMap->Deleted(VID) || m_versionMap->GetVersion(VID) != version)
                                     continue;
 
                                 vectorIdSet.insert(VID);
@@ -830,8 +831,7 @@ namespace SPTAG::SPANN {
                                 SizeType VID = *((SizeType *)(postingK));
                                 uint8_t version = *(postingK + sizeof(SizeType));
 
-                                SizeType localVID;
-                                if (IsLocalVID(VID, localVID) && (m_versionMap->Deleted(localVID) || m_versionMap->GetVersion(localVID) != version))
+                                if (m_versionMap->Deleted(VID) || m_versionMap->GetVersion(VID) != version)
                                     continue;
 
                                 if (vectorIdSet.find(VID) != vectorIdSet.end())
@@ -903,6 +903,9 @@ namespace SPTAG::SPANN {
                 // Broadcast HeadSync to peer nodes
                 if (m_router && m_router->IsEnabled()) {
                     std::vector<HeadSyncEntry> headSyncEntries;
+                    // Split uses k-means(k=2). Iterate over the 2 clusters:
+                    // args.counts[k] = #vectors in cluster k, args.centers + k*D = centroid.
+                    // Skip empty clusters or those without an assigned new headID.
                     for (int k = 0; k < 2; k++) {
                         if (args.counts[k] == 0 || (int)newHeadsID.size() <= k) continue;
                         HeadSyncEntry entry;
@@ -999,8 +1002,7 @@ namespace SPTAG::SPANN {
                 if (VID == headID) {
                     headVec = std::make_shared<std::string>((char*)vectorId, m_vectorInfoSize);
                 }
-                SizeType localVID_m;
-                if (IsLocalVID(VID, localVID_m) && (m_versionMap->Deleted(localVID_m) || m_versionMap->GetVersion(localVID_m) != version)) continue;
+                if (m_versionMap->Deleted(VID) || m_versionMap->GetVersion(VID) != version) continue;
                 vectorIdSet.insert(VID);
                 mergedPostingList += currentPostingList.substr(j * m_vectorInfoSize, m_vectorInfoSize);
                 currentLength++;
@@ -1093,8 +1095,7 @@ namespace SPTAG::SPANN {
                         SizeType VID = *((SizeType*)(vectorId));
                         uint8_t version = *(vectorId + sizeof(SizeType));
                         if (VID == queryResult->VID) resultVec = std::make_shared<std::string>((char*)vectorId, m_vectorInfoSize);
-                        SizeType localVID_n;
-                        if (IsLocalVID(VID, localVID_n) && (m_versionMap->Deleted(localVID_n) || m_versionMap->GetVersion(localVID_n) != version)) continue;
+                        if (m_versionMap->Deleted(VID) || m_versionMap->GetVersion(VID) != version) continue;
                         if (vectorIdSet.find(VID) == vectorIdSet.end()) {
                             nextVectorIdSet.insert(VID);
                             mergedPostingList += nextPostingList.substr(j * m_vectorInfoSize, m_vectorInfoSize);
@@ -1167,8 +1168,7 @@ namespace SPTAG::SPANN {
                         SizeType VID = *(reinterpret_cast<SizeType*>(vectorId));
                         uint8_t version = *(vectorId + sizeof(SizeType));
                         ValueType* vector = reinterpret_cast<ValueType*>(vectorId + m_metaDataSize);
-                        SizeType localVID_r;
-                        if (IsLocalVID(VID, localVID_r) && (m_versionMap->Deleted(localVID_r) || m_versionMap->GetVersion(localVID_r) != version)) continue;
+                        if (m_versionMap->Deleted(VID) || m_versionMap->GetVersion(VID) != version) continue;
                         float origin_dist = m_headIndex->ComputeDistance(deletedHeadVec->data() + m_metaDataSize, vector);
                         float current_dist = m_headIndex->ComputeDistance(nextHeadVec->data() + m_metaDataSize, vector);
                         if (current_dist > origin_dist)
@@ -1301,8 +1301,7 @@ namespace SPTAG::SPANN {
                     // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "VID: %d, Head: %d\n", vid, newHeadsID[i]);
                     uint8_t version = *(reinterpret_cast<uint8_t*>(vectorId + sizeof(SizeType)));
                     ValueType* vector = reinterpret_cast<ValueType*>(vectorId + m_metaDataSize);
-                    SizeType localVid_s;
-                    if (reAssignVectorsTopK.find(vid) == reAssignVectorsTopK.end() && IsLocalVID(vid, localVid_s) && !m_versionMap->Deleted(localVid_s) && m_versionMap->GetVersion(localVid_s) == version) {
+                    if (reAssignVectorsTopK.find(vid) == reAssignVectorsTopK.end() && !m_versionMap->Deleted(vid) && m_versionMap->GetVersion(vid) == version) {
                         m_stat.m_reAssignScanNum++;
                         float dist = m_headIndex->ComputeDistance(newHeadsVec[i]->data(), vector);
                         if (CheckIsNeedReassign(newHeadsVec, vector, headVec, newHeadsDist[i], dist, true)) {
@@ -1366,8 +1365,7 @@ namespace SPTAG::SPANN {
                         // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "%d: VID: %d, Head: %d, size:%d/%d\n", i, vid, HeadPrevTopK[i], postingLists.size(), HeadPrevTopK.size());
                         uint8_t version = *(reinterpret_cast<uint8_t*>(vectorId + sizeof(SizeType)));
                         ValueType* vector = reinterpret_cast<ValueType*>(vectorId + m_metaDataSize);
-                        SizeType localVid_s2;
-                        if (reAssignVectorsTopK.find(vid) == reAssignVectorsTopK.end() && IsLocalVID(vid, localVid_s2) && !m_versionMap->Deleted(localVid_s2) && m_versionMap->GetVersion(localVid_s2) == version) {
+                        if (reAssignVectorsTopK.find(vid) == reAssignVectorsTopK.end() && !m_versionMap->Deleted(vid) && m_versionMap->GetVersion(vid) == version) {
                             m_stat.m_reAssignScanNum++;
                             float dist = m_headIndex->ComputeDistance(HeadPrevTopKVec[i]->data(), vector);
                             if (CheckIsNeedReassign(newHeadsVec, vector, headVec, newHeadsDist[i], dist, false)) {
@@ -1485,8 +1483,7 @@ namespace SPTAG::SPANN {
                     SizeType VID = *(SizeType*)(&appendPosting[idx]);
                     uint8_t version = *(uint8_t*)(&appendPosting[idx + sizeof(SizeType)]);
                     auto vectorInfo = std::make_shared<std::string>(appendPosting.c_str() + idx, m_vectorInfoSize);
-                    SizeType localVID_ap;
-                    if (IsLocalVID(VID, localVID_ap) && m_versionMap->GetVersion(localVID_ap) == version) {
+                    if (m_versionMap->GetVersion(VID) == version) {
                         // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Head Miss To ReAssign: VID: %d, current version: %d\n", *(int*)(&appendPosting[idx]), version);
                         m_stat.m_headMiss++;
                         ReassignAsync(vectorInfo, headID);
@@ -1563,9 +1560,7 @@ namespace SPTAG::SPANN {
             uint8_t version = *((uint8_t*)(vectorInfo->c_str() + sizeof(VID)));
             // return;
             // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ReassignID: %d, version: %d, current version: %d, headPrev: %d\n", VID, version, m_versionMap->GetVersion(VID), headPrev);
-            SizeType localVID_ra;
-            if (!IsLocalVID(VID, localVID_ra)) return ErrorCode::Success;  // skip foreign VIDs
-            if (m_versionMap->Deleted(localVID_ra) || m_versionMap->GetVersion(localVID_ra) != version) {
+            if (m_versionMap->Deleted(VID) || m_versionMap->GetVersion(VID) != version) {
                 return ErrorCode::Success;
             }
             auto reassignBegin = std::chrono::high_resolution_clock::now();
@@ -1582,15 +1577,18 @@ namespace SPTAG::SPANN {
 
             auto reassignAppendBegin = std::chrono::high_resolution_clock::now();
             // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Need ReAssign\n");
-            if (isNeedReassign && m_versionMap->GetVersion(localVID_ra) == version) {
+            if (isNeedReassign && m_versionMap->GetVersion(VID) == version) {
                 // SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Update Version: VID: %d, version: %d, current version: %d\n", VID, version, m_versionMap->GetVersion(VID));
-                m_versionMap->IncVersion(localVID_ra, &version, version);
+                m_versionMap->IncVersion(VID, &version, version);
                 (*vectorInfo)[sizeof(VID)] = version;
 
                 //LOG(Helper::LogLevel::LL_Info, "Reassign: oldVID:%d, replicaCount:%d, candidateNum:%d, dist0:%f\n", oldVID, replicaCount, i, selections[0].distance);
-                for (int i = 0; i < replicaCount && m_versionMap->GetVersion(localVID_ra) == version; i++) {
+                // Append the vector to its top-replicaCount nearest heads.
+                // If the target head is owned by a remote node, queue an RPC
+                // append instead of writing locally.
+                for (int i = 0; i < replicaCount && m_versionMap->GetVersion(VID) == version; i++) {
                     SizeType newHeadID = selections[i].VID;
-                    // Route Reassign Append to owner node via hash routing
+                    //LOG(Helper::LogLevel::LL_Info, "Reassign: headID:%d, oldVID:%d, newVID:%d, posting length:%d, dist:%f, string size:%d\n", newHeadID, oldVID, VID, m_postingSizes[newHeadID].load(), selections[i].Dist, vectorInfo->size());
                     if (m_router && m_router->IsEnabled()) {
                         auto target = m_router->GetOwner(newHeadID);
                         if (!target.isLocal) {
@@ -1828,22 +1826,19 @@ namespace SPTAG::SPANN {
                 diskIO += int((buffer.GetAvailableSize() + PageSize - 1) >> PageSizeEx);
                 diskRead += (int)(buffer.GetAvailableSize());
                 
+                //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "DEBUG: postingList %d size:%d m_vectorInfoSize:%d vectorNum:%d\n", pi, (int)(postingList.size()), m_vectorInfoSize, vectorNum);
                 int realNum = vectorNum;
                 listElements += vectorNum;
                 auto compStart = std::chrono::high_resolution_clock::now();
                 for (int i = 0; i < vectorNum; i++) {
                     char* vectorInfo = p_postingListFullData + i * m_vectorInfoSize;
                     SizeType vectorID = *(reinterpret_cast<SizeType*>(vectorInfo));
+                    //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "DEBUG: vectorID:%d\n", vectorID);
 
-                    if (!isTiKV) {
-                        int ownerNode;
-                        SizeType localVID = GlobalToLocalVID(vectorID, ownerNode);
-                        // Skip version check for foreign VIDs (another node's version map)
-                        if ((ownerNode < 0 || ownerNode == GetLocalNodeIndex()) && m_versionMap->Deleted(localVID)) {
-                            realNum--;
-                            listElements--;
-                            continue;
-                        }
+                    if (!isTiKV && m_versionMap->Deleted(vectorID)) {
+                        realNum--;
+                        listElements--;
+                        continue;
                     }
                     if(p_exWorkSpace->m_deduper.CheckAndSet(vectorID)) {
                         listElements--;
@@ -1873,32 +1868,26 @@ namespace SPTAG::SPANN {
                 int fetchCount = static_cast<int>(std::ceil(K * (1.0f + m_opt->m_oversampleFactor)));
                 fetchCount = std::min(fetchCount, K + 100); // safety cap
 
-                // Collect candidate local VIDs for version check (only our own VIDs)
-                int localNodeIdx = GetLocalNodeIndex();
-                std::vector<SizeType> localVIDs;
-                std::vector<int> localResultIndices;
-                localVIDs.reserve(fetchCount);
-                localResultIndices.reserve(fetchCount);
+                std::vector<SizeType> candidateVIDs;
+                std::vector<int> candidateIndices;
+                candidateVIDs.reserve(fetchCount);
+                candidateIndices.reserve(fetchCount);
                 for (int i = 0; i < fetchCount && i < queryResults.GetResultNum(); i++) {
                     auto* result = queryResults.GetResult(i);
                     if (result->VID >= 0) {
-                        int ownerNode;
-                        SizeType localVID = GlobalToLocalVID(result->VID, ownerNode);
-                        if (ownerNode < 0 || ownerNode == localNodeIdx) {
-                            localVIDs.push_back(localVID);
-                            localResultIndices.push_back(i);
-                        }
+                        candidateVIDs.push_back(result->VID);
+                        candidateIndices.push_back(i);
                     }
                 }
 
-                // Batch check versions for local VIDs only
+                // Batch check versions
                 std::vector<uint8_t> versions;
-                m_versionMap->BatchGetVersions(localVIDs, versions);
+                m_versionMap->BatchGetVersions(candidateVIDs, versions);
 
                 // Filter: mark deleted entries with MaxDist so they sort to the end
-                for (size_t j = 0; j < localVIDs.size(); j++) {
+                for (size_t j = 0; j < candidateVIDs.size(); j++) {
                     if (versions[j] == 0xfe) {
-                        auto* result = queryResults.GetResult(localResultIndices[j]);
+                        auto* result = queryResults.GetResult(candidateIndices[j]);
                         result->VID = -1;
                         result->Dist = (std::numeric_limits<float>::max)();
                     }
@@ -2576,7 +2565,6 @@ namespace SPTAG::SPANN {
             listElements = 0;
 
             bool isTiKV = (m_opt->m_storage == Storage::TIKVIO);
-            int localNodeIdx = GetLocalNodeIndex();
             for (size_t pi = 0; pi < headIDs.size(); pi++) {
                 auto& buffer = pageBuffers[pi];
                 char* data = (char*)(buffer.GetBuffer());
@@ -2587,11 +2575,7 @@ namespace SPTAG::SPANN {
                     char* vectorInfo = data + i * m_vectorInfoSize;
                     SizeType vectorID = *(reinterpret_cast<SizeType*>(vectorInfo));
 
-                    if (!isTiKV) {
-                        int ownerNode;
-                        SizeType localVID = GlobalToLocalVID(vectorID, ownerNode);
-                        if ((ownerNode < 0 || ownerNode == localNodeIdx) && m_versionMap->Deleted(localVID)) continue;
-                    }
+                    if (!isTiKV && m_versionMap->Deleted(vectorID)) continue;
                     if (deduper.CheckAndSet(vectorID)) continue;
 
                     auto dist = m_headIndex->ComputeDistance(queryPtr, vectorInfo + m_metaDataSize);
@@ -2688,18 +2672,12 @@ namespace SPTAG::SPANN {
         }
 
         ErrorCode DeleteIndex(SizeType p_id) override {
-            // p_id may be a globalVID; convert to localVID for version map
-            int ownerNode;
-            SizeType localVID = GlobalToLocalVID(p_id, ownerNode);
-            if (ownerNode >= 0 && ownerNode != GetLocalNodeIndex()) {
-                return ErrorCode::VectorNotFound;  // not our VID
-            }
             if (m_opt->m_enableWAL && m_wal) {
                 std::string assignment(sizeof(SizeType), '\0');
-                memcpy((char*)assignment.c_str(), &localVID, sizeof(SizeType));
+                memcpy((char*)assignment.c_str(), &p_id, sizeof(SizeType));
                 m_wal->PutAssignment(assignment);
             }
-            if (m_versionMap->Delete(localVID)) return ErrorCode::Success;
+            if (m_versionMap->Delete(p_id)) return ErrorCode::Success;
             return ErrorCode::VectorNotFound;
         }
 
