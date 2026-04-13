@@ -576,6 +576,7 @@ void Index<T>::BatchRouteSearch(
         int nodeIdx;
         std::future<FullSearchBatchResponse> future;
         std::vector<int> queryIndices;
+        std::chrono::high_resolution_clock::time_point sendTime;
     };
     std::vector<RemoteBatch> remoteBatches;
 
@@ -590,6 +591,7 @@ void Index<T>::BatchRouteSearch(
                 reinterpret_cast<const char*>(p_results[qi].GetTarget()), vecSize);
         }
 
+        auto sendTime = std::chrono::high_resolution_clock::now();
         remoteBatches.push_back({
             n,
             router->SendBatchFullSearchAsync(
@@ -598,7 +600,8 @@ void Index<T>::BatchRouteSearch(
                 static_cast<std::uint32_t>(nodeQueries[n].size()),
                 static_cast<std::uint32_t>(resultCount),
                 static_cast<std::uint32_t>(numThreads)),
-            nodeQueries[n]
+            nodeQueries[n],
+            sendTime
         });
     }
 
@@ -633,6 +636,9 @@ void Index<T>::BatchRouteSearch(
     // Collect remote results
     for (auto& rb : remoteBatches) {
         auto resp = rb.future.get();
+        auto recvTime = std::chrono::high_resolution_clock::now();
+        double rpcLatencyMs = std::chrono::duration<double, std::milli>(recvTime - rb.sendTime).count();
+
         SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
             "BatchRouteSearch: node %d response: status=%d queryCount=%u resultCount=%u vids.size=%zu\n",
             rb.nodeIdx, (int)resp.m_status, resp.m_queryCount, resp.m_resultCount, resp.m_vids.size());
@@ -650,8 +656,11 @@ void Index<T>::BatchRouteSearch(
 
         // Fill results from batch response
         int filledCount = 0;
+        double perQueryLatency = rb.queryIndices.size() > 0
+            ? rpcLatencyMs / rb.queryIndices.size() : rpcLatencyMs;
         for (size_t i = 0; i < rb.queryIndices.size(); i++) {
             int qi = rb.queryIndices[i];
+            p_stats[qi].m_totalLatency = p_stats[qi].m_totalSearchLatency = perQueryLatency;
             size_t base = i * resp.m_resultCount;
             for (std::uint32_t r = 0; r < resp.m_resultCount; r++) {
                 SizeType vid = resp.m_vids[base + r];
