@@ -440,6 +440,7 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
                 std::uint64_t *offsets = new std::uint64_t[2]{0, p_meta.Length()};
                 std::shared_ptr<MetadataSet> meta(new MemMetadataSet(
                     p_meta, ByteArray((std::uint8_t *)offsets, 2 * sizeof(std::uint64_t), true), 1));
+                // For quantized index, pass GetFeatureDim() which returns reconstruct dimension
                 ErrorCode ret = p_index->AddIndex(addset->GetVector((SizeType)index), 1, addset->Dimension(), meta, true);
                 if (ret != ErrorCode::Success)
                 {
@@ -550,10 +551,6 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
         *benchmarkData << "        \"minLatency\": " << minLat << ",\n";
         *benchmarkData << "        \"maxLatency\": " << maxLat << ",\n";
         *benchmarkData << "        \"qps\": " << qps << ",\n";
-    }
-    else {
-        // No search threads — just run the insert
-        func();
     }
     while (!p_index->AllFinished())
     {
