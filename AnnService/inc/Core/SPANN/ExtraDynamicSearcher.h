@@ -567,10 +567,16 @@ namespace SPTAG::SPANN {
                     return ErrorCode::Success;
                 }
 
+                std::vector<int> ks(2, 0);
+                if (m_headIndex->ComputeDistance(args.centers, headVec->c_str()) < m_headIndex->ComputeDistance(args.centers + args._D, headVec->c_str())) {
+                    ks[0] = 1;
+                } else {
+                    ks[1] = 1;
+                }
                 SizeType newHeadVID = -1;
                 int first = 0;                
                 newPostingLists.resize(2);
-                for (int k = 0; k < 2; k++) {
+                for (int k : ks) {
                     if (args.counts[k] == 0)	continue;
 
                     newPostingLists[k].resize(args.counts[k] * m_vectorInfoSize);
@@ -706,7 +712,13 @@ namespace SPTAG::SPANN {
                             m_stat.m_putCost += elapsedMSeconds;
 
                             auto updateHeadBegin = std::chrono::high_resolution_clock::now();
-                            m_headIndex->AddHeadIndex(args.centers + k * args._D, newHeadVID, version, m_opt->m_dim, m_layer + 1, p_exWorkSpace);
+                            if ((ret = m_headIndex->AddHeadIndex(args.centers + k * args._D, newHeadVID, version, m_opt->m_dim, m_layer + 1, p_exWorkSpace)) != ErrorCode::Success) {
+                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to update head index %lld\n", (std::int64_t)(newHeadVID));
+                                if (db->Delete(DBKey(newHeadVID)) != ErrorCode::Success) {
+                                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Fail to delete gc posting %lld\n", (std::int64_t)(newHeadVID));
+                                }
+                                return ret;
+                            }
                             auto updateHeadEnd = std::chrono::high_resolution_clock::now();
                             elapsedMSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(updateHeadEnd - updateHeadBegin).count();
                             m_stat.m_updateHeadCost += elapsedMSeconds;
