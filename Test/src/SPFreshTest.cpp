@@ -563,74 +563,124 @@ template <typename T>
 void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_ptr<VectorSet> &queryset,
                                std::shared_ptr<VectorSet> &truth, const std::string &truthPath,
                                SizeType baseVectorCount, int topK, int searchK, int numThreads, int numQueries, int batches, int totalbatches,
-                               std::ostream &benchmarkData, std::string prefix = "")
+                               std::ostream &benchmarkData, std::string prefix = "",
+                               int nodeIndex = 0, const std::string& barrierDir = "", int* searchRound = nullptr)
 {
-    // Benchmark: Query performance with detailed latency stats
-    std::vector<float> latencies(numQueries);
-    std::atomic_size_t queriesSent(0);
-    std::vector<QueryResult> results(numQueries);
-
-    for (int i = 0; i < numQueries; i++)
-    {
-        results[i] = QueryResult((const T *)queryset->GetVector(i), searchK, false);
-    }
-
     auto* spannIndex = static_cast<SPANN::Index<T>*>(index.get());
     int nodeCount = spannIndex->GetSearchNodeCount();
+    bool distributed = (searchRound != nullptr && nodeCount > 1 && !barrierDir.empty());
 
-    auto batchStart = std::chrono::high_resolution_clock::now();
-
-    if (nodeCount > 1) {
-        // Multi-node: batch route all queries
-        std::vector<SPANN::SearchStats> stats(numQueries);
-        spannIndex->BatchRouteSearch(results, stats, 0, numQueries, numThreads);
-
-        // Distribute per-query latency from stats
-        for (int i = 0; i < numQueries; i++) {
-            latencies[i] = static_cast<float>(stats[i].m_totalSearchLatency);
-        }
-    } else {
-        // Single-node: per-query multi-threaded search
-        std::vector<std::thread> threads;
-        threads.reserve(numThreads);
-
-        for (int i = 0; i < numThreads; i++)
-        {
-            threads.emplace_back([&]() {
-                size_t qid;
-                while ((qid = queriesSent.fetch_add(1)) < numQueries)
-                {
-                    auto t1 = std::chrono::high_resolution_clock::now();
-                    index->SearchIndex(results[qid]);
-                    auto t2 = std::chrono::high_resolution_clock::now();
-                    latencies[qid] = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000.0f;
-                }
-            });
-        }
-
-        for (auto &thread : threads)
-            thread.join();
+    // Determine this node's query range (balanced contiguous partition)
+    int myStart = 0, myCount = numQueries;
+    if (distributed) {
+        myStart = (int)((long long)nodeIndex * numQueries / nodeCount);
+        int myEnd = (int)((long long)(nodeIndex + 1) * numQueries / nodeCount);
+        myCount = myEnd - myStart;
     }
 
-    auto batchEnd = std::chrono::high_resolution_clock::now();
-    float batchLatency =
-        std::chrono::duration_cast<std::chrono::microseconds>(batchEnd - batchStart).count() / 1000000.0f;
+    int resultCount = distributed ? myCount : numQueries;
+    std::vector<float> latencies(resultCount);
+    std::vector<QueryResult> results(resultCount);
+    for (int i = 0; i < resultCount; i++) {
+        int qi = distributed ? (myStart + i) : i;
+        results[i] = QueryResult((const T *)queryset->GetVector(qi), searchK, false);
+    }
 
-    // Calculate statistics
+    float batchLatency;
+
+    if (distributed) {
+        // Signal workers to start this search round (atomic write)
+        std::string startFile = barrierDir + "/search_start_" + std::to_string(*searchRound);
+        {
+            std::string tmpFile = startFile + ".tmp";
+            std::ofstream(tmpFile).close();
+            std::filesystem::rename(tmpFile, startFile);
+        }
+
+        // Search our share of queries (timed)
+        auto batchStart = std::chrono::high_resolution_clock::now();
+        {
+            std::atomic_size_t queriesSent(0);
+            std::vector<std::thread> threads;
+            threads.reserve(numThreads);
+            for (int t = 0; t < numThreads; t++) {
+                threads.emplace_back([&]() {
+                    size_t qid;
+                    while ((qid = queriesSent.fetch_add(1)) < static_cast<size_t>(myCount)) {
+                        auto t1 = std::chrono::high_resolution_clock::now();
+                        index->SearchIndex(results[qid]);
+                        auto t2 = std::chrono::high_resolution_clock::now();
+                        latencies[qid] = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000.0f;
+                    }
+                });
+            }
+            for (auto& t : threads) t.join();
+        }
+        auto batchEnd = std::chrono::high_resolution_clock::now();
+        float localWallTime = std::chrono::duration_cast<std::chrono::microseconds>(batchEnd - batchStart).count() / 1000000.0f;
+
+        // Collect worker timings
+        float maxWallTime = localWallTime;
+        for (int n = 0; n < nodeCount; n++) {
+            if (n == nodeIndex) continue;
+            std::string doneFile = barrierDir + "/search_done_" + std::to_string(n) + "_" + std::to_string(*searchRound);
+            while (!std::filesystem::exists(doneFile)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            double workerTime;
+            std::ifstream ifs(doneFile);
+            ifs >> workerTime;
+            maxWallTime = std::max(maxWallTime, static_cast<float>(workerTime));
+            std::filesystem::remove(doneFile);
+        }
+        std::filesystem::remove(startFile);
+
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+            "BenchmarkQueryPerformance round %d: local=%.1fms (%d queries), max=%.1fms, QPS=%.1f\n",
+            *searchRound, localWallTime * 1000, myCount, maxWallTime * 1000, numQueries / maxWallTime);
+        (*searchRound)++;
+        batchLatency = maxWallTime;
+    } else {
+        // Single-node: per-query multi-threaded search
+        auto batchStart = std::chrono::high_resolution_clock::now();
+        {
+            std::atomic_size_t queriesSent(0);
+            std::vector<std::thread> threads;
+            threads.reserve(numThreads);
+            for (int i = 0; i < numThreads; i++) {
+                threads.emplace_back([&]() {
+                    size_t qid;
+                    while ((qid = queriesSent.fetch_add(1)) < static_cast<size_t>(numQueries)) {
+                        auto t1 = std::chrono::high_resolution_clock::now();
+                        index->SearchIndex(results[qid]);
+                        auto t2 = std::chrono::high_resolution_clock::now();
+                        latencies[qid] = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000.0f;
+                    }
+                });
+            }
+            for (auto &thread : threads)
+                thread.join();
+        }
+        auto batchEnd = std::chrono::high_resolution_clock::now();
+        batchLatency = std::chrono::duration_cast<std::chrono::microseconds>(batchEnd - batchStart).count() / 1000000.0f;
+    }
+
+    // Calculate statistics (from this node's queries)
+    int statsCount = resultCount;
     float mean = 0, minLat = (std::numeric_limits<float>::max)(), maxLat = 0;
-    for (int i = 0; i < numQueries; i++)
+    for (int i = 0; i < statsCount; i++)
     {
         mean += latencies[i];
         minLat = (std::min)(minLat, latencies[i]);
         maxLat = (std::max)(maxLat, latencies[i]);
     }
-    mean /= numQueries;
+    mean /= statsCount;
 
     std::sort(latencies.begin(), latencies.end());
-    float p50 = latencies[static_cast<size_t>(numQueries * 0.50)];
-    float p90 = latencies[static_cast<size_t>(numQueries * 0.90)];
-    float p95 = latencies[static_cast<size_t>(numQueries * 0.95)];
-    float p99 = latencies[static_cast<size_t>(numQueries * 0.99)];
+    float p50 = latencies[static_cast<size_t>(statsCount * 0.50)];
+    float p90 = latencies[static_cast<size_t>(statsCount * 0.90)];
+    float p95 = latencies[static_cast<size_t>(statsCount * 0.95)];
+    float p99 = latencies[static_cast<size_t>(statsCount * 0.99)];
     float qps = numQueries / batchLatency;
 
     BOOST_TEST_MESSAGE("  Queries: " << numQueries);
@@ -657,10 +707,13 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
     benchmarkData << prefix << "      \"qps\": " << qps << ",\n";
     
 
-    // Recall evaluation (if truth file provided)
-    if (!truth || truthPath.empty() || truthPath == "none")
+    // Recall evaluation (skip for distributed — truth indexing requires full query set)
+    if (distributed || !truth || truthPath.empty() || truthPath == "none")
     {
-        BOOST_TEST_MESSAGE("  Recall evaluation skipped (no truth data)");
+        if (distributed) {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Recall skipped in distributed mode (same as single-node)\n");
+        }
+        BOOST_TEST_MESSAGE("  Recall evaluation skipped" << (distributed ? " (distributed mode)" : " (no truth data)"));
         benchmarkData << prefix << "      \"recall\": null\n";
         benchmarkData << prefix << "    }";
         return;
@@ -837,6 +890,8 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     jsonFile << "  \"results\": {\n";
 
     int SearchK = enableQuantization? topK * 4 : topK;
+    int searchRound = 0;
+    int* pSearchRound = (numNodes > 1) ? &searchRound : nullptr;
     std::shared_ptr<VectorIndex> index;
     std::shared_ptr<COMMON::IQuantizer> quantizer;
     
@@ -927,20 +982,24 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     // Benchmark 0: Query performance before insertions (round 1 — cold cache)
     BOOST_TEST_MESSAGE("\n=== Benchmark 0: Query Before Insertions (Round 1) ===");
     BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
-                                 numSearchThreads, numQueries, 0, batches, tmpbenchmark);
+                                 numSearchThreads, numQueries, 0, batches, tmpbenchmark, "",
+                                 nodeIndex, barrierDir, pSearchRound);
     jsonFile << "    \"benchmark0_query_before_insert\": ";
     BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
-                                 numSearchThreads, numQueries, 0, batches, jsonFile);
+                                 numSearchThreads, numQueries, 0, batches, jsonFile, "",
+                                 nodeIndex, barrierDir, pSearchRound);
     jsonFile << ",\n";
     jsonFile.flush();
 
     // Benchmark 0b: Query performance before insertions (round 2 — warm cache)
     BOOST_TEST_MESSAGE("\n=== Benchmark 0b: Query Before Insertions (Round 2) ===");
     BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
-                                 numSearchThreads, numQueries, 0, batches, tmpbenchmark);
+                                 numSearchThreads, numQueries, 0, batches, tmpbenchmark, "",
+                                 nodeIndex, barrierDir, pSearchRound);
     jsonFile << "    \"benchmark0b_query_before_insert_round2\": ";
     BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
-                                 numSearchThreads, numQueries, 0, batches, jsonFile);
+                                 numSearchThreads, numQueries, 0, batches, jsonFile, "",
+                                 nodeIndex, barrierDir, pSearchRound);
     jsonFile << ",\n";
     jsonFile.flush();
 
@@ -1151,17 +1210,21 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                 BOOST_TEST_MESSAGE("\n=== Benchmark 2: Query After Insertions and Deletions ===");
                 jsonFile << "        \"search\":";
                 BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount, topK, SearchK, numSearchThreads,
-                                             numQueries, iter + 1, batches, tmpbenchmark, "    ");
+                                             numQueries, iter + 1, batches, tmpbenchmark, "    ",
+                                             nodeIndex, barrierDir, pSearchRound);
                 BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount,
-                                             topK, SearchK, numSearchThreads, numQueries, iter + 1, batches, jsonFile, "    ");
+                                             topK, SearchK, numSearchThreads, numQueries, iter + 1, batches, jsonFile, "    ",
+                                             nodeIndex, barrierDir, pSearchRound);
                 jsonFile << ",\n";
 
                 BOOST_TEST_MESSAGE("\n=== Benchmark 2b: Query After Insertions and Deletions (Round 2) ===");
                 jsonFile << "        \"search_round2\":";
                 BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount, topK, SearchK, numSearchThreads,
-                                             numQueries, iter + 1, batches, tmpbenchmark, "    ");
+                                             numQueries, iter + 1, batches, tmpbenchmark, "    ",
+                                             nodeIndex, barrierDir, pSearchRound);
                 BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount,
-                                             topK, SearchK, numSearchThreads, numQueries, iter + 1, batches, jsonFile, "    ");
+                                             topK, SearchK, numSearchThreads, numQueries, iter + 1, batches, jsonFile, "    ",
+                                             nodeIndex, barrierDir, pSearchRound);
                 jsonFile << ",\n";
 
                 start = std::chrono::high_resolution_clock::now();
@@ -2413,86 +2476,153 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
     paddmeta = "perftest_addmeta.bin." + std::to_string(baseVectorCount) + "_" + std::to_string(insertVectorCount);
     paddmetaidx = "perftest_addmetaidx.bin." + std::to_string(baseVectorCount) + "_" + std::to_string(insertVectorCount);
 
-    // Dispatch insert loop by value type
-    if (insertBatchSize > 0 && perNodeBatch > 0) {
-        // Use driver's barrier directory (same indexPath root, node 0's path)
-        // The barrier dir is at the DRIVER's indexPath + "/barriers"
-        // Worker needs to know the driver's indexPath — derive from our path
-        // Convention: driver path = replace last _nX with _n0
-        std::string driverIndexPath = indexPath;
-        {
-            // e.g. /mnt/.../proidx_10m_3node_n1/spann_index → .../proidx_10m_3node_n0/spann_index
-            auto pos = driverIndexPath.rfind("_n" + std::to_string(nodeIndex));
-            if (pos != std::string::npos) {
-                driverIndexPath.replace(pos, std::string("_n" + std::to_string(nodeIndex)).length(), "_n0");
-            }
+    // Load query set for distributed search
+    int numSearchThreads = iniReader.GetParameter("Benchmark", "NumSearchThreads", 8);
+    int searchK = topK;  // same as driver for non-quantized
+    pqueryset = "perftest_query.bin." + typeStr + "_" + std::to_string(numQueries) + "_" + std::to_string(dimension);
+    auto queryset = TestUtils::TestDataGenerator<float>::LoadVectorSet(pqueryset, dimension);
+    BOOST_REQUIRE_MESSAGE(queryset != nullptr, "WorkerNode: Failed to load query set from " << pqueryset);
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Loaded %d queries\n", nodeIndex, (int)queryset->Count());
+
+    // Derive driver's barrier directory
+    std::string driverIndexPath = indexPath;
+    {
+        auto pos = driverIndexPath.rfind("_n" + std::to_string(nodeIndex));
+        if (pos != std::string::npos) {
+            driverIndexPath.replace(pos, std::string("_n" + std::to_string(nodeIndex)).length(), "_n0");
         }
-        std::string barrierDir = driverIndexPath + "/barriers";
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: barrierDir=%s\n", nodeIndex, barrierDir.c_str());
-
-        for (int iter = 0; iter < batches; iter++) {
-            // Wait for start signal from driver
-            std::string startFile = barrierDir + "/start_batch_" + std::to_string(iter);
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Waiting for start signal batch %d/%d\n",
-                         nodeIndex, iter + 1, batches);
-            while (!std::filesystem::exists(startFile)) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-
-            // Load this node's shard
-            int insertStart = iter * insertBatchSize + nodeIndex * perNodeBatch;
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Batch %d - inserting %d vectors (offset %d)\n",
-                         nodeIndex, iter + 1, perNodeBatch, insertStart);
-
-            auto t1 = std::chrono::high_resolution_clock::now();
-
-            if (valueType == VectorValueType::UInt8) {
-                auto addset = TestUtils::TestDataGenerator<std::uint8_t>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
-                std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<std::uint8_t>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
-                InsertVectors<std::uint8_t>(static_cast<SPANN::Index<std::uint8_t>*>(index.get()),
-                                            numInsertThreads, perNodeBatch, addset, addmetaset);
-            } else if (valueType == VectorValueType::Int8) {
-                auto addset = TestUtils::TestDataGenerator<std::int8_t>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
-                std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<std::int8_t>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
-                InsertVectors<std::int8_t>(static_cast<SPANN::Index<std::int8_t>*>(index.get()),
-                                           numInsertThreads, perNodeBatch, addset, addmetaset);
-            } else {
-                auto addset = TestUtils::TestDataGenerator<float>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
-                std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<float>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
-                InsertVectors<float>(static_cast<SPANN::Index<float>*>(index.get()),
-                                     numInsertThreads, perNodeBatch, addset, addmetaset);
-            }
-
-            index->FlushRemoteAppends();
-            auto t2 = std::chrono::high_resolution_clock::now();
-            double secs = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000000.0;
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Batch %d done - %d vectors in %.2f s (%.1f vec/s)\n",
-                         nodeIndex, iter + 1, perNodeBatch, secs, perNodeBatch / secs);
-
-            // Signal done to driver
-            std::string doneFile = barrierDir + "/done_" + std::to_string(nodeIndex) + "_batch_" + std::to_string(iter);
-            std::ofstream(doneFile).close();
-        }
-
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: All %d batches completed\n", nodeIndex, batches);
     }
+    std::string barrierDir = driverIndexPath + "/barriers";
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: barrierDir=%s\n", nodeIndex, barrierDir.c_str());
 
-    // Wait for stop file or timeout
+    // Unified command loop: handles search rounds and insert batches
+    int nextSearchRound = 0;
+    int nextInsertBatch = 0;
+    bool insertsDone = (insertBatchSize <= 0 || perNodeBatch <= 0);
     std::string stopFile = iniReader.GetParameter("Benchmark", "StopFile",
         std::string("worker_stop_") + std::to_string(nodeIndex));
     int timeoutSec = iniReader.GetParameter("Benchmark", "WorkerTimeout", 3600);
+    auto loopStart = std::chrono::steady_clock::now();
 
-    BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Insert complete, waiting for stop signal...");
-    auto startTime = std::chrono::steady_clock::now();
-    while (!std::filesystem::exists(stopFile)) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::steady_clock::now() - startTime).count();
-        if (elapsed >= timeoutSec) {
-            BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Timeout after " << timeoutSec << "s");
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Entering command loop\n", nodeIndex);
+
+    while (true) {
+        // Check for stop
+        if (std::filesystem::exists(stopFile)) {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Stop signal received\n", nodeIndex);
             break;
         }
+
+        // Check timeout
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - loopStart).count();
+        if (elapsed >= timeoutSec) {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "WorkerNode %d: Timeout after %ds\n", nodeIndex, timeoutSec);
+            break;
+        }
+
+        // Check for search command
+        std::string searchStartFile = barrierDir + "/search_start_" + std::to_string(nextSearchRound);
+        if (std::filesystem::exists(searchStartFile)) {
+            // Compute this node's query range (balanced contiguous partition, same as driver)
+            int myStart = (int)((long long)nodeIndex * numQueries / numNodes);
+            int myEnd = (int)((long long)(nodeIndex + 1) * numQueries / numNodes);
+            int myCount = myEnd - myStart;
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Search round %d - %d queries [%d, %d)\n",
+                         nodeIndex, nextSearchRound, myCount, myStart, myEnd);
+
+            // Multi-threaded search
+            auto t1 = std::chrono::high_resolution_clock::now();
+            {
+                std::vector<QueryResult> results(myCount);
+                for (int i = 0; i < myCount; i++) {
+                    results[i] = QueryResult(queryset->GetVector(myStart + i), searchK, false);
+                }
+
+                std::atomic_size_t queriesSent(0);
+                std::vector<std::thread> threads;
+                int nThreads = std::min(numSearchThreads, myCount);
+                threads.reserve(nThreads);
+                for (int t = 0; t < nThreads; t++) {
+                    threads.emplace_back([&]() {
+                        size_t qid;
+                        while ((qid = queriesSent.fetch_add(1)) < static_cast<size_t>(myCount)) {
+                            index->SearchIndex(results[qid]);
+                        }
+                    });
+                }
+                for (auto& t : threads) t.join();
+            }
+            auto t2 = std::chrono::high_resolution_clock::now();
+            double wallTime = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000000.0;
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Search round %d done - %.1fms\n",
+                         nodeIndex, nextSearchRound, wallTime * 1000);
+
+            // Write timing to done file (atomic: write tmp then rename)
+            std::string doneFile = barrierDir + "/search_done_" + std::to_string(nodeIndex) + "_" + std::to_string(nextSearchRound);
+            {
+                std::string tmpFile = doneFile + ".tmp";
+                std::ofstream ofs(tmpFile);
+                ofs << std::fixed << std::setprecision(6) << wallTime;
+                ofs.close();
+                std::filesystem::rename(tmpFile, doneFile);
+            }
+
+            nextSearchRound++;
+            continue;
+        }
+
+        // Check for insert command
+        if (!insertsDone) {
+            std::string insertStartFile = barrierDir + "/start_batch_" + std::to_string(nextInsertBatch);
+            if (std::filesystem::exists(insertStartFile)) {
+                int insertStart = nextInsertBatch * insertBatchSize + nodeIndex * perNodeBatch;
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Batch %d - inserting %d vectors (offset %d)\n",
+                             nodeIndex, nextInsertBatch + 1, perNodeBatch, insertStart);
+
+                auto t1 = std::chrono::high_resolution_clock::now();
+
+                if (valueType == VectorValueType::UInt8) {
+                    auto addset = TestUtils::TestDataGenerator<std::uint8_t>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
+                    std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<std::uint8_t>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
+                    InsertVectors<std::uint8_t>(static_cast<SPANN::Index<std::uint8_t>*>(index.get()),
+                                                numInsertThreads, perNodeBatch, addset, addmetaset);
+                } else if (valueType == VectorValueType::Int8) {
+                    auto addset = TestUtils::TestDataGenerator<std::int8_t>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
+                    std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<std::int8_t>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
+                    InsertVectors<std::int8_t>(static_cast<SPANN::Index<std::int8_t>*>(index.get()),
+                                               numInsertThreads, perNodeBatch, addset, addmetaset);
+                } else {
+                    auto addset = TestUtils::TestDataGenerator<float>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
+                    std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<float>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
+                    InsertVectors<float>(static_cast<SPANN::Index<float>*>(index.get()),
+                                         numInsertThreads, perNodeBatch, addset, addmetaset);
+                }
+
+                index->FlushRemoteAppends();
+                auto t2 = std::chrono::high_resolution_clock::now();
+                double secs = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000000.0;
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Batch %d done - %d vectors in %.2f s (%.1f vec/s)\n",
+                             nodeIndex, nextInsertBatch + 1, perNodeBatch, secs, perNodeBatch / secs);
+
+                // Signal done to driver
+                std::string doneFile = barrierDir + "/done_" + std::to_string(nodeIndex) + "_batch_" + std::to_string(nextInsertBatch);
+                std::ofstream(doneFile).close();
+
+                nextInsertBatch++;
+                if (nextInsertBatch >= batches) insertsDone = true;
+                continue;
+            }
+        }
+
+        // Nothing to do, sleep briefly
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
+
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Completed %d search rounds, %d insert batches\n",
+                 nodeIndex, nextSearchRound, nextInsertBatch);
 
     N = oldN; M = oldM; K = oldK; queries = oldQ;
     BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Shutting down");
