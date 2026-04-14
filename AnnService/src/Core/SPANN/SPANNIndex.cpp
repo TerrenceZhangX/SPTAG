@@ -970,6 +970,7 @@ bool Index<T>::SelectHeadInternal(std::shared_ptr<Helper::VectorSetReader> &p_re
     {
         std::sort(selected.begin(), selected.end());
 
+        mkdir(m_options.m_indexDirectory.c_str());
         std::shared_ptr<Helper::DiskIO> output = SPTAG::f_createIO(), outputIDs = SPTAG::f_createIO();
         if (output == nullptr || outputIDs == nullptr ||
             !output->Initialize((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str(),

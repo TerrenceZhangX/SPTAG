@@ -427,6 +427,7 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
                 if ((index % (printstep - 1)) == 0)
                 {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Sent %.2lf%%...\n", index * 100.0 / step);
+                    p_index->GetDBStat();
                 }
                 ByteArray p_meta = metaset->GetMetadata((SizeType)index);
                 std::uint64_t *offsets = new std::uint64_t[2]{0, p_meta.Length()};
@@ -749,9 +750,10 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     BOOST_TEST_MESSAGE("\n=== Building Index ===");
     if (rebuild || rebuildSsdOnly || !direxists(indexPath.c_str())) {
         if (!rebuildSsdOnly) {
-            if (direxists(indexPath.c_str())) {
+            // Allow empty or non-existent directories; block only if index files already exist
+            if (direxists(indexPath.c_str()) && fileexists((indexPath + FolderSep + "indexloader.ini").c_str())) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "Index directory '%s' already exists. Refusing to delete. "
+                    "Index directory '%s' already exists with index files. Refusing to delete. "
                     "Remove it manually or use RebuildSSDOnly=true to resume.\n",
                     indexPath.c_str());
                 BOOST_FAIL("Index directory already exists: " + indexPath);
