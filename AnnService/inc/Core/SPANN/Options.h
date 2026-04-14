@@ -331,7 +331,6 @@ namespace SPTAG {
 #define DefineRouterParameter(VarName, VarType, DefaultValue, RepresentStr) \
     if (Helper::StrUtils::StrEqualIgnoreCase(p_param, RepresentStr)) \
     { \
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Setting %s with value %s\n", RepresentStr, p_value); \
         VarType tmp; \
         if (Helper::Convert::ConvertStringTo<VarType>(p_value, tmp)) \
         { \

@@ -233,11 +233,11 @@ DefineSSDParameter(m_resumeLayer, int, -1, "ResumeLayer")
 DefineSSDParameter(m_maxID, SizeType,  1000000000, "MaxID")
 DefineSSDParameter(m_shareDB, bool, true, "ShareDB")
 
+#endif
+
 #ifdef DefineRouterParameter
 DefineRouterParameter(m_routerEnabled, bool, false, "RouterEnabled")
 DefineRouterParameter(m_routerLocalNodeIndex, int, 0, "RouterLocalNodeIndex")
 DefineRouterParameter(m_routerNodeAddrs, std::string, std::string(""), "RouterNodeAddrs")
 DefineRouterParameter(m_routerNodeStores, std::string, std::string(""), "RouterNodeStores")
-#endif
-
 #endif
