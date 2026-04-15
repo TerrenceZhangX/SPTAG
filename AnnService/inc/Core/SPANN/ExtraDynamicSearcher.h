@@ -376,6 +376,9 @@ namespace SPTAG::SPANN {
                                 }
                                 vectorCount++;
                             }
+                            if (vecStr == nullptr) {
+                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "RefineIndex failed to find head vector in posting %lld\n", (std::int64_t)globalID);
+                            }
                             if (!hasHead && vecStr != nullptr)
                             {
                                 Serialize((char*)postingP + vectorCount * m_vectorInfoSize, globalID, m_versionMap.GetVersion(globalID), vecStr->data());
@@ -455,7 +458,7 @@ namespace SPTAG::SPANN {
                 elapsedMSeconds = std::chrono::duration_cast<std::chrono::microseconds>(splitGetEnd - splitGetBegin).count();
                 m_stat.m_getCost += elapsedMSeconds;
                 // reinterpret postingList to vectors and IDs
-                auto* postingP = reinterpret_cast<uint8_t*>(postingList.data());
+                uint8_t* postingP = reinterpret_cast<uint8_t*>(postingList.data());
                 SizeType postVectorNum = (SizeType)(postingList.size() / m_vectorInfoSize);
                
                 //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "DEBUG: db get Posting %d successfully with length %d real length:%d vectorNum:%d\n", headID, (int)(postingList.size()), m_postingSizes.GetSize(headID), postVectorNum);
@@ -505,14 +508,15 @@ namespace SPTAG::SPANN {
 		
                 if (localIndices.size() < m_postingSizeLimit)
                 {
-                    if (!hasHead && headj >= 0) {
-                        localIndices.push_back(headj);
-                    }
-                    char* ptr = (char*)(postingList.c_str());
+                    char* ptr = (char*)(postingList.data());
                     for (int j = 0; j < localIndices.size(); j++, ptr += m_vectorInfoSize)
                     {
                         if (j == localIndices[j]) continue;
-                        memcpy(ptr, postingList.c_str() + localIndices[j] * m_vectorInfoSize, m_vectorInfoSize);
+                        memcpy(ptr, postingList.data() + localIndices[j] * m_vectorInfoSize, m_vectorInfoSize);
+                    }
+                    if (!hasHead) {
+                        Serialize(ptr, headID, m_versionMap.GetVersion(headID), headVec->data());
+                        localIndices.push_back(headj);
                     }
                     postingList.resize(localIndices.size() * m_vectorInfoSize);
                     if ((ret=db->Put(DBKey(headID), postingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
@@ -544,20 +548,18 @@ namespace SPTAG::SPANN {
                 // int numClusters = ClusteringSPFresh(smallSample, localIndices, 0, localIndices.size(), args, 10, false, m_opt->m_virtualHead);
                 if (numClusters <= 1)
                 {
-                    int cut = 1;
-                    if (m_opt->m_oneClusterCutMax) cut = m_postingSizeLimit;
+                    int cut = (m_opt->m_oneClusterCutMax)? m_postingSizeLimit: 1;
+
                     std::string newpostingList(cut * m_vectorInfoSize, '\0');
-                    char* ptr = (char*)(newpostingList.c_str());
-                    float totaldist = 0.0f;
-                    bool hasHead = false;
+                    char* ptr = (char*)(newpostingList.data());
+                    hasHead = false;
                     for (int j = 0; j < cut; j++, ptr += m_vectorInfoSize)
                     {
-                        totaldist += m_headIndex->ComputeDistance(ptr + m_metaDataSize, args.centers);
                         memcpy(ptr, postingList.c_str() + localIndices[j] * m_vectorInfoSize, m_vectorInfoSize);
                         if (*((SizeType*)(ptr)) == headID) hasHead = true;
                     }
                     if (!hasHead) memcpy(newpostingList.data(), postingList.c_str() + headj * m_vectorInfoSize, m_vectorInfoSize);
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Cluserting Failed (The same vector), Cluster total dist:%f Only Keep %d vectors.\n", totaldist, cut);
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Cluserting Failed (The same vector), Only Keep %d vectors.\n", cut);
                    
                     if ((ret=db->Put(DBKey(headID), newpostingList, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split fail to override posting cut to limit for posting %lld\n", (std::int64_t)(headID));
@@ -689,11 +691,13 @@ namespace SPTAG::SPANN {
 
                             if (currentLength > (m_postingSizeLimit + m_bufferSizeLimit))
                             {
+                                /*
                                 SPTAGLIB_LOG(
                                     Helper::LogLevel::LL_Warning,
                                     "Split: merged posting list length %d exceeds hard limit %d after merging head "
                                     "VID %lld. Cut to limit and put back to db.\n",
                                     currentLength, m_postingSizeLimit + m_bufferSizeLimit, (std::int64_t)(newHeadVID));
+                                */
                                 mergedPostingList.resize((m_postingSizeLimit + m_bufferSizeLimit) * m_vectorInfoSize);
                                 currentLength = m_postingSizeLimit + m_bufferSizeLimit;
                             }
@@ -1279,7 +1283,7 @@ namespace SPTAG::SPANN {
                     }
                 }
                 if (postingSize + appendNum > (m_postingSizeLimit + m_bufferSizeLimit)) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "After appending, the number of vectors in %lld exceeds the postingsize + buffersize (%d + %d)! Do split now...\n", (std::int64_t)headID, m_postingSizeLimit, m_bufferSizeLimit);
+                    //SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "After appending, the number of vectors in %lld exceeds the postingsize + buffersize (%d + %d)! Do split now...\n", (std::int64_t)headID, m_postingSizeLimit, m_bufferSizeLimit);
                     ret = Split(p_exWorkSpace, headID, false);
                     if (ret != ErrorCode::Success)
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split %lld failed!\n", (std::int64_t)headID);
