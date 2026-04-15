@@ -670,6 +670,20 @@ void Index<T>::BatchRouteSearch(
         int filledCount = 0;
         double perQueryLatency = rb.queryIndices.size() > 0
             ? rpcLatencyMs / rb.queryIndices.size() : rpcLatencyMs;
+
+        // Validate response dimensions before accessing result arrays
+        size_t expectedTotal = static_cast<size_t>(rb.queryIndices.size()) * resp.m_resultCount;
+        if (resp.m_vids.size() < expectedTotal || resp.m_dists.size() < expectedTotal) {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                "BatchRouteSearch: node %d response size mismatch: expected %zu, got vids=%zu dists=%zu, falling back to local\n",
+                rb.nodeIdx, expectedTotal, resp.m_vids.size(), resp.m_dists.size());
+            for (int qi : rb.queryIndices) {
+                GetMemoryIndex()->SearchIndex(p_results[qi]);
+                SearchDiskIndex(p_results[qi], &(p_stats[qi]));
+            }
+            continue;
+        }
+
         for (size_t i = 0; i < rb.queryIndices.size(); i++) {
             int qi = rb.queryIndices[i];
             p_stats[qi].m_totalLatency = p_stats[qi].m_totalSearchLatency = perQueryLatency;

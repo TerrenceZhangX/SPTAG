@@ -1032,8 +1032,17 @@ namespace SPTAG::SPANN {
                 int deletedLength = 0;
                 {
                     std::unique_lock<std::shared_timed_mutex> anotherLock(m_rwLocks[queryResult->VID], std::defer_lock);
-                    bool remoteLocked = false;
-                    int remoteNodeIndex = -1;
+
+                    // RAII guard: releases the remote lock on scope exit (continue/return/exception)
+                    struct RemoteLockGuard {
+                        PostingRouter* router = nullptr;
+                        int nodeIndex = -1;
+                        SizeType headID = -1;
+                        bool active = false;
+                        ~RemoteLockGuard() { if (active && router) router->SendRemoteLock(nodeIndex, headID, false); }
+                        void release() { active = false; }
+                    } remoteLockGuard;
+
                     // SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"Locked: %d, to be lock: %d\n", headID, queryResult->VID);
                     if (m_rwLocks.hash_func(queryResult->VID) != m_rwLocks.hash_func(headID)) {
                         if (m_router && m_router->IsEnabled()) {
@@ -1044,8 +1053,10 @@ namespace SPTAG::SPANN {
                                     m_splitThreadPool->add(curJob);
                                     return ErrorCode::Success;
                                 }
-                                remoteLocked = true;
-                                remoteNodeIndex = target.nodeIndex;
+                                remoteLockGuard.router = m_router.get();
+                                remoteLockGuard.nodeIndex = target.nodeIndex;
+                                remoteLockGuard.headID = queryResult->VID;
+                                remoteLockGuard.active = true;
                             } else {
                                 if (!anotherLock.try_lock()) {
                                     auto* curJob = new MergeAsyncJob(this, headID, reassign, nullptr);
@@ -1132,8 +1143,9 @@ namespace SPTAG::SPANN {
                         deletedLength = currentLength;
                     }
                     if (m_rwLocks.hash_func(queryResult->VID) != m_rwLocks.hash_func(headID)) {
-                        if (remoteLocked && remoteNodeIndex >= 0) {
-                            m_router->SendRemoteLock(remoteNodeIndex, queryResult->VID, false);
+                        if (remoteLockGuard.active) {
+                            remoteLockGuard.router->SendRemoteLock(remoteLockGuard.nodeIndex, remoteLockGuard.headID, false);
+                            remoteLockGuard.release();
                         } else {
                             anotherLock.unlock();
                         }

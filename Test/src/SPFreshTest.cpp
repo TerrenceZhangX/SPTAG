@@ -627,10 +627,15 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
             while (!std::filesystem::exists(doneFile)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
-            double workerTime;
+            double workerTime = 0.0;
             std::ifstream ifs(doneFile);
-            ifs >> workerTime;
-            maxWallTime = std::max(maxWallTime, static_cast<float>(workerTime));
+            if (!(ifs >> workerTime)) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "BenchmarkQueryPerformance: failed to read timing from %s, skipping worker %d\n",
+                    doneFile.c_str(), n);
+            } else {
+                maxWallTime = std::max(maxWallTime, static_cast<float>(workerTime));
+            }
             std::filesystem::remove(doneFile);
         }
         std::filesystem::remove(startFile);

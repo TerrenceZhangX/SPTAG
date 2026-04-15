@@ -1829,7 +1829,7 @@ namespace SPTAG::SPANN {
             req.m_op = lock ? RemoteLockRequest::Op::Lock : RemoteLockRequest::Op::Unlock;
             req.m_headID = headID;
 
-            Socket::ResourceID rid = m_nextResourceId++;
+            Socket::ResourceID rid = m_nextResourceId.fetch_add(1);
             std::promise<ErrorCode> promise;
             auto future = promise.get_future();
             {
@@ -1848,7 +1848,19 @@ namespace SPTAG::SPANN {
             req.Write(pkt.Body());
             pkt.Header().WriteBuffer(pkt.HeaderBuffer());
 
-            m_client->SendPacket(connID, std::move(pkt), nullptr);
+            m_client->SendPacket(connID, std::move(pkt),
+                [rid, this](bool success) {
+                    if (!success) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                            "PostingRouter: RemoteLock send failed for resourceID %u\n", rid);
+                        std::lock_guard<std::mutex> guard(m_pendingMutex);
+                        auto it = m_pendingResponses.find(rid);
+                        if (it != m_pendingResponses.end()) {
+                            it->second.set_value(ErrorCode::Fail);
+                            m_pendingResponses.erase(it);
+                        }
+                    }
+                });
 
             auto status = future.wait_for(std::chrono::milliseconds(5000));
             if (status != std::future_status::ready) {
