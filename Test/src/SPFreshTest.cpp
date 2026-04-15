@@ -421,7 +421,7 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
     // When router is enabled, use bulk AddIndex to amortize RPC overhead:
     // ExtraDynamicSearcher::AddIndex batches all remote appends and flushes
     // once, instead of one RPC per vector in the per-vector path.
-    bool useBulk = (p_index->GetSearchNodeCount() > 1);
+    bool useBulk = (p_index->GetNumNodes() > 1);
 
     // Per-vector insert (original path): each thread grabs one vector at a time
     std::atomic_size_t vectorsSent(start);
@@ -567,7 +567,7 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
                                int nodeIndex = 0, const std::string& barrierDir = "", int* searchRound = nullptr)
 {
     auto* spannIndex = static_cast<SPANN::Index<T>*>(index.get());
-    int nodeCount = spannIndex->GetSearchNodeCount();
+    int nodeCount = spannIndex->GetNumNodes();
     bool distributed = (searchRound != nullptr && nodeCount > 1 && !barrierDir.empty());
 
     // Determine this node's query range (balanced contiguous partition)
@@ -962,7 +962,6 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     // Enable distributed routing if configured
     ApplyRouterParams(index, ssdOverrides);
     index->SetHeadSyncCallback();
-    index->SetFullSearchCallback();
     std::shared_ptr<VectorIndex> routerOwner = index; // track who owns the router
 
     auto queryset = TestUtils::TestDataGenerator<T>::LoadVectorSet(pqueryset, M);
@@ -1099,7 +1098,6 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                 ApplyRouterParams(cloneIndex, ssdOverrides, true);
                 cloneIndex->AdoptRouter(routerOwner.get());
                 cloneIndex->SetHeadSyncCallback();
-                cloneIndex->SetFullSearchCallback();
                 routerOwner = cloneIndex;
 
                 // Signal workers to start this batch (before timing)
@@ -2463,7 +2461,6 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
 
     ApplyRouterParams(index, ssdOverrides);
     index->SetHeadSyncCallback();
-    index->SetFullSearchCallback();
 
     BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Ready, numNodes=" << numNodes
                        << " perNodeBatch=" << perNodeBatch);

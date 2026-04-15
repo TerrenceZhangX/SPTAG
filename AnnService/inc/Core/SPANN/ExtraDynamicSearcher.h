@@ -329,13 +329,6 @@ namespace SPTAG::SPANN {
                     return Append(&workSpace, headID, appendNum, appendPosting);
                 });
 
-            m_router->SetSearchCallback(
-                [this](const std::string& queryVec, const std::vector<SizeType>& headIDs,
-                       int resultCount, std::vector<SizeType>& outVIDs,
-                       std::vector<float>& outDists, int& listElements) -> ErrorCode {
-                    return HandleSearchPosting(queryVec, headIDs, resultCount, outVIDs, outDists, listElements);
-                });
-
             m_router->Start();
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
                 "PostingRouter started for layer %d\n",
@@ -366,12 +359,6 @@ namespace SPTAG::SPANN {
                     ExtraWorkSpace workSpace;
                     InitWorkSpace(&workSpace);
                     return Append(&workSpace, headID, appendNum, appendPosting);
-                });
-            m_router->SetSearchCallback(
-                [this](const std::string& queryVec, const std::vector<SizeType>& headIDs,
-                       int resultCount, std::vector<SizeType>& outVIDs,
-                       std::vector<float>& outDists, int& listElements) -> ErrorCode {
-                    return HandleSearchPosting(queryVec, headIDs, resultCount, outVIDs, outDists, listElements);
                 });
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
                 "PostingRouter adopted from previous index (layer %d)\n", m_layer);
@@ -2529,68 +2516,6 @@ namespace SPTAG::SPANN {
             for (int j = 0; j < m_opt->m_iSSDNumberOfThreads; j++) { threads.emplace_back(func); }
             for (auto& thread : threads) { thread.join(); }
 	        return ret;
-        }
-
-        /// Handle a batch of raw vectors received from a peer node (or local).
-        /// Handle a distributed search request from the driver node.
-        /// Reads postings for the given headIDs from local TiKV, computes distances,
-        /// and returns top candidates.
-        ErrorCode HandleSearchPosting(const std::string& queryVec,
-            const std::vector<SizeType>& headIDs,
-            int resultCount,
-            std::vector<SizeType>& outVIDs,
-            std::vector<float>& outDists,
-            int& listElements)
-        {
-            if (headIDs.empty()) return ErrorCode::Success;
-
-            const ValueType* queryPtr = reinterpret_cast<const ValueType*>(queryVec.data());
-
-            // MultiGet postings from local TiKV
-            std::vector<SizeType> mutableHeadIDs(headIDs);
-            auto keys = DBKeys(mutableHeadIDs);
-            std::vector<Helper::PageBuffer<std::uint8_t>> pageBuffers(headIDs.size());
-            std::chrono::microseconds timeout(m_hardLatencyLimit);
-            if (db->MultiGet(*keys, pageBuffers, timeout, nullptr) != ErrorCode::Success) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[HandleSearchPosting] MultiGet failed\n");
-                return ErrorCode::DiskIOFail;
-            }
-
-            // Use a local QueryResultSet to accumulate TopK
-            COMMON::QueryResultSet<ValueType> localResults(queryPtr, resultCount);
-            COMMON::OptHashPosVector deduper;
-            deduper.Init(resultCount * 8, m_opt->m_hashExp);
-            listElements = 0;
-
-            bool isTiKV = (m_opt->m_storage == Storage::TIKVIO);
-            for (size_t pi = 0; pi < headIDs.size(); pi++) {
-                auto& buffer = pageBuffers[pi];
-                char* data = (char*)(buffer.GetBuffer());
-                int vectorNum = (int)(buffer.GetAvailableSize() / m_vectorInfoSize);
-                listElements += vectorNum;
-
-                for (int i = 0; i < vectorNum; i++) {
-                    char* vectorInfo = data + i * m_vectorInfoSize;
-                    SizeType vectorID = *(reinterpret_cast<SizeType*>(vectorInfo));
-
-                    if (!isTiKV && m_versionMap->Deleted(vectorID)) continue;
-                    if (deduper.CheckAndSet(vectorID)) continue;
-
-                    auto dist = m_headIndex->ComputeDistance(queryPtr, vectorInfo + m_metaDataSize);
-                    localResults.AddPoint(vectorID, dist);
-                }
-            }
-
-            // Extract results (must sort first: max-heap root has worst/unfilled entries)
-            localResults.SortResult();
-            for (int i = 0; i < localResults.GetResultNum(); i++) {
-                auto* res = localResults.GetResult(i);
-                if (res->VID < 0) break;
-                outVIDs.push_back(res->VID);
-                outDists.push_back(res->Dist);
-            }
-
-            return ErrorCode::Success;
         }
 
         ErrorCode AddIndex(ExtraWorkSpace* p_exWorkSpace, std::shared_ptr<VectorSet>& p_vectorSet,

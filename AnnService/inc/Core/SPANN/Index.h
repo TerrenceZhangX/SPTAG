@@ -341,13 +341,6 @@ namespace SPTAG
                 }
             }
 
-            void SetFullSearchCallback();
-            int GetSearchNodeCount() const;
-            void BatchRouteSearch(
-                std::vector<QueryResult>& p_results,
-                std::vector<SearchStats>& p_stats,
-                int startIdx, int endIdx, int numThreads);
-
             void GetDBStat() { 
                 //if (m_options.m_storage != Storage::STATIC) m_extraSearcher->GetDBStats();
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Current Vector Num: %d, Deleted: %d .\n", GetNumSamples(), GetNumDeleted());

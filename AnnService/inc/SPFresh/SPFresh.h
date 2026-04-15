@@ -269,12 +269,8 @@ namespace SPTAG {
 
                 StopWSPFresh sw;
 
-                int nodeCount = p_index->GetSearchNodeCount();
-                if (nodeCount > 1) {
-                    // Batch dispatch: partition queries across nodes, one RPC per remote node
-                    p_index->BatchRouteSearch(p_results, p_stats, 0, numQueries, p_numThreads);
-                } else {
-                    // Single-node: local multi-threaded search
+                {
+                    // Local multi-threaded search
                     std::atomic_size_t queriesSent(0);
                     std::vector<std::thread> threads;
 
