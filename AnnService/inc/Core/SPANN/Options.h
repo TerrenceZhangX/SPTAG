@@ -70,7 +70,8 @@ namespace SPTAG {
             bool m_recursiveCheckSmallCluster;
             bool m_printSizeCount;
             std::string m_selectType;
-
+            bool m_parallelBKTBuild;
+            
             // Section 3: for build head
             bool m_buildHead;
 

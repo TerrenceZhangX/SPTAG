@@ -228,6 +228,7 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
     auto vecIndex = VectorIndex::CreateInstance(IndexAlgoType::SPANN, GetEnumValueType<T>());
     int maxthreads = std::thread::hardware_concurrency();
     int postingLimit = 4 * sizeof(T);
+    remove((outDirectory + FolderSep + "ssdmapping_0_postings").c_str());
     std::string configuration = R"(
         [Base]
             DistCalcMethod=)" + distMethod + R"(
@@ -248,6 +249,7 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
             SplitFactor=0
             SplitThreshold=0
             Ratio=0.2
+            ParallelBKTBuild=true
 
         [BuildHead]
             isExecute=true
@@ -292,6 +294,7 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
             DeletePercentageForRefine=0.4
             AsyncAppendQueueSize=0
             AllowZeroReplica=false
+            ShareDB=true            
             Layers=)" + std::to_string(layers) + R"(
         )";
 
@@ -696,7 +699,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     // Build initial index
     BOOST_TEST_MESSAGE("\n=== Building Index ===");
     if (rebuild || !direxists(indexPath.c_str())) {
-        std::filesystem::remove_all(indexPath);
+        //std::filesystem::remove_all(indexPath);
         auto buildstart = std::chrono::high_resolution_clock::now();
 
         if (enableQuantization)

@@ -496,7 +496,10 @@ namespace SPTAG::SPANN {
                     if (VID == headID) hasHead = true;
                     localIndices.push_back(j);
                 }
-
+                if (headj < 0) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split fail: cannot find head in posting! headID:%lld\n", (std::int64_t)headID);
+                    return ErrorCode::Fail;
+                }
                 // double gcEndTime = sw.getElapsedMs();
                 // m_splitGcCost += gcEndTime;
 		
@@ -578,7 +581,7 @@ namespace SPTAG::SPANN {
                 newPostingLists.resize(2);
                 for (int k : ks) {
                     if (args.counts[k] == 0)	continue;
-
+                    first = (k == 0) ? 0 : args.counts[0];
                     newPostingLists[k].resize(args.counts[k] * m_vectorInfoSize);
                     char* ptr = (char*)(newPostingLists[k].c_str());
                     for (int j = 0; j < args.counts[k]; j++, ptr += m_vectorInfoSize)
@@ -615,10 +618,10 @@ namespace SPTAG::SPANN {
                             int retry = 0;
                             while (!anotherLock.try_lock() && retry < 3)
                             {
-                                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                                             "Split: new head VID %lld is being locked. Wait for lock and do "
-                                             "merging after getting lock...\n",
-                                             (std::int64_t)(newHeadVID));
+                                //SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                //             "Split: new head VID %lld is being locked. Wait for lock and do "
+                                //             "merging after getting lock...\n",
+                                //             (std::int64_t)(newHeadVID));
                                 retry++;
                                 std::this_thread::sleep_for(std::chrono::milliseconds(3));
                             }
@@ -632,7 +635,7 @@ namespace SPTAG::SPANN {
                         }
 
                         if (m_headIndex->ContainSample(newHeadVID, m_layer + 1)) {
-                            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Split: new head VID %lld already exists in head index. Do merging...\n", (std::int64_t)(newHeadVID));
+                            //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Split: new head VID %lld already exists in head index. Do merging...\n", (std::int64_t)(newHeadVID));
 
                             std::string mergedPostingList;
                             std::set<SizeType> vectorIdSet;
@@ -645,14 +648,24 @@ namespace SPTAG::SPANN {
                                 return ret;
                             }
 
-                            auto *postingP = reinterpret_cast<uint8_t *>(newPostingLists[k].data());
-                            size_t postVectorNum = newPostingLists[k].size() / m_vectorInfoSize;
+                            auto *postingO = reinterpret_cast<uint8_t *>(newPostingLists[k].data());
+                            size_t postVectorNumO = newPostingLists[k].size() / m_vectorInfoSize;
                             int currentLength = 0;
-                            for (int j = 0; j < postVectorNum; j++, postingP += m_vectorInfoSize)
+                            bool hasHeadO = false;
+                            for (int j = 0; j < postVectorNumO; j++, postingO += m_vectorInfoSize)
                             {
-                                SizeType VID = *((SizeType *)(postingP));
-                                vectorIdSet.insert(VID);
-                                mergedPostingList += newPostingLists[k].substr(j * m_vectorInfoSize, m_vectorInfoSize);
+                                SizeType VID = *((SizeType *)(postingO));
+                                if (vectorIdSet.insert(VID).second) {
+                                    mergedPostingList += newPostingLists[k].substr(j * m_vectorInfoSize, m_vectorInfoSize);
+                                    currentLength++;
+                                    if (VID == newHeadVID) hasHeadO = true;
+                                }
+                            }
+
+                            if (!hasHeadO) {
+                                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "Split: after merging head VID %lld, the head vector is missing in posting list. Add head vector back to posting list.\n", (std::int64_t)(newHeadVID));
+                                vectorIdSet.insert(newHeadVID);
+                                mergedPostingList = postingList.substr(args.clusterIdx[k] * m_vectorInfoSize, m_vectorInfoSize) + mergedPostingList;
                                 currentLength++;
                             }
 
@@ -668,6 +681,8 @@ namespace SPTAG::SPANN {
 
                                 if (vectorIdSet.find(VID) != vectorIdSet.end())
                                     continue;
+
+                                vectorIdSet.insert(VID);
                                 mergedPostingList += currentPostingList.substr(j * m_vectorInfoSize, m_vectorInfoSize);
                                 currentLength++;
                             }
@@ -725,7 +740,6 @@ namespace SPTAG::SPANN {
                         }
                     }
                     //SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Head id: %d split into : %d, length: %d\n", headID, newHeadVID, args.counts[k]);
-                    first += args.counts[k];
                 }
                 if (!theSameHead) {
                     m_headIndex->DeleteIndex(headID, m_layer + 1);
@@ -817,6 +831,11 @@ namespace SPTAG::SPANN {
                 currentLength++;
             }
 
+            if (headVec == nullptr) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "MergePostings fail: cannot find head vector in posting! headID:%lld\n", (std::int64_t)headID);
+                return ErrorCode::Fail;
+            }
+
             if (currentLength > m_mergeThreshold)
             {
                 if (vectorIdSet.find(headID) == vectorIdSet.end() && headVec != nullptr) {
@@ -889,6 +908,10 @@ namespace SPTAG::SPANN {
                             dedupLength++;
                         }
                         nextLength++;
+                    }
+                    if (resultVec == nullptr) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "MergePostings fail: cannot find another head vector in posting! headID:%lld\n", (std::int64_t)(queryResult->VID));
+                        return ErrorCode::Fail;
                     }
                     if (currentLength + dedupLength >= m_postingSizeLimit) continue;
 
@@ -1268,6 +1291,16 @@ namespace SPTAG::SPANN {
                 if ((ret = db->Merge(
                          DBKey(headID), appendPosting, MaxTimeout, &(p_exWorkSpace->m_diskRequests), postingSize)) != ErrorCode::Success)
                 {
+                    if (ret == ErrorCode::Posting_OverFlow) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "Merge failed:Posting overflow when appending to %lld! Do split and then retry...\n", (std::int64_t)headID);
+                        ret = Split(p_exWorkSpace, headID, false);
+                        if (ret != ErrorCode::Success) {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split %lld failed!\n", (std::int64_t)headID);
+                            return ret;
+                        }
+                        lock.unlock();
+                        goto checkDeleted;
+                    }
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Merge failed for %lld! Posting Size:%d, limit: %d\n", (std::int64_t)headID, postingSize, m_postingSizeLimit);
                     GetDBStats();
                     return ret;
@@ -1803,6 +1836,7 @@ namespace SPTAG::SPANN {
             }
 
             Helper::Concurrent::ConcurrentSet<SizeType> zeroReplicaSet;
+            Helper::Concurrent::ConcurrentSet<SizeType> postingsForSplit;
             std::atomic_int64_t originalSize(0), relaxSize(0);
             {
                 std::vector<std::thread> mythreads;
@@ -1820,9 +1854,10 @@ namespace SPTAG::SPANN {
                             {
                                 if (postingListSize[i] <= m_postingSizeLimit)
                                     originalSize += postingListSize[i];
-                                else
+                                else {
                                     originalSize += m_postingSizeLimit;
-
+                                    postingsForSplit.insert(i);
+                                }
                                 if (postingListSize[i] <= relaxLimit)
                                 {
                                     relaxSize += postingListSize[i];
@@ -1894,7 +1929,7 @@ namespace SPTAG::SPANN {
                     p_headGlobaltoLocal[*(p_headToLocal[i])] = i;
                 } 
             }
-            if (ErrorCode::Success != WriteDownAllPostingToDB(selections, fullVectors, postingListSize, p_headToLocal, p_localToGlobal)) return false;
+            if (ErrorCode::Success != WriteDownAllPostingToDB(p_headIndex, selections, fullVectors, postingListSize, p_headToLocal, p_localToGlobal)) return false;
 
             if (m_opt->m_update && !m_opt->m_allowZeroReplica && zeroReplicaSet.size() > 0)
             {
@@ -1905,6 +1940,10 @@ namespace SPTAG::SPANN {
 
                 ExtraWorkSpace workSpace;
                 InitWorkSpace(&workSpace);
+                for (SizeType sp : postingsForSplit) {
+                    SplitAsync(*(p_headToLocal[sp]), postingListSize[sp].load());
+                }
+
                 for (SizeType it : zeroReplicaSet)
                 {
                     std::shared_ptr<VectorSet> vectorSet(new BasicVectorSet(ByteArray((std::uint8_t*)fullVectors->GetVector(it), m_vectorDataSize, false),
@@ -1935,7 +1974,7 @@ namespace SPTAG::SPANN {
             return true;
         }
 
-        ErrorCode WriteDownAllPostingToDB(Selection& p_postingSelections, std::shared_ptr<VectorSet> p_fullVectors, std::vector<std::atomic_int>& postingSizes, COMMON::Dataset<SizeType>& p_headToGlobal, COMMON::Dataset<SizeType>& p_localToGlobal) {
+        ErrorCode WriteDownAllPostingToDB(std::shared_ptr<VectorIndex>& p_headIndex, Selection& p_postingSelections, std::shared_ptr<VectorSet> p_fullVectors, std::vector<std::atomic_int>& postingSizes, COMMON::Dataset<SizeType>& p_headToGlobal, COMMON::Dataset<SizeType>& p_localToGlobal) {
 
             std::vector<std::thread> threads;
             std::atomic<SizeType> vectorsSent(0);
@@ -1952,6 +1991,8 @@ namespace SPTAG::SPANN {
                         std::string postinglist(m_vectorInfoSize * postingSizes[index].load(), '\0');
                         char* ptr = (char*)postinglist.c_str();
 			            std::size_t selectIdx = p_postingSelections.lower_bound(index);
+                        SizeType postingID = *(p_headToGlobal[index]);
+                        bool hasHead = false;
                         for (int j = 0; j < postingSizes[index].load(); ++j)
                         {
                             if (p_postingSelections[selectIdx].node != index) {
@@ -1961,14 +2002,22 @@ namespace SPTAG::SPANN {
                             }
                             SizeType localID = p_postingSelections[selectIdx++].tonode;
                             SizeType fullID = (p_localToGlobal.R() > 0) ? *(p_localToGlobal[localID]) : localID;
+                            if (fullID == postingID) hasHead = true;
                             // if (id == 0) SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ID: %d\n", fullID);
                             uint8_t version = m_versionMap.GetVersion(fullID);
                             // First Vector ID, then version, then Vector
                             Serialize(ptr, fullID, version, p_fullVectors->GetVector(localID));
                             ptr += m_vectorInfoSize;
                         }
-                        ErrorCode tmp;
-                        SizeType postingID = *(p_headToGlobal[index]);
+                        if (!hasHead) {
+                            if (postingSizes[index].load() < m_postingSizeLimit + m_bufferSizeLimit) {
+                                postinglist.append(m_vectorInfoSize, '\0');
+                                postingSizes[index]++;
+                            }
+                            Serialize(postinglist.data() + m_vectorInfoSize * (postingSizes[index].load() - 1), postingID, m_versionMap.GetVersion(postingID), p_headIndex->GetSample(index));
+                        }
+
+                        ErrorCode tmp;                        
                         if ((tmp = db->Put(DBKey(postingID), postinglist, MaxTimeout, &(workSpace.m_diskRequests))) !=
                             ErrorCode::Success)
                         {
