@@ -213,7 +213,7 @@ namespace SPTAG::SPANN {
         Helper::Concurrent::ConcurrentSet<SizeType> m_mergeList;
         std::atomic_size_t m_mergeJobsInFlight{ 0 };
 
-        ErrorCode m_asyncStatus = ErrorCode::Success;
+        std::atomic<ErrorCode> m_asyncStatus{ErrorCode::Success};
 
         // Moved from bottom of class — no logic change, just reordered near member variables.
         inline SizeType DBKey(SizeType postingID) {
@@ -920,6 +920,15 @@ namespace SPTAG::SPANN {
                 elapsedMSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(reassignScanEnd - reassignScanBegin).count();
 
                 m_stat.m_reassignScanCost += elapsedMSeconds;
+
+                if (m_router && m_router->IsEnabled()) {
+                    ErrorCode flushRet = m_router->FlushRemoteAppends();
+                    if (flushRet != ErrorCode::Success) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                            "Split: FlushRemoteAppends failed (code=%d) for headID %lld\n",
+                            (int)flushRet, (std::int64_t)headID);
+                    }
+                }
             }
             auto splitEnd = std::chrono::high_resolution_clock::now();
             elapsedMSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(splitEnd - splitBegin).count();
@@ -1037,6 +1046,7 @@ namespace SPTAG::SPANN {
                             if (!target.isLocal) {
                                 if (!m_router->SendRemoteLock(target.nodeIndex, queryResult->VID, true)) {
                                     auto* curJob = new MergeAsyncJob(this, headID, reassign, nullptr);
+                                    m_mergeJobsInFlight++;
                                     m_splitThreadPool->add(curJob);
                                     return ErrorCode::Success;
                                 }
@@ -1047,6 +1057,7 @@ namespace SPTAG::SPANN {
                             } else {
                                 if (!anotherLock.try_lock()) {
                                     auto* curJob = new MergeAsyncJob(this, headID, reassign, nullptr);
+                                    m_mergeJobsInFlight++;
                                     m_splitThreadPool->add(curJob);
                                     return ErrorCode::Success;
                                 }
@@ -1054,6 +1065,7 @@ namespace SPTAG::SPANN {
                         } else {
                             if (!anotherLock.try_lock()) {
                                 auto* curJob = new MergeAsyncJob(this, headID, reassign, nullptr);
+                                m_mergeJobsInFlight++;
                                 m_splitThreadPool->add(curJob);
                                 return ErrorCode::Success;
                             }
@@ -1639,7 +1651,7 @@ namespace SPTAG::SPANN {
 
 			        std::vector<std::thread> threads;
 			        std::atomic_size_t vectorsSent(0);
-                    ErrorCode ret = ErrorCode::Success;
+                    std::atomic<ErrorCode> ret{ErrorCode::Success};
 			        auto func = [&]() {
                         ExtraWorkSpace workSpace;
                         InitWorkSpace(&workSpace);
@@ -2461,7 +2473,7 @@ namespace SPTAG::SPANN {
 
             std::vector<std::thread> threads;
             std::atomic<SizeType> vectorsSent(0);
-            ErrorCode ret = ErrorCode::Success;
+            std::atomic<ErrorCode> ret{ErrorCode::Success};
             auto func = [&]()
             {
                 ExtraWorkSpace workSpace;
@@ -2726,10 +2738,10 @@ namespace SPTAG::SPANN {
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
-            if (m_asyncStatus != ErrorCode::Success) {
+            auto prevStatus = m_asyncStatus.exchange(ErrorCode::Success);
+            if (prevStatus != ErrorCode::Success) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "Checkpoint: resetting transient async error (code=%d) for layer %d\n",
-                             (int)m_asyncStatus, m_layer);
-                m_asyncStatus = ErrorCode::Success;
+                             (int)prevStatus, m_layer);
             }
 
             std::string p_persistenMap = prefix + FolderSep + m_opt->m_deleteIDFile + "_" + std::to_string(m_layer);

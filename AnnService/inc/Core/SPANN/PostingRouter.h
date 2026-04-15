@@ -132,19 +132,22 @@ namespace SPTAG::SPANN {
 
         const std::uint8_t* Read(const std::uint8_t* p_buffer, std::uint32_t bodyLength = 0) {
             using namespace Socket::SimpleSerialization;
+            const std::uint8_t* bufEnd = (bodyLength > 0) ? (p_buffer + bodyLength) : nullptr;
             std::uint16_t majorVer = 0, mirrorVer = 0;
             p_buffer = SimpleReadBuffer(p_buffer, majorVer);
             p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
             if (majorVer != MajorVersion()) return nullptr;
             p_buffer = SimpleReadBuffer(p_buffer, m_count);
-            // Validate count against body length if provided
-            if (bodyLength > 0 && m_count > bodyLength / sizeof(RemoteAppendRequest)) {
+            // Reject obviously corrupt counts before allocating
+            if (bodyLength > 0 && m_count > bodyLength / 8) {
                 return nullptr;
             }
             m_items.resize(m_count);
             for (std::uint32_t i = 0; i < m_count; i++) {
+                if (bufEnd && p_buffer >= bufEnd) return nullptr;
                 p_buffer = m_items[i].Read(p_buffer);
                 if (!p_buffer) return nullptr;
+                if (bufEnd && p_buffer > bufEnd) return nullptr;
             }
             return p_buffer;
         }
@@ -623,10 +626,9 @@ namespace SPTAG::SPANN {
                     m_peerConnections.resize(nodeIndex + 1, Socket::c_invalidConnectionID);
                 }
                 m_nodeAddrs[nodeIndex] = addr;
-            }
-
-            if (!store.empty()) {
-                m_storeToNodes[store].push_back(nodeIndex);
+                if (!store.empty()) {
+                    m_storeToNodes[store].push_back(nodeIndex);
+                }
             }
 
             // Connect to the new peer
@@ -862,29 +864,31 @@ namespace SPTAG::SPANN {
         bool ConnectToPeer(int nodeIndex, int maxRetries = 10, int initialDelayMs = 500) {
             if (nodeIndex == m_localNodeIndex) return true;
 
+            // Snapshot address under lock to avoid racing with AddNode resizing m_nodeAddrs
+            std::pair<std::string, std::string> addr;
+            {
+                std::lock_guard<std::mutex> lock(m_connMutex);
+                if (nodeIndex >= static_cast<int>(m_nodeAddrs.size())) return false;
+                addr = m_nodeAddrs[nodeIndex];
+            }
+
             int delayMs = initialDelayMs;
             for (int attempt = 1; attempt <= maxRetries; attempt++) {
                 ErrorCode ec;
-                auto connID = m_client->ConnectToServer(
-                    m_nodeAddrs[nodeIndex].first,
-                    m_nodeAddrs[nodeIndex].second, ec);
+                auto connID = m_client->ConnectToServer(addr.first, addr.second, ec);
                 if (ec == ErrorCode::Success) {
                     std::lock_guard<std::mutex> lock(m_connMutex);
                     m_peerConnections[nodeIndex] = connID;
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
                         "PostingRouter: Connected to node %d (%s:%s), connID=%u (attempt %d)\n",
-                        nodeIndex,
-                        m_nodeAddrs[nodeIndex].first.c_str(),
-                        m_nodeAddrs[nodeIndex].second.c_str(),
+                        nodeIndex, addr.first.c_str(), addr.second.c_str(),
                         connID, attempt);
                     return true;
                 }
 
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
                     "PostingRouter: Failed to connect to node %d (%s:%s), attempt %d/%d, retrying in %dms\n",
-                    nodeIndex,
-                    m_nodeAddrs[nodeIndex].first.c_str(),
-                    m_nodeAddrs[nodeIndex].second.c_str(),
+                    nodeIndex, addr.first.c_str(), addr.second.c_str(),
                     attempt, maxRetries, delayMs);
                 std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
                 delayMs = std::min(delayMs * 2, 5000);  // cap at 5s
@@ -892,9 +896,7 @@ namespace SPTAG::SPANN {
 
             SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
                 "PostingRouter: All %d connection attempts to node %d (%s:%s) failed\n",
-                maxRetries, nodeIndex,
-                m_nodeAddrs[nodeIndex].first.c_str(),
-                m_nodeAddrs[nodeIndex].second.c_str());
+                maxRetries, nodeIndex, addr.first.c_str(), addr.second.c_str());
             return false;
         }
 
@@ -1124,13 +1126,28 @@ namespace SPTAG::SPANN {
             }
 
             const std::uint8_t* buf = packet.Body();
+            const std::uint8_t* bufEnd = buf + packet.Header().m_bodyLength;
             std::uint32_t entryCount = 0;
             buf = Socket::SimpleSerialization::SimpleReadBuffer(buf, entryCount);
 
+            // Each entry has at minimum ~13 bytes; reject corrupt counts
+            std::uint32_t bodyLength = packet.Header().m_bodyLength;
+            if (bodyLength < sizeof(std::uint32_t) || entryCount > (bodyLength - sizeof(std::uint32_t)) / 8) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "PostingRouter: HeadSyncRequest entryCount=%u exceeds bodyLength=%u\n",
+                    entryCount, bodyLength);
+                return;
+            }
+
             for (std::uint32_t i = 0; i < entryCount; i++) {
+                if (buf >= bufEnd) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                        "PostingRouter: HeadSyncRequest buffer overrun at entry %u/%u\n", i, entryCount);
+                    break;
+                }
                 HeadSyncEntry entry;
                 buf = entry.Read(buf);
-                if (!buf) {
+                if (!buf || buf > bufEnd) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
                         "PostingRouter: HeadSyncRequest parse error at entry %u/%u\n", i, entryCount);
                     break;
@@ -1147,7 +1164,14 @@ namespace SPTAG::SPANN {
             size_t bodySize = sizeof(std::uint32_t); // entry count
             for (const auto& e : entries) bodySize += e.EstimateBufferSize();
 
-            for (int i = 0; i < static_cast<int>(m_nodeAddrs.size()); i++) {
+            // Snapshot node count under lock to avoid racing with AddNode
+            int numNodes;
+            {
+                std::lock_guard<std::mutex> lock(m_connMutex);
+                numNodes = static_cast<int>(m_nodeAddrs.size());
+            }
+
+            for (int i = 0; i < numNodes; i++) {
                 if (i == m_localNodeIndex) continue;
 
                 Socket::ConnectionID connID = GetPeerConnection(i);
