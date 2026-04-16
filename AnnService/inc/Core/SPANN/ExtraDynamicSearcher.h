@@ -632,7 +632,12 @@ namespace SPTAG::SPANN {
                                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
                                              "Split: new head VID %lld is being locked after 3 retries. Skip merging and return split failed...\n",
                                              (std::int64_t)(newHeadVID));
-                                return ErrorCode::Fail;
+                                {
+                                    std::unique_lock<std::shared_timed_mutex> tmplock(m_splitListLock);
+                                    m_splitList.unsafe_erase(headID);
+                                }
+                                SplitAsync(headID, postingList.size() / m_vectorInfoSize);
+                                return ErrorCode::Success;
                             }
                         }
 
