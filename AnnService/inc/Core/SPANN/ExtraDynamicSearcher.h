@@ -1944,9 +1944,6 @@ namespace SPTAG::SPANN {
 
                 ExtraWorkSpace workSpace;
                 InitWorkSpace(&workSpace);
-                for (SizeType sp : postingsForSplit) {
-                    SplitAsync(*(p_headToLocal[sp]), postingListSize[sp].load());
-                }
 
                 for (SizeType it : zeroReplicaSet)
                 {

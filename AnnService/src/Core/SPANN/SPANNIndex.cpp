@@ -119,8 +119,7 @@ template <typename T> ErrorCode Index<T>::LoadIndexDataFromMemory(const std::vec
         SizeType globalID = *(m_topLocalToGlobalID[i]);
         m_topGlobalToLocalID[globalID] = i;
     }
-
-    PrepareDB(m_db);
+    if (m_options.m_shareDB) PrepareDB(m_db);
     m_extraSearchers.resize(m_options.m_layers);
     for (int i = m_options.m_layers - 1; i >= 0; i--) {
         if (m_options.m_storage == Storage::STATIC)
@@ -188,7 +187,7 @@ ErrorCode Index<T>::LoadIndexData(const std::vector<std::shared_ptr<Helper::Disk
         SizeType globalID = *(m_topLocalToGlobalID[i]);
         m_topGlobalToLocalID[globalID] = i;
     }
-    PrepareDB(m_db);
+    if (m_options.m_shareDB) PrepareDB(m_db);
     m_extraSearchers.resize(m_options.m_layers);
     for (int i = m_options.m_layers - 1; i >= 0; i--) {
         if (m_options.m_storage == Storage::STATIC)
@@ -1028,9 +1027,10 @@ template <typename T> ErrorCode Index<T>::BuildIndexInternalLayer(std::shared_pt
         }
         else {
             localToGlobalID.Load(ptr, this->m_iDataBlockSize, this->m_iDataCapacity);
-            if (localToGlobalID.R() != p_reader->GetVectorSet()->Count())
+            SizeType vectorCount = p_reader->GetVectorSet()->Count();
+            if (localToGlobalID.R() != vectorCount)
             {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "HeadIDFile count doesn't match head vector file count!\n");
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "HeadIDFile count %lld doesn't match head vector file count %lld!\n", (int64_t)localToGlobalID.R(), (int64_t)vectorCount);
                 localToGlobalID.SetR(0);
             }
         }
@@ -1207,7 +1207,7 @@ template <typename T> ErrorCode Index<T>::BuildIndexInternal(std::shared_ptr<Hel
         mkdir(m_options.m_persistentBufferPath.c_str());
     }
 
-    if (m_db == nullptr) PrepareDB(m_db);
+    if (m_db == nullptr && m_options.m_shareDB) PrepareDB(m_db);
 
     auto ret = BuildIndexInternalLayer(vectorReader);
     if (ret != ErrorCode::Success)
@@ -1217,9 +1217,10 @@ template <typename T> ErrorCode Index<T>::BuildIndexInternal(std::shared_ptr<Hel
     }
     for (int layer = 1; layer < m_options.m_layers; layer++)
     {
+        std::string vectorInPath = m_options.m_indexDirectory + FolderSep + m_options.m_headIndexFolder + FolderSep + m_topIndex->GetParameter("VectorFilePath");
         std::string vectorPath = m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile;
-        if (rename(vectorPath.c_str(), (vectorPath + "_tmp").c_str()) != 0) {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to rename vector file to %s\n", (vectorPath + "_tmp").c_str());
+        if (rename(vectorInPath.c_str(), (vectorPath + "_tmp").c_str()) != 0) {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to rename vector file %s to %s\n", vectorInPath.c_str(), (vectorPath + "_tmp").c_str());
         }
         vectorReader = Helper::VectorSetReader::CreateInstance(vectorOptions);
         if (ErrorCode::Success != vectorReader->LoadFile(vectorPath + "_tmp"))
@@ -1659,8 +1660,6 @@ template <typename T> ErrorCode Index<T>::DeleteIndex(const void *p_vectors, Siz
 
 template <typename T> void Index<T>::PrepareDB(std::shared_ptr<Helper::KeyValueIO>& db, int layer)
 {
-    if (!m_options.m_shareDB) return;
-
     if(m_options.m_storage == Storage::FILEIO) {
         SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPANNIndex:UseFileIO\n");
         db.reset(new FileIO(m_options, layer));
