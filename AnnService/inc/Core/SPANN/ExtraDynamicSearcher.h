@@ -146,7 +146,7 @@ namespace SPTAG::SPANN {
                     m_threads.emplace_back([this, extraIndex] {
                         Job *j;
                         ExtraWorkSpace workSpace;
-                        extraIndex->InitWorkSpace(&workSpace);
+                        extraIndex->GetHeadIndex()->InitWorkSpace(&workSpace);
                         while (get(j))
                         {
                             try 
@@ -165,9 +165,6 @@ namespace SPTAG::SPANN {
         };
 
     private:
-        std::shared_ptr<Helper::Concurrent::ConcurrentQueue<int>> m_freeWorkSpaceIds;
-        std::atomic<int> m_workspaceCount = 0;
-
         std::mutex m_asyncAppendLock;
         Helper::Concurrent::ConcurrentPriorityQueue<AppendPair> m_asyncAppendQueue;
              
@@ -213,13 +210,6 @@ namespace SPTAG::SPANN {
             m_hardLatencyLimit = std::chrono::microseconds((int)(p_opt.m_latencyLimit) * 1000);
             m_mergeThreshold = p_opt.m_mergeThreshold;          
 
-            int maxIOThreads =  max(p_opt.m_ioThreads, (2 * max(p_opt.m_searchThreadNum, p_opt.m_iSSDNumberOfThreads) +
-                                    p_opt.m_insertThreadNum + p_opt.m_reassignThreadNum + p_opt.m_appendThreadNum));
-            m_freeWorkSpaceIds.reset(new Helper::Concurrent::ConcurrentQueue<int>());
-            for (int i = 0; i < maxIOThreads; i++) {
-                m_freeWorkSpaceIds->push(i);
-            }
-            m_workspaceCount = maxIOThreads;
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Posting size limit: %d, search limit: %f, merge threshold: %d\n", m_postingSizeLimit, p_opt.m_latencyLimit, m_mergeThreshold);
         }
 
@@ -266,7 +256,9 @@ namespace SPTAG::SPANN {
             }
             return ret;
         }
-        
+
+        SPANN::Index<ValueType>* GetHeadIndex() const { return m_headIndex; }
+
         bool CheckIsNeedReassign(std::vector<std::shared_ptr<std::string>>& newHeadsVec, ValueType* data, std::shared_ptr<std::string> splitHeadVec, float_t headToSplitHeadDist, float_t currentHeadDist, bool isInSplitHead)
         {
             float_t splitHeadDist = m_headIndex->ComputeDistance(data, splitHeadVec->data());
@@ -327,7 +319,7 @@ namespace SPTAG::SPANN {
                     ErrorCode ret;
                     SizeType index = 0;
                     ExtraWorkSpace workSpace;
-                    InitWorkSpace(&workSpace);
+                    m_headIndex->InitWorkSpace(&workSpace);
                     while (true)
                     {
                         index = nextPostingID.fetch_add(1);
@@ -1198,27 +1190,6 @@ namespace SPTAG::SPANN {
             return true;
         }
 
-        void InitWorkSpace(ExtraWorkSpace* p_exWorkSpace, bool clear = false) override
-        {
-            if (clear) {
-                p_exWorkSpace->Clear(m_opt->m_searchInternalResultNum, (max(m_opt->m_postingPageLimit, m_opt->m_searchPostingPageLimit) + m_opt->m_bufferLength) << PageSizeEx, true, m_opt->m_enableDataCompression);
-            }
-            else {
-                p_exWorkSpace->Initialize(m_opt->m_maxCheck, m_opt->m_hashExp, max(m_opt->m_searchInternalResultNum, m_opt->m_reassignK), (max(m_opt->m_postingPageLimit, m_opt->m_searchPostingPageLimit) + m_opt->m_bufferLength) << PageSizeEx, true, m_opt->m_enableDataCompression);
-                int wid = 0;
-                if (m_freeWorkSpaceIds == nullptr || !m_freeWorkSpaceIds->try_pop(wid))
-                {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "FreeWorkSpaceIds is not initalized or the workspace number is not enough! Please increase iothread number.\n");
-                    p_exWorkSpace->m_diskRequests[0].m_status = -1;
-                    return;
-                }
-                p_exWorkSpace->m_diskRequests[0].m_status = wid;
-                p_exWorkSpace->m_callback = [m_freeWorkSpaceIds = m_freeWorkSpaceIds, wid] () {
-                    if (m_freeWorkSpaceIds) m_freeWorkSpaceIds->push(wid);
-                };
-            }
-        }
-
         ErrorCode AsyncAppend(ExtraWorkSpace* p_exWorkSpace, SizeType headID, int appendNum, std::string& appendPosting, int reassignThreshold = 0)
         {
             if (m_asyncAppendQueue.size() >= m_opt->m_asyncAppendQueueSize) {
@@ -1423,7 +1394,7 @@ namespace SPTAG::SPANN {
                     ErrorCode ret = ErrorCode::Success;
 			        auto func = [&]() {
                         ExtraWorkSpace workSpace;
-                        InitWorkSpace(&workSpace);
+                        m_headIndex->InitWorkSpace(&workSpace);
                         size_t index = 0;
                         while (true)
                         {
@@ -1512,7 +1483,7 @@ namespace SPTAG::SPANN {
                     return true;
                 }
                 ExtraWorkSpace workSpace;
-                InitWorkSpace(&workSpace);
+                m_headIndex->InitWorkSpace(&workSpace);
                 do {
                     countAssignment++;
                     if (countAssignment % 10000 == 0) SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Process %d logs\n", countAssignment);
@@ -1948,7 +1919,7 @@ namespace SPTAG::SPANN {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPFresh: finish initialization, zeroReplicaCount:%d\n", (int)(zeroReplicaSet.size()));
 
                 ExtraWorkSpace workSpace;
-                InitWorkSpace(&workSpace);
+                m_headIndex->InitWorkSpace(&workSpace);
 
                 for (SizeType it : zeroReplicaSet)
                 {
@@ -1988,7 +1959,7 @@ namespace SPTAG::SPANN {
             auto func = [&]()
             {
                 ExtraWorkSpace workSpace;
-                InitWorkSpace(&workSpace);
+                m_headIndex->InitWorkSpace(&workSpace);
                 SizeType index = 0;
                 while (true)
                 {
