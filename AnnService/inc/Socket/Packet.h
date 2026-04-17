@@ -35,6 +35,8 @@ enum class PacketType : std::uint8_t
 
     RemoteLockRequest = 0x08,
 
+    DispatchCommand = 0x09,
+
     ResponseMask = 0x80,
 
     HeartbeatResponse = ResponseMask | HeartbeatRequest,
@@ -48,6 +50,8 @@ enum class PacketType : std::uint8_t
     BatchAppendResponse = ResponseMask | BatchAppendRequest,
 
     RemoteLockResponse = ResponseMask | RemoteLockRequest,
+
+    DispatchResult = ResponseMask | DispatchCommand,
 };
 
 

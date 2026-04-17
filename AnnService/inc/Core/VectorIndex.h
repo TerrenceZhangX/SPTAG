@@ -213,6 +213,7 @@ public:
     virtual int GetNumNodes() const { return 1; }
     virtual int GetLocalNodeIndex() const { return 0; }
     virtual void SetHeadSyncCallback() {}
+    virtual void* GetRouter() { return nullptr; }
     
   private:
     ErrorCode LoadIndexConfig(Helper::IniReader& p_reader);

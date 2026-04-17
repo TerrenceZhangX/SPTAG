@@ -343,6 +343,13 @@ namespace SPTAG
                 }
             }
 
+            void* GetRouter() override {
+                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
+                    return m_extraSearchers[0]->GetRouter();
+                }
+                return nullptr;
+            }
+
             void GetDBStat() { 
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Current Vector Num: %d, Deleted: %d .\n", GetNumSamples(), GetNumDeleted());
                 if (m_options.m_storage != Storage::STATIC) {
