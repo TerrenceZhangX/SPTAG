@@ -119,6 +119,17 @@ template <typename T> ErrorCode Index<T>::LoadIndexDataFromMemory(const std::vec
         SizeType globalID = *(m_topLocalToGlobalID[i]);
         m_topGlobalToLocalID[globalID] = i;
     }
+
+    if (m_freeWorkSpaceIds == nullptr) {
+        m_freeWorkSpaceIds.reset(new Helper::Concurrent::ConcurrentQueue<int>());
+        int maxIOThreads = (m_options.m_storage == Storage::STATIC) ? max(m_options.m_searchThreadNum, m_options.m_iSSDNumberOfThreads) : max(m_options.m_ioThreads, (2 * max(m_options.m_searchThreadNum, m_options.m_iSSDNumberOfThreads) +
+                                    (m_options.m_layers + 1) * (m_options.m_insertThreadNum + m_options.m_reassignThreadNum + m_options.m_appendThreadNum)));
+        for (int i = 0; i < maxIOThreads; i++) {
+            m_freeWorkSpaceIds->push(i);
+        }
+        m_workspaceCount = maxIOThreads;
+    }
+
     if (m_options.m_shareDB) PrepareDB(m_db);
     m_extraSearchers.resize(m_options.m_layers);
     for (int i = m_options.m_layers - 1; i >= 0; i--) {
@@ -135,15 +146,6 @@ template <typename T> ErrorCode Index<T>::LoadIndexDataFromMemory(const std::vec
             return ErrorCode::Fail;
     }
 
-    if (m_freeWorkSpaceIds == nullptr) {
-        m_freeWorkSpaceIds.reset(new Helper::Concurrent::ConcurrentQueue<int>());
-        int maxIOThreads = (m_options.m_storage == Storage::STATIC) ? max(m_options.m_searchThreadNum, m_options.m_iSSDNumberOfThreads) : max(m_options.m_ioThreads, (2 * max(m_options.m_searchThreadNum, m_options.m_iSSDNumberOfThreads) +
-                                    m_options.m_layers * (m_options.m_insertThreadNum + m_options.m_reassignThreadNum + m_options.m_appendThreadNum) + 8));
-        for (int i = 0; i < maxIOThreads; i++) {
-            m_freeWorkSpaceIds->push(i);
-        }
-        m_workspaceCount = maxIOThreads;
-    }
     return ErrorCode::Success;
 }
 
@@ -197,6 +199,17 @@ ErrorCode Index<T>::LoadIndexData(const std::vector<std::shared_ptr<Helper::Disk
         SizeType globalID = *(m_topLocalToGlobalID[i]);
         m_topGlobalToLocalID[globalID] = i;
     }
+
+    if (m_freeWorkSpaceIds == nullptr) {
+        m_freeWorkSpaceIds.reset(new Helper::Concurrent::ConcurrentQueue<int>());
+        int maxIOThreads = (m_options.m_storage == Storage::STATIC) ? max(m_options.m_searchThreadNum, m_options.m_iSSDNumberOfThreads) : max(m_options.m_ioThreads, (2 * max(m_options.m_searchThreadNum, m_options.m_iSSDNumberOfThreads) +
+                                    (m_options.m_layers + 1) * (m_options.m_insertThreadNum + m_options.m_reassignThreadNum + m_options.m_appendThreadNum)));
+        for (int i = 0; i < maxIOThreads; i++) {
+            m_freeWorkSpaceIds->push(i);
+        }
+        m_workspaceCount = maxIOThreads;
+    }
+
     if (m_options.m_shareDB) PrepareDB(m_db);
     m_extraSearchers.resize(m_options.m_layers);
     for (int i = m_options.m_layers - 1; i >= 0; i--) {
@@ -220,15 +233,6 @@ ErrorCode Index<T>::LoadIndexData(const std::vector<std::shared_ptr<Helper::Disk
             return ErrorCode::Fail;
     }
 
-    if (m_freeWorkSpaceIds == nullptr) {
-        m_freeWorkSpaceIds.reset(new Helper::Concurrent::ConcurrentQueue<int>());
-        int maxIOThreads = (m_options.m_storage == Storage::STATIC) ? max(m_options.m_searchThreadNum, m_options.m_iSSDNumberOfThreads) : max(m_options.m_ioThreads, (2 * max(m_options.m_searchThreadNum, m_options.m_iSSDNumberOfThreads) +
-                                    m_options.m_layers * (m_options.m_insertThreadNum + m_options.m_reassignThreadNum + m_options.m_appendThreadNum) + 8));
-        for (int i = 0; i < maxIOThreads; i++) {
-            m_freeWorkSpaceIds->push(i);
-        }
-        m_workspaceCount = maxIOThreads;
-    }
     return ErrorCode::Success;
 }
 
@@ -1230,7 +1234,7 @@ template <typename T> ErrorCode Index<T>::BuildIndexInternal(std::shared_ptr<Hel
     if (m_freeWorkSpaceIds == nullptr) {
         m_freeWorkSpaceIds.reset(new Helper::Concurrent::ConcurrentQueue<int>());
         int maxIOThreads = (m_options.m_storage == Storage::STATIC) ? max(m_options.m_searchThreadNum, m_options.m_iSSDNumberOfThreads) : max(m_options.m_ioThreads, (2 * max(m_options.m_searchThreadNum, m_options.m_iSSDNumberOfThreads) +
-                                    m_options.m_layers * (m_options.m_insertThreadNum + m_options.m_reassignThreadNum + m_options.m_appendThreadNum) + 8));
+                                    (m_options.m_layers + 1) * (m_options.m_insertThreadNum + m_options.m_reassignThreadNum + m_options.m_appendThreadNum)));
         for (int i = 0; i < maxIOThreads; i++) {
             m_freeWorkSpaceIds->push(i);
         }
