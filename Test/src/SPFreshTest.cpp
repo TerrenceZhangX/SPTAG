@@ -839,9 +839,12 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
             std::filesystem::create_directories(barrierDir);
         }
     }
-    int perNodeBatch = (numNodes > 1) ? insertBatchSize / numNodes : insertBatchSize;
-    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "RunBenchmark: nodeIndex=%d numNodes=%d insertBatchSize=%d perNodeBatch=%d\n",
-                 nodeIndex, numNodes, insertBatchSize, perNodeBatch);
+    int myInsertStart = (numNodes > 1) ? (nodeIndex * insertBatchSize) / numNodes : 0;
+    int myInsertEnd = (numNodes > 1) ? ((nodeIndex + 1) * insertBatchSize) / numNodes : insertBatchSize;
+    int perNodeBatch = myInsertEnd - myInsertStart;
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                 "RunBenchmark: nodeIndex=%d numNodes=%d insertBatchSize=%d myInsertStart=%d myInsertEnd=%d perNodeBatch=%d\n",
+                 nodeIndex, numNodes, insertBatchSize, myInsertStart, myInsertEnd, perNodeBatch);
 
     // Variables to collect JSON output data
     std::ostringstream tmpbenchmark;
@@ -1109,8 +1112,8 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Driver: signaled start for batch %d\n", iter + 1);
                 }
 
-                // Each node inserts its partition: [iter*batchSize + nodeIndex*perNodeBatch, +perNodeBatch)
-                int insertStart = iter * insertBatchSize + nodeIndex * perNodeBatch;
+                // Each node inserts its partition: [iter*batchSize + myInsertStart, +perNodeBatch)
+                int insertStart = iter * insertBatchSize + myInsertStart;
                 {
                     std::shared_ptr<VectorSet> addset = TestUtils::TestDataGenerator<T>::LoadVectorSet(paddset, M, insertStart, perNodeBatch);
                     ByteArray quantizedAddBytes;
@@ -2454,7 +2457,9 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
     }
 
     int insertBatchSize = insertVectorCount / std::max(batches, 1);
-    int perNodeBatch = (numNodes > 1) ? insertBatchSize / numNodes : insertBatchSize;
+    int myInsertStart = (numNodes > 1) ? (nodeIndex * insertBatchSize) / numNodes : 0;
+    int myInsertEnd = (numNodes > 1) ? ((nodeIndex + 1) * insertBatchSize) / numNodes : insertBatchSize;
+    int perNodeBatch = myInsertEnd - myInsertStart;
 
     BOOST_TEST_MESSAGE("WorkerNode: Loading index from " << indexPath);
     std::shared_ptr<VectorIndex> index;
@@ -2582,7 +2587,7 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
         if (!insertsDone) {
             std::string insertStartFile = barrierDir + "/start_batch_" + std::to_string(nextInsertBatch);
             if (std::filesystem::exists(insertStartFile)) {
-                int insertStart = nextInsertBatch * insertBatchSize + nodeIndex * perNodeBatch;
+                int insertStart = nextInsertBatch * insertBatchSize + myInsertStart;
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Batch %d - inserting %d vectors (offset %d)\n",
                              nodeIndex, nextInsertBatch + 1, perNodeBatch, insertStart);
 

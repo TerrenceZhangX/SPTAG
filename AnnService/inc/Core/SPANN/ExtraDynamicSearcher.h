@@ -259,6 +259,12 @@ namespace SPTAG::SPANN {
 
         COMMON::FineGrainedRWLock m_rwLocks;
 
+        // Per-bucket flags for remote (cross-node) locking.
+        // Indexed by FineGrainedRWLock::hash_func(headID) to match m_rwLocks granularity.
+        // Avoids UB from cross-thread std::shared_timed_mutex unlock.
+        static constexpr int kRemoteLockPoolSize = 32767;
+        std::unique_ptr<std::atomic<bool>[]> m_remoteBucketLocked;
+
         IndexStats m_stat;
 
         std::shared_ptr<PersistentBuffer> m_wal;
@@ -358,6 +364,9 @@ namespace SPTAG::SPANN {
                 m_postingCountCache = std::make_unique<PostingCountCache>(100000, 16);
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "PostingCountCache initialized (capacity=100000, shards=16) for layer %d\n", layer);
             }
+
+            // Initialize per-bucket remote lock flags
+            m_remoteBucketLocked.reset(new std::atomic<bool>[kRemoteLockPoolSize + 1]{});
         }
 
         ~ExtraDynamicSearcher() {}
@@ -1025,6 +1034,21 @@ namespace SPTAG::SPANN {
         ErrorCode MergePostings(ExtraWorkSpace *p_exWorkSpace, SizeType headID, bool reassign = false)
         {
             std::unique_lock<std::shared_timed_mutex> lock(m_rwLocks[headID]);
+
+            // If this headID's bucket is remotely locked, defer the merge.
+            // A remote node is doing cross-node reassignment involving this head.
+            {
+                unsigned bucket = COMMON::FineGrainedRWLock::hash_func(static_cast<unsigned>(headID));
+                if (m_remoteBucketLocked[bucket].load(std::memory_order_acquire)) {
+                    lock.unlock();
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                        "MergePostings: headID %d deferred (bucket %u remotely locked)\n", headID, bucket);
+                    auto* curJob = new MergeAsyncJob(this, headID, reassign, nullptr);
+                    m_mergeJobsInFlight++;
+                    m_splitThreadPool->add(curJob);
+                    return ErrorCode::Success;
+                }
+            }
 
             if (!m_headIndex->ContainSample(headID, m_layer + 1)) {
                 std::unique_lock<std::shared_timed_mutex> lock(m_mergeListLock);
@@ -2801,12 +2825,28 @@ namespace SPTAG::SPANN {
                     }
                 });
 
-                auto& rwLocks = m_rwLocks;
-                m_router->SetRemoteLockCallback([&rwLocks](SizeType headID, bool lock) -> bool {
+                // Remote lock callback: uses per-bucket atomic flags instead of
+                // cross-thread mutex lock/unlock (which would be UB).
+                // On lock: atomically set the bucket flag, then probe m_rwLocks with
+                //   same-thread try_lock+unlock to verify no local operation is ongoing.
+                // On unlock: clear the bucket flag.
+                // MergePostings checks the flag after acquiring m_rwLocks to defer if set.
+                m_router->SetRemoteLockCallback([this](SizeType headID, bool lock) -> bool {
+                    unsigned bucket = COMMON::FineGrainedRWLock::hash_func(static_cast<unsigned>(headID));
                     if (lock) {
-                        return rwLocks[headID].try_lock();
+                        bool expected = false;
+                        if (!m_remoteBucketLocked[bucket].compare_exchange_strong(expected, true)) {
+                            return false; // bucket already remotely locked
+                        }
+                        // Probe: verify no local merge holds this bucket's mutex
+                        if (!m_rwLocks[headID].try_lock()) {
+                            m_remoteBucketLocked[bucket].store(false); // rollback
+                            return false;
+                        }
+                        m_rwLocks[headID].unlock(); // same thread — no UB
+                        return true;
                     } else {
-                        rwLocks[headID].unlock();
+                        m_remoteBucketLocked[bucket].store(false);
                         return true;
                     }
                 });
