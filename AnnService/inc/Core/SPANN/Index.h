@@ -286,9 +286,11 @@ namespace SPTAG
             
             bool AllFinished() { 
                 if (m_options.m_storage != Storage::STATIC) {
+                    bool allDone = true;
                     for (auto& searcher : m_extraSearchers) {
-                        if (searcher && !searcher->AllFinished()) return false; 
+                        if (searcher && !searcher->AllFinished()) allDone = false; 
                     }
+                    return allDone;
                 }
                 return true;
             }
@@ -342,8 +344,12 @@ namespace SPTAG
             }
 
             void GetDBStat() { 
-                //if (m_options.m_storage != Storage::STATIC) m_extraSearcher->GetDBStats();
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Current Vector Num: %d, Deleted: %d .\n", GetNumSamples(), GetNumDeleted());
+                if (m_options.m_storage != Storage::STATIC) {
+                    for (auto& searcher : m_extraSearchers) {
+                        if (searcher) searcher->GetDBStats();
+                    }
+                }
             }
             
             void ForceCompaction() { 

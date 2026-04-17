@@ -114,6 +114,9 @@ namespace SPTAG {
             bool m_useCoprocessorSearch;
             int m_coprocessorTopN;
 
+            // Multi-chunk posting (append-only writes for TiKV)
+            bool m_useMultiChunkPosting;
+
             // Distributed VersionMap
             bool m_distributedVersionMap;
             int m_versionChunkSize;

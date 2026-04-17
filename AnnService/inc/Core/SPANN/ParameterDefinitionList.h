@@ -112,6 +112,9 @@ DefineSSDParameter(m_disableCheckpoint, bool, false, "DisableCheckpoint")
 DefineSSDParameter(m_useCoprocessorSearch, bool, false, "UseCoprocessorSearch")
 DefineSSDParameter(m_coprocessorTopN, int, 100, "CoprocessorTopN")
 
+// Multi-chunk posting
+DefineSSDParameter(m_useMultiChunkPosting, bool, false, "UseMultiChunkPosting")
+
 // Distributed VersionMap
 DefineSSDParameter(m_distributedVersionMap, bool, true, "DistributedVersionMap")
 DefineSSDParameter(m_versionChunkSize, int, 4096, "VersionChunkSize")

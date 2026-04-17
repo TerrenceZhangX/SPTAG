@@ -284,9 +284,20 @@ ErrorCode Index<T>::SaveIndexData(const std::vector<std::shared_ptr<Helper::Disk
 {
     if (m_topIndex == nullptr) return ErrorCode::EmptyIndex;
 
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SaveIndexData: waiting for all background jobs to finish...\n");
+    auto waitStart = std::chrono::steady_clock::now();
+    int pollCount = 0;
     while (!AllFinished())
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        if (++pollCount % 250 == 0) { // every ~5 seconds
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - waitStart).count();
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SaveIndexData: still waiting for background jobs (%lld s elapsed)\n", (long long)elapsed);
+        }
+    }
+    {
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - waitStart).count();
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SaveIndexData: all background jobs finished (waited %lld s)\n", (long long)elapsed);
     }
 
     ErrorCode ret;
@@ -971,6 +982,7 @@ bool Index<T>::SelectHeadInternal(std::shared_ptr<Helper::VectorSetReader> &p_re
     {
         std::sort(selected.begin(), selected.end());
 
+        mkdir(m_options.m_indexDirectory.c_str());
         std::shared_ptr<Helper::DiskIO> output = SPTAG::f_createIO(), outputIDs = SPTAG::f_createIO();
         if (output == nullptr || outputIDs == nullptr ||
             !output->Initialize((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str(),

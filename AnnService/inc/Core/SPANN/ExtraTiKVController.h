@@ -666,6 +666,387 @@ namespace SPTAG::SPANN
             return ErrorCode::Success;
         }
 
+        // ---- Multi-Chunk Posting operations ----
+        // Instead of read-modify-write on a single key per posting,
+        // each posting is stored as multiple KV chunks:
+        //   Base key:  [prefix]_[headID 4B]\x00          (build / compaction)
+        //   Chunk key: [prefix]_[headID 4B]\x00[ts 8B]   (append)
+        // Read = Scan([...headID\x00, ...headID\x01))  → concat all values
+        // Delete = DeleteRange over the same span
+
+        // Build the chunk-aware prefixed key for a headID.
+        // suffix == "" → base key; suffix == 8-byte ts → chunk key.
+        std::string MakeChunkKey(SizeType headID, const std::string& suffix = "") const {
+            std::string raw(reinterpret_cast<const char*>(&headID), sizeof(SizeType));
+            std::string result;
+            result.reserve(m_keyPrefix.size() + 1 + sizeof(SizeType) + 1 + suffix.size());
+            result.append(m_keyPrefix);
+            result.push_back('_');
+            result.append(raw);
+            result.push_back('\x00');  // delimiter
+            result.append(suffix);
+            return result;
+        }
+
+        // Write a new chunk for an append operation.
+        // Uses nanosecond timestamp as chunk ID (unique under held lock).
+        ErrorCode PutChunk(SizeType headID,
+                           const std::string& value,
+                           const std::chrono::microseconds& timeout,
+                           std::vector<Helper::AsyncReadRequest>* reqs)
+        {
+            auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+            uint64_t ts = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+            std::string suffix(reinterpret_cast<const char*>(&ts), sizeof(ts));
+            std::string key = MakeChunkKey(headID, suffix);
+
+            for (int attempt = 0; attempt < 10; attempt++) {
+                auto stub = GetStubForKey(key);
+                if (!stub) return ErrorCode::Fail;
+
+                kvrpcpb::RawPutRequest request;
+                request.set_key(key);
+                request.set_value(value);
+                SetContext(request.mutable_context(), key);
+
+                kvrpcpb::RawPutResponse response;
+                grpc::ClientContext ctx;
+                SetDeadline(ctx, timeout);
+
+                auto status = stub->RawPut(&ctx, request, &response);
+                if (!status.ok()) {
+                    InvalidateRegionCache(key);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    continue;
+                }
+                if (response.has_region_error()) {
+                    InvalidateRegionCache(key);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    continue;
+                }
+                if (!response.error().empty()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::PutChunk error: %s\n", response.error().c_str());
+                    return ErrorCode::Fail;
+                }
+                return ErrorCode::Success;
+            }
+            return ErrorCode::Fail;
+        }
+
+        // Write the base (sole) chunk for a posting — used by Build and Split compaction.
+        ErrorCode PutBaseChunk(SizeType headID,
+                               const std::string& value,
+                               const std::chrono::microseconds& timeout,
+                               std::vector<Helper::AsyncReadRequest>* reqs)
+        {
+            std::string key = MakeChunkKey(headID); // no suffix → base key
+            for (int attempt = 0; attempt < 10; attempt++) {
+                auto stub = GetStubForKey(key);
+                if (!stub) return ErrorCode::Fail;
+
+                kvrpcpb::RawPutRequest request;
+                request.set_key(key);
+                request.set_value(value);
+                SetContext(request.mutable_context(), key);
+
+                kvrpcpb::RawPutResponse response;
+                grpc::ClientContext ctx;
+                SetDeadline(ctx, timeout);
+
+                auto status = stub->RawPut(&ctx, request, &response);
+                if (!status.ok()) {
+                    InvalidateRegionCache(key);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    continue;
+                }
+                if (response.has_region_error()) {
+                    InvalidateRegionCache(key);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    continue;
+                }
+                if (!response.error().empty()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::PutBaseChunk error: %s\n", response.error().c_str());
+                    return ErrorCode::Fail;
+                }
+                return ErrorCode::Success;
+            }
+            return ErrorCode::Fail;
+        }
+
+        // Read all chunks belonging to a posting (Scan), concatenate into one string.
+        // Returns the full posting data and the number of chunks found.
+        ErrorCode ScanPosting(SizeType headID,
+                              std::string* fullPosting,
+                              const std::chrono::microseconds& timeout,
+                              int* chunkCount = nullptr)
+        {
+            std::string startKey = MakeChunkKey(headID); // prefix_headID\x00
+            std::string endKey;
+            {
+                // endKey = prefix_headID\x01 — one past the delimiter byte
+                std::string raw(reinterpret_cast<const char*>(&headID), sizeof(SizeType));
+                endKey.reserve(m_keyPrefix.size() + 1 + sizeof(SizeType) + 1);
+                endKey.append(m_keyPrefix);
+                endKey.push_back('_');
+                endKey.append(raw);
+                endKey.push_back('\x01');
+            }
+
+            fullPosting->clear();
+            int chunks = 0;
+
+            // Paginated scan in case of many chunks
+            std::string scanCursor = startKey;
+            for (;;) {
+                auto stub = GetStubForKey(scanCursor);
+                if (!stub) return ErrorCode::Fail;
+
+                kvrpcpb::RawScanRequest request;
+                request.set_start_key(scanCursor);
+                request.set_end_key(endKey);
+                request.set_limit(1024);
+                SetContext(request.mutable_context(), scanCursor);
+
+                kvrpcpb::RawScanResponse response;
+                grpc::ClientContext ctx;
+                SetDeadline(ctx, timeout);
+
+                auto status = stub->RawScan(&ctx, request, &response);
+                if (!status.ok()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                        "TiKVIO::ScanPosting gRPC error: %s\n", status.error_message().c_str());
+                    return ErrorCode::Fail;
+                }
+
+                int count = response.kvs_size();
+                if (count == 0) break;
+
+                for (int i = 0; i < count; i++) {
+                    fullPosting->append(response.kvs(i).value());
+                    chunks++;
+                }
+
+                if (count < 1024) break; // no more pages
+
+                // Next page starts after the last key returned
+                scanCursor = response.kvs(count - 1).key();
+                scanCursor.push_back('\x00'); // next key after last
+            }
+
+            if (chunkCount) *chunkCount = chunks;
+            return (chunks > 0) ? ErrorCode::Success : ErrorCode::Fail;
+        }
+
+        // Delete all chunks of a posting (DeleteRange over the chunk key span).
+        ErrorCode DeletePosting(SizeType headID)
+        {
+            std::string startKey = MakeChunkKey(headID); // prefix_headID\x00
+            std::string endKey;
+            {
+                std::string raw(reinterpret_cast<const char*>(&headID), sizeof(SizeType));
+                endKey.reserve(m_keyPrefix.size() + 1 + sizeof(SizeType) + 1);
+                endKey.append(m_keyPrefix);
+                endKey.push_back('_');
+                endKey.append(raw);
+                endKey.push_back('\x01');
+            }
+
+            auto stub = GetStubForKey(startKey);
+            if (!stub) return ErrorCode::Fail;
+
+            kvrpcpb::RawDeleteRangeRequest request;
+            request.set_start_key(startKey);
+            request.set_end_key(endKey);
+            SetContext(request.mutable_context(), startKey);
+
+            kvrpcpb::RawDeleteRangeResponse response;
+            grpc::ClientContext ctx;
+            auto timeout = std::chrono::microseconds(10000000); // 10s
+            SetDeadline(ctx, timeout);
+
+            auto status = stub->RawDeleteRange(&ctx, request, &response);
+            if (!status.ok()) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::DeletePosting gRPC error: %s\n",
+                    status.error_message().c_str());
+                return ErrorCode::Fail;
+            }
+            if (!response.error().empty()) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::DeletePosting error: %s\n",
+                    response.error().c_str());
+                return ErrorCode::Fail;
+            }
+            return ErrorCode::Success;
+        }
+
+        // ---- Posting count key operations ----
+        // Each posting has a count key storing the number of vectors (int32).
+        //   Count key: [prefix]_[headID 4B]\x02
+        // Isolated from chunk keys (\x00..\x01 range).
+
+        std::string MakeCountKey(SizeType headID) const {
+            std::string raw(reinterpret_cast<const char*>(&headID), sizeof(SizeType));
+            std::string result;
+            result.reserve(m_keyPrefix.size() + 1 + sizeof(SizeType) + 1);
+            result.append(m_keyPrefix);
+            result.push_back('_');
+            result.append(raw);
+            result.push_back('\x02');
+            return result;
+        }
+
+        // Read posting count from TiKV. Returns 0 if key doesn't exist.
+        int GetPostingCount(SizeType headID, const std::chrono::microseconds& timeout) {
+            std::string key = MakeCountKey(headID);
+            auto stub = GetStubForKey(key);
+            if (!stub) return 0;
+
+            kvrpcpb::RawGetRequest request;
+            request.set_key(key);
+            SetContext(request.mutable_context(), key);
+
+            kvrpcpb::RawGetResponse response;
+            grpc::ClientContext ctx;
+            SetDeadline(ctx, timeout);
+
+            auto status = stub->RawGet(&ctx, request, &response);
+            if (!status.ok() || response.not_found() || response.value().size() < sizeof(int32_t)) {
+                return 0;
+            }
+            int32_t count;
+            memcpy(&count, response.value().data(), sizeof(int32_t));
+            return count;
+        }
+
+        // Write posting count to TiKV.
+        ErrorCode SetPostingCount(SizeType headID, int count,
+                                  const std::chrono::microseconds& timeout) {
+            std::string key = MakeCountKey(headID);
+            std::string value(reinterpret_cast<const char*>(&count), sizeof(int32_t));
+
+            auto stub = GetStubForKey(key);
+            if (!stub) return ErrorCode::Fail;
+
+            kvrpcpb::RawPutRequest request;
+            request.set_key(key);
+            request.set_value(value);
+            SetContext(request.mutable_context(), key);
+
+            kvrpcpb::RawPutResponse response;
+            grpc::ClientContext ctx;
+            SetDeadline(ctx, timeout);
+
+            auto status = stub->RawPut(&ctx, request, &response);
+            if (!status.ok()) return ErrorCode::Fail;
+            if (!response.error().empty()) return ErrorCode::Fail;
+            return ErrorCode::Success;
+        }
+
+        // Delete posting count key.
+        ErrorCode DeletePostingCount(SizeType headID) {
+            std::string key = MakeCountKey(headID);
+            auto stub = GetStubForKey(key);
+            if (!stub) return ErrorCode::Fail;
+
+            kvrpcpb::RawDeleteRequest request;
+            request.set_key(key);
+            SetContext(request.mutable_context(), key);
+
+            kvrpcpb::RawDeleteResponse response;
+            grpc::ClientContext ctx;
+            SetDeadline(ctx, std::chrono::microseconds(10000000));
+
+            auto status = stub->RawDelete(&ctx, request, &response);
+            if (!status.ok()) return ErrorCode::Fail;
+            return ErrorCode::Success;
+        }
+
+        // Atomically write a chunk and update count via RawBatchPut.
+        // Saves one network round trip vs separate PutChunk + SetPostingCount.
+        ErrorCode PutChunkAndCount(SizeType headID,
+                                   const std::string& chunkValue,
+                                   int newCount,
+                                   const std::chrono::microseconds& timeout,
+                                   std::vector<Helper::AsyncReadRequest>* reqs) {
+            // Build chunk key with nanosecond timestamp
+            auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
+            uint64_t ts = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+            std::string suffix(reinterpret_cast<const char*>(&ts), sizeof(ts));
+            std::string chunkKey = MakeChunkKey(headID, suffix);
+
+            // Build count key
+            std::string countKey = MakeCountKey(headID);
+            std::string countValue(reinterpret_cast<const char*>(&newCount), sizeof(int32_t));
+
+            for (int attempt = 0; attempt < 10; attempt++) {
+                auto stub = GetStubForKey(chunkKey);
+                if (!stub) return ErrorCode::Fail;
+
+                kvrpcpb::RawBatchPutRequest request;
+                SetContext(request.mutable_context(), chunkKey);
+
+                auto* pair1 = request.add_pairs();
+                pair1->set_key(chunkKey);
+                pair1->set_value(chunkValue);
+
+                auto* pair2 = request.add_pairs();
+                pair2->set_key(countKey);
+                pair2->set_value(countValue);
+
+                kvrpcpb::RawBatchPutResponse response;
+                grpc::ClientContext ctx;
+                SetDeadline(ctx, timeout);
+
+                auto status = stub->RawBatchPut(&ctx, request, &response);
+                if (!status.ok()) {
+                    InvalidateRegionCache(chunkKey);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    continue;
+                }
+                if (response.has_region_error()) {
+                    InvalidateRegionCache(chunkKey);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    continue;
+                }
+                if (!response.error().empty()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::PutChunkAndCount error: %s\n",
+                                 response.error().c_str());
+                    return ErrorCode::Fail;
+                }
+                return ErrorCode::Success;
+            }
+            return ErrorCode::Fail;
+        }
+
+        // Multi-posting scan: read multiple postings in parallel.
+        // Used by SearchIndex to replace MultiGet when multi-chunk is enabled.
+        ErrorCode MultiScanPostings(const std::vector<SizeType>& headIDs,
+                                    std::vector<Helper::PageBuffer<std::uint8_t>>& values,
+                                    const std::chrono::microseconds& timeout)
+        {
+            if (headIDs.empty()) return ErrorCode::Success;
+
+            std::vector<std::future<void>> futures;
+            for (size_t i = 0; i < headIDs.size(); i++) {
+                futures.push_back(std::async(std::launch::async, [&, i]() {
+                    std::string posting;
+                    auto ret = ScanPosting(headIDs[i], &posting, timeout);
+                    if (ret == ErrorCode::Success && !posting.empty()) {
+                        if (posting.size() > values[i].GetPageSize()) {
+                            values[i].ReservePageBuffer(posting.size());
+                        }
+                        memcpy(values[i].GetBuffer(), posting.data(), posting.size());
+                        values[i].SetAvailableSize(static_cast<int>(posting.size()));
+                    } else {
+                        values[i].SetAvailableSize(0);
+                    }
+                }));
+            }
+            for (auto& f : futures) f.get();
+            return ErrorCode::Success;
+        }
+
         // ---- Scan operations ----
 
         ErrorCode StartToScan(SizeType& key, std::string* value) {
@@ -755,7 +1136,7 @@ namespace SPTAG::SPANN
         bool m_available = false;
 
         // TiKV store stub pools keyed by store address (multiple channels per store)
-        static constexpr int kStubPoolSize = 8;
+        static constexpr int kStubPoolSize = 48;
         struct StubPool {
             std::vector<std::shared_ptr<tikvpb::Tikv::Stub>> stubs;
             std::atomic<uint64_t> next{0};
