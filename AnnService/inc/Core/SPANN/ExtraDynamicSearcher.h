@@ -119,6 +119,24 @@ namespace SPTAG::SPANN {
     template <typename ValueType>
     class ExtraDynamicSearcher : public IExtraSearcher
     {
+        struct AppendPair
+        {
+            std::string BKTID;
+            int headID;
+            std::string posting;
+
+            AppendPair(std::string p_BKTID = "", int p_headID = -1, std::string p_posting = "") : BKTID(p_BKTID), headID(p_headID), posting(p_posting) {}
+            inline bool operator < (const AppendPair& rhs) const
+            {
+                return std::strcmp(BKTID.c_str(), rhs.BKTID.c_str()) < 0;
+            }
+
+            inline bool operator > (const AppendPair& rhs) const
+            {
+                return std::strcmp(BKTID.c_str(), rhs.BKTID.c_str()) > 0;
+            }
+        };
+
         class MergeAsyncJob : public Helper::ThreadPool::Job
         {
         private:
@@ -627,7 +645,7 @@ namespace SPTAG::SPANN {
                         memcpy(ptr, postingList.data() + localIndices[j] * m_vectorInfoSize, m_vectorInfoSize);
                     }
                     if (!hasHead) {
-                        Serialize(ptr, headID, m_versionMap.GetVersion(headID), headVec->data());
+                        Serialize(ptr, headID, m_versionMap->GetVersion(headID), headVec->data());
                         localIndices.push_back(headj);
                     }
                     postingList.resize(localIndices.size() * m_vectorInfoSize);
@@ -1393,7 +1411,7 @@ namespace SPTAG::SPANN {
             return true;
         }
 
-        void InitWorkSpace(ExtraWorkSpace* p_exWorkSpace, bool clear = false) override
+        void InitWorkSpace(ExtraWorkSpace* p_exWorkSpace, bool clear = false)
         {
             if (clear) {
                 p_exWorkSpace->Clear(m_opt->m_searchInternalResultNum, (max(m_opt->m_postingPageLimit, m_opt->m_searchPostingPageLimit) + m_opt->m_bufferLength) << PageSizeEx, true, m_opt->m_enableDataCompression);
