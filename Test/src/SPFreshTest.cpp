@@ -950,6 +950,13 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     // Get router pointer for dispatch coordination
     router = static_cast<SPANN::PostingRouter*>(index->GetRouter());
 
+    // Wait for all worker nodes to establish bidirectional connections
+    if (router && router->IsEnabled()) {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Waiting for all peer connections...\n");
+        BOOST_REQUIRE_MESSAGE(router->WaitForAllPeersConnected(120),
+            "Timed out waiting for peer connections");
+    }
+
     auto queryset = TestUtils::TestDataGenerator<T>::LoadVectorSet(pqueryset, M);
     BOOST_REQUIRE(queryset != nullptr);
 
@@ -2463,7 +2470,13 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
     int numSearchThreads = iniReader.GetParameter("Benchmark", "NumSearchThreads", 8);
     int searchK = topK;
     std::string pqueryset = "perftest_query.bin." + typeStr + "_" + std::to_string(numQueries) + "_" + std::to_string(dimension);
-    auto queryset = TestUtils::TestDataGenerator<float>::LoadVectorSet(pqueryset, dimension);
+    std::shared_ptr<VectorSet> queryset;
+    if (valueType == VectorValueType::UInt8)
+        queryset = TestUtils::TestDataGenerator<std::uint8_t>::LoadVectorSet(pqueryset, dimension);
+    else if (valueType == VectorValueType::Int8)
+        queryset = TestUtils::TestDataGenerator<std::int8_t>::LoadVectorSet(pqueryset, dimension);
+    else
+        queryset = TestUtils::TestDataGenerator<float>::LoadVectorSet(pqueryset, dimension);
     BOOST_REQUIRE_MESSAGE(queryset != nullptr, "WorkerNode: Failed to load query set from " << pqueryset);
     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Loaded %d queries\n", nodeIndex, (int)queryset->Count());
 
