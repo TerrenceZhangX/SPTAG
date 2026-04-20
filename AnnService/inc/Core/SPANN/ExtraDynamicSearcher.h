@@ -315,19 +315,6 @@ namespace SPTAG::SPANN {
 
         std::atomic<ErrorCode> m_asyncStatus{ErrorCode::Success};
 
-        // Moved from bottom of class — no logic change, just reordered near member variables.
-        inline SizeType DBKey(SizeType postingID) {
-            return m_opt->m_maxID * m_layer + postingID;
-        }
-
-        inline std::shared_ptr<std::vector<SizeType>> DBKeys(std::vector<SizeType>& postingIDs) {
-            std::shared_ptr<std::vector<SizeType>> keys = std::make_shared<std::vector<SizeType>>(postingIDs.size());
-            for (int i = 0; i < postingIDs.size(); i++) {
-                (*keys)[i] = DBKey(postingIDs[i]);
-            }
-            return keys;
-        }
-
     public:
         ExtraDynamicSearcher(SPANN::Options& p_opt, int layer, SPANN::Index<ValueType>* headIndex, std::shared_ptr<Helper::KeyValueIO> p_db) {
             m_opt = &p_opt;
@@ -3091,6 +3078,18 @@ namespace SPTAG::SPANN {
                 m_wal->ClearPreviousRecord();
             }
             return ErrorCode::Success;
+        }
+
+        inline SizeType DBKey(SizeType postingID) {
+            return m_opt->m_maxID * m_layer + postingID;
+        }
+
+        inline std::shared_ptr<std::vector<SizeType>> DBKeys(std::vector<SizeType>& postingIDs) {
+            std::shared_ptr<std::vector<SizeType>> keys = std::make_shared<std::vector<SizeType>>(postingIDs.size());
+            for (int i = 0; i < postingIDs.size(); i++) {
+                (*keys)[i] = DBKey(postingIDs[i]);
+            }
+            return keys;
         }
 
         // Multi-chunk aware helpers: abstract single-key vs chunked access.
