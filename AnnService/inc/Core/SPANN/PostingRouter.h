@@ -6,6 +6,7 @@
 
 #include "inc/Core/SPANN/DistributedProtocol.h"
 #include "inc/Core/SPANN/ConsistentHashRing.h"
+#include "inc/Core/SPANN/DispatchCoordinator.h"
 #include "inc/Helper/KeyValueIO.h"
 #include "inc/Helper/CommonHelper.h"
 #include "inc/Socket/Client.h"
@@ -38,7 +39,7 @@ namespace SPTAG::SPANN {
     /// This guarantees that the same headID always routes to the same compute
     /// node, enabling local per-headID locking for Append/Split/Merge correctness.
 
-    class PostingRouter {
+    class PostingRouter : public DispatchCoordinator::PeerNetwork {
     public:
         /// Callback type for handling a local append.
         using AppendCallback = std::function<ErrorCode(
@@ -48,9 +49,8 @@ namespace SPTAG::SPANN {
             std::string& appendPosting)>;
 
         /// Callback for executing a dispatch command on a worker node.
-        /// Called on a dedicated command-execution thread (not the io_context).
-        /// Returns the result to send back to the driver.
-        using DispatchCallback = std::function<DispatchResult(const DispatchCommand&)>;
+        /// Delegated to DispatchCoordinator.
+        using DispatchCallback = DispatchCoordinator::DispatchCallback;
 
         /// Callback to apply a head sync entry on the local head index.
         /// For Add: call AddHeadIndex with (vectorData, headVID, dim).
@@ -131,6 +131,10 @@ namespace SPTAG::SPANN {
                 numNodes, vnodeCount);
 
             m_enabled = true;
+
+            // Wire up dispatch coordinator
+            m_dispatch.SetNetwork(this);
+
             return true;
         }
 
@@ -151,18 +155,13 @@ namespace SPTAG::SPANN {
 
         /// Set the callback for dispatch commands (worker side).
         void SetDispatchCallback(DispatchCallback cb) {
-            m_dispatchCallback = std::move(cb);
+            m_dispatch.SetDispatchCallback(std::move(cb));
         }
 
         /// Clear the dispatch callback and wait for in-flight dispatch
         /// threads to complete. Call before destroying callback state.
         void ClearDispatchCallback() {
-            m_dispatchCallback = nullptr;
-            // Wait for all in-flight dispatch threads to finish
-            std::unique_lock<std::mutex> lock(m_activeDispatchMutex);
-            m_activeDispatchCV.wait(lock, [this]() {
-                return m_activeDispatchCount == 0;
-            });
+            m_dispatch.ClearDispatchCallback();
         }
 
         /// Start the router server (listens for incoming remote appends)
@@ -291,11 +290,6 @@ namespace SPTAG::SPANN {
             return target;
         }
 
-        int GetNumNodes() const {
-            auto ring = std::atomic_load(&m_hashRing);
-            return ring ? static_cast<int>(ring->NodeCount()) : 0;
-        }
-        int GetLocalNodeIndex() const { return m_localNodeIndex; }
 
         void LogRouteStats(const char* context = "") {
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
@@ -611,157 +605,44 @@ namespace SPTAG::SPANN {
 
         // ---- Dispatch protocol (driver ↔ worker coordination) ----
 
-        /// Broadcast a dispatch command to all worker nodes (driver side).
-        /// Returns the dispatchId assigned to this command.
+        // ---- Dispatch protocol (delegated to DispatchCoordinator) ----
+
         std::uint64_t BroadcastDispatchCommand(DispatchCommand::Type type, std::uint32_t round) {
-            std::uint64_t dispatchId = m_nextDispatchId.fetch_add(1);
+            return m_dispatch.BroadcastDispatchCommand(type, round);
+        }
 
-            DispatchCommand cmd;
-            cmd.m_type = type;
-            cmd.m_dispatchId = dispatchId;
-            cmd.m_round = round;
+        std::vector<double> WaitForAllResults(std::uint64_t dispatchId, int timeoutSec = 300) {
+            return m_dispatch.WaitForAllResults(dispatchId, timeoutSec);
+        }
 
-            // Set up pending state for collecting results (not for Stop)
-            if (type != DispatchCommand::Type::Stop) {
-                int numWorkers = GetNumNodes() - 1;  // exclude self
-                if (numWorkers > 0) {
-                    auto state = std::make_shared<PendingDispatch>();
-                    state->remaining.store(numWorkers);
-                    {
-                        std::lock_guard<std::mutex> lock(m_dispatchMutex);
-                        m_pendingDispatches[dispatchId] = state;
-                    }
-                }
-            }
+        // ---- PeerNetwork interface (used by DispatchCoordinator) ----
 
-            auto bodySize = static_cast<std::uint32_t>(cmd.EstimateBufferSize());
+        int GetLocalNodeIndex() const override { return m_localNodeIndex; }
 
-            int numNodes;
+        int GetNumNodes() const override {
+            auto ring = std::atomic_load(&m_hashRing);
+            return ring ? static_cast<int>(ring->NodeCount()) : 0;
+        }
+
+        Socket::ConnectionID GetPeerConnection(int nodeIndex) override {
             {
                 std::lock_guard<std::mutex> lock(m_connMutex);
-                numNodes = static_cast<int>(m_nodeAddrs.size());
+                if (m_peerConnections[nodeIndex] != Socket::c_invalidConnectionID)
+                    return m_peerConnections[nodeIndex];
             }
-
-            for (int i = 0; i < numNodes; i++) {
-                if (i == m_localNodeIndex) continue;
-
-                Socket::ConnectionID connID = GetPeerConnection(i);
-                if (connID == Socket::c_invalidConnectionID) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                        "PostingRouter: Cannot dispatch to node %d (no connection)\n", i);
-                    // Count as failed immediately
-                    if (type != DispatchCommand::Type::Stop) {
-                        std::lock_guard<std::mutex> lock(m_dispatchMutex);
-                        auto it = m_pendingDispatches.find(dispatchId);
-                        if (it != m_pendingDispatches.end()) {
-                            it->second->errors++;
-                            if (it->second->remaining.fetch_sub(1) == 1) {
-                                it->second->done.set_value();
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                Socket::Packet pkt;
-                pkt.Header().m_packetType = Socket::PacketType::DispatchCommand;
-                pkt.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
-                pkt.Header().m_connectionID = Socket::c_invalidConnectionID;
-                pkt.Header().m_resourceID = 0;
-                pkt.Header().m_bodyLength = bodySize;
-                pkt.AllocateBuffer(bodySize);
-                cmd.Write(pkt.Body());
-                pkt.Header().WriteBuffer(pkt.HeaderBuffer());
-
-                m_client->SendPacket(connID, std::move(pkt), nullptr);
+            if (ConnectToPeer(nodeIndex, 5, 1000)) {
+                std::lock_guard<std::mutex> lock(m_connMutex);
+                return m_peerConnections[nodeIndex];
             }
-
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "PostingRouter: Dispatched %s (id=%llu round=%u) to %d workers\n",
-                type == DispatchCommand::Type::Search ? "Search" :
-                type == DispatchCommand::Type::Insert ? "Insert" : "Stop",
-                (unsigned long long)dispatchId, round, numNodes - 1);
-
-            return dispatchId;
+            return Socket::c_invalidConnectionID;
         }
 
-        /// Wait for all workers to report results for a dispatch (driver side).
-        /// Returns collected wall times from workers. Empty on timeout.
-        std::vector<double> WaitForAllResults(std::uint64_t dispatchId, int timeoutSec = 300) {
-            std::shared_ptr<PendingDispatch> state;
-            {
-                std::lock_guard<std::mutex> lock(m_dispatchMutex);
-                auto it = m_pendingDispatches.find(dispatchId);
-                if (it == m_pendingDispatches.end()) return {};
-                state = it->second;
-            }
-
-            auto future = state->done.get_future();
-            auto status = future.wait_for(std::chrono::seconds(timeoutSec));
-
-            // Clean up
-            {
-                std::lock_guard<std::mutex> lock(m_dispatchMutex);
-                m_pendingDispatches.erase(dispatchId);
-            }
-
-            if (status == std::future_status::timeout) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: Timeout waiting for dispatch results (id=%llu, %d remaining)\n",
-                    (unsigned long long)dispatchId, state->remaining.load());
-                return {};
-            }
-
-            if (state->errors > 0) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                    "PostingRouter: Dispatch %llu completed with %d errors\n",
-                    (unsigned long long)dispatchId, (int)state->errors);
-            }
-
-            std::lock_guard<std::mutex> lock(state->mutex);
-            return state->wallTimes;
+        void SendPacket(Socket::ConnectionID connID, Socket::Packet&& pkt,
+                        std::function<void(bool)> callback) override {
+            m_client->SendPacket(connID, std::move(pkt), std::move(callback));
         }
 
-        /// Send a dispatch result back to the driver (worker side).
-        void SendDispatchResult(const DispatchResult& result) {
-            // Driver is always node 0 in current design
-            int driverNode = 0;
-            if (driverNode == m_localNodeIndex) return;
-
-            Socket::ConnectionID connID = GetPeerConnection(driverNode);
-            if (connID == Socket::c_invalidConnectionID) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: Cannot send dispatch result to driver\n");
-                return;
-            }
-
-            Socket::Packet pkt;
-            auto bodySize = static_cast<std::uint32_t>(result.EstimateBufferSize());
-            pkt.Header().m_packetType = Socket::PacketType::DispatchResult;
-            pkt.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
-            pkt.Header().m_connectionID = Socket::c_invalidConnectionID;
-            pkt.Header().m_resourceID = 0;
-            pkt.Header().m_bodyLength = bodySize;
-            pkt.AllocateBuffer(bodySize);
-            result.Write(pkt.Body());
-            pkt.Header().WriteBuffer(pkt.HeaderBuffer());
-
-            m_client->SendPacket(connID, std::move(pkt), nullptr);
-        }
-
-    private:
-        /// Pending dispatch state for collecting worker results (driver side).
-        struct PendingDispatch {
-            std::atomic<int> remaining{0};
-            std::atomic<int> errors{0};
-            std::promise<void> done;
-            std::mutex mutex;
-            std::vector<double> wallTimes;
-        };
-
-    public:
         /// Connect to a peer compute node with retry and exponential backoff.
-        /// Returns true on success.
         bool ConnectToPeer(int nodeIndex, int maxRetries = 10, int initialDelayMs = 500) {
             if (nodeIndex == m_localNodeIndex) return true;
 
@@ -792,28 +673,13 @@ namespace SPTAG::SPANN {
                     nodeIndex, addr.first.c_str(), addr.second.c_str(),
                     attempt, maxRetries, delayMs);
                 std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-                delayMs = std::min(delayMs * 2, 5000);  // cap at 5s
+                delayMs = std::min(delayMs * 2, 5000);
             }
 
             SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
                 "PostingRouter: All %d connection attempts to node %d (%s:%s) failed\n",
                 maxRetries, nodeIndex, addr.first.c_str(), addr.second.c_str());
             return false;
-        }
-
-        /// Get the connection to a peer, reconnecting with retry if necessary.
-        Socket::ConnectionID GetPeerConnection(int nodeIndex) {
-            {
-                std::lock_guard<std::mutex> lock(m_connMutex);
-                if (m_peerConnections[nodeIndex] != Socket::c_invalidConnectionID)
-                    return m_peerConnections[nodeIndex];
-            }
-            // Try to reconnect with retry
-            if (ConnectToPeer(nodeIndex, 5, 1000)) {
-                std::lock_guard<std::mutex> lock(m_connMutex);
-                return m_peerConnections[nodeIndex];
-            }
-            return Socket::c_invalidConnectionID;
         }
 
         /// Invalidate a cached peer connection so the next GetPeerConnection reconnects.
@@ -1222,104 +1088,14 @@ namespace SPTAG::SPANN {
                 ? ErrorCode::Success : ErrorCode::Fail);
         }
 
-        /// Handle an incoming dispatch command from the driver (worker side).
-        /// Offloads execution to a dedicated thread to avoid blocking io_context.
+        /// Delegate dispatch command handling to DispatchCoordinator.
         void HandleDispatchCommand(Socket::ConnectionID connID, Socket::Packet packet) {
-            if (packet.Header().m_bodyLength == 0) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: Empty DispatchCommand received\n");
-                return;
-            }
-
-            DispatchCommand cmd;
-            if (cmd.Read(packet.Body()) == nullptr) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: DispatchCommand parse failed\n");
-                return;
-            }
-
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "PostingRouter: Received DispatchCommand type=%d id=%llu round=%u\n",
-                (int)cmd.m_type, (unsigned long long)cmd.m_dispatchId, cmd.m_round);
-
-            if (!m_dispatchCallback) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                    "PostingRouter: No dispatch callback set, ignoring command\n");
-                return;
-            }
-
-            // Execute on a detached thread to avoid blocking the io_context.
-            // The callback is expected to be long-running (search/insert).
-            auto callback = m_dispatchCallback;
-            if (!callback) return;  // re-check after copy (race with ClearDispatchCallback)
-            auto self = this;
-
-            // Track active dispatch threads for clean shutdown
-            {
-                std::lock_guard<std::mutex> lock(m_activeDispatchMutex);
-                m_activeDispatchCount++;
-            }
-
-            std::thread([self, callback, cmd]() {
-                DispatchResult result = callback(cmd);
-                result.m_dispatchId = cmd.m_dispatchId;
-                result.m_round = cmd.m_round;
-
-                // Don't send result for Stop — the worker is shutting down
-                if (cmd.m_type != DispatchCommand::Type::Stop) {
-                    self->SendDispatchResult(result);
-                }
-
-                // Signal completion
-                {
-                    std::lock_guard<std::mutex> lock(self->m_activeDispatchMutex);
-                    self->m_activeDispatchCount--;
-                }
-                self->m_activeDispatchCV.notify_all();
-            }).detach();
+            m_dispatch.HandleDispatchCommand(connID, std::move(packet));
         }
 
-        /// Handle an incoming dispatch result from a worker (driver side).
+        /// Delegate dispatch result handling to DispatchCoordinator.
         void HandleDispatchResult(Socket::ConnectionID connID, Socket::Packet packet) {
-            if (packet.Header().m_bodyLength == 0) return;
-
-            DispatchResult result;
-            if (result.Read(packet.Body()) == nullptr) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                    "PostingRouter: DispatchResult parse failed\n");
-                return;
-            }
-
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "PostingRouter: Received DispatchResult id=%llu round=%u status=%d wallTime=%.3f\n",
-                (unsigned long long)result.m_dispatchId, result.m_round,
-                (int)result.m_status, result.m_wallTime);
-
-            std::shared_ptr<PendingDispatch> state;
-            {
-                std::lock_guard<std::mutex> lock(m_dispatchMutex);
-                auto it = m_pendingDispatches.find(result.m_dispatchId);
-                if (it == m_pendingDispatches.end()) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                        "PostingRouter: Received result for unknown dispatch %llu (late/expired)\n",
-                        (unsigned long long)result.m_dispatchId);
-                    return;
-                }
-                state = it->second;
-            }
-
-            if (result.m_status != DispatchResult::Status::Success) {
-                state->errors++;
-            }
-
-            {
-                std::lock_guard<std::mutex> lock(state->mutex);
-                state->wallTimes.push_back(result.m_wallTime);
-            }
-
-            if (state->remaining.fetch_sub(1) == 1) {
-                state->done.set_value();  // all workers reported
-            }
+            m_dispatch.HandleDispatchResult(connID, std::move(packet));
         }
 
         bool m_enabled;
@@ -1363,16 +1139,8 @@ namespace SPTAG::SPANN {
         // Remote lock callback (set by ExtraDynamicSearcher for cross-node Merge)
         RemoteLockCallback m_remoteLockCallback;
 
-        // Dispatch protocol state
-        DispatchCallback m_dispatchCallback;
-        std::atomic<std::uint64_t> m_nextDispatchId{1};
-        std::mutex m_dispatchMutex;
-        std::unordered_map<std::uint64_t, std::shared_ptr<PendingDispatch>> m_pendingDispatches;
-
-        // Active dispatch thread tracking (for clean shutdown)
-        std::mutex m_activeDispatchMutex;
-        std::condition_variable m_activeDispatchCV;
-        int m_activeDispatchCount{0};
+        // Dispatch coordinator (external driver↔worker coordination)
+        DispatchCoordinator m_dispatch;
 
         // Batched remote append queue (queue items from multiple AddIndex calls, flush once)
         mutable std::mutex m_appendQueueMutex;
