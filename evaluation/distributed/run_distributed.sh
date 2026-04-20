@@ -283,11 +283,25 @@ cmd_start_tikv() {
         local tikv_port="${TIKV_PORTS[$i]}"
         echo "  TiKV $i on $host:$tikv_port"
 
+        # Deploy tikv.toml to remote host (use docker to create dir since tikv-data is root-owned)
+        local TIKV_TOML="$SCRIPT_DIR/configs/tikv.toml"
+        if [[ -f "$TIKV_TOML" ]]; then
+            remote_exec "$host" "docker run --rm -v $DATA_DIR/tikv-data:/data alpine mkdir -p /data/conf"
+            if [[ "$host" == "$(hostname -I | awk '{print $1}')" || "$host" == "127.0.0.1" ]]; then
+                sg docker -c "docker run --rm -v $DATA_DIR/tikv-data/conf:/conf -v $(realpath $TIKV_TOML):/src/tikv.toml:ro alpine cp /src/tikv.toml /conf/tikv.toml"
+            else
+                scp -i ~/.ssh/rsa -o StrictHostKeyChecking=no "$TIKV_TOML" "${SSH_USER}@${host}:/tmp/tikv.toml"
+                remote_exec "$host" "docker run --rm -v $DATA_DIR/tikv-data/conf:/conf -v /tmp/tikv.toml:/src/tikv.toml:ro alpine cp /src/tikv.toml /conf/tikv.toml"
+            fi
+        fi
+
         remote_exec "$host" "docker rm -f sptag-tikv-$i 2>/dev/null; \
             docker run -d --name sptag-tikv-$i --net host \
             --ulimit nofile=1048576:1048576 \
             -v $DATA_DIR/tikv-data/tikv-$i:/data \
+            -v $DATA_DIR/tikv-data/conf:/conf \
             pingcap/tikv:${TIKV_VERSION} \
+            --config=/conf/tikv.toml \
             --addr=0.0.0.0:${tikv_port} \
             --advertise-addr=${host}:${tikv_port} \
             --data-dir=/data \
@@ -319,10 +333,24 @@ cmd_stop_tikv() {
     echo ""
     echo "=== Stopping TiKV cluster ==="
 
+    # Stop containers defined in current config
     for i in "${!TIKV_HOSTS[@]}"; do
         local host="${TIKV_HOSTS[$i]}"
         echo "  Stopping TiKV $i and PD $i on $host..."
         remote_exec "$host" "docker rm -f sptag-tikv-$i sptag-pd-$i 2>/dev/null || true"
+    done
+
+    # Also stop any stale containers on ALL compute nodes (in case a previous
+    # run with more nodes left containers running)
+    for host in "${NODE_HOSTS[@]}"; do
+        local dominated=false
+        for tikv_host in "${TIKV_HOSTS[@]}"; do
+            [ "$host" = "$tikv_host" ] && dominated=true
+        done
+        if ! $dominated; then
+            echo "  Cleaning stale containers on $host..."
+            remote_exec "$host" "docker ps -a --filter name=sptag- -q | xargs -r docker rm -f 2>/dev/null || true"
+        fi
     done
 
     echo "TiKV cluster stopped."
@@ -335,7 +363,9 @@ cmd_clean_tikv_data() {
     for i in "${!TIKV_HOSTS[@]}"; do
         local host="${TIKV_HOSTS[$i]}"
         echo "  Cleaning TiKV data on $host..."
-        remote_exec "$host" "rm -rf $DATA_DIR/tikv-data/tikv-$i $DATA_DIR/tikv-data/pd-$i"
+        # Docker creates root-owned files; use a temporary container to clean them
+        remote_exec "$host" "docker run --rm -v $DATA_DIR/tikv-data:/data alpine \
+            rm -rf /data/tikv-$i /data/pd-$i 2>/dev/null || true"
     done
 }
 
@@ -433,7 +463,7 @@ wait_workers_ready() {
         local all_ready=true
         for i in $(seq 1 $((NUM_NODES - 1))); do
             local LOG="$LOGDIR/benchmark_${SCALE}_${NUM_NODES}node_worker${i}.log"
-            if ! grep -q "WorkerNode.*Ready" "$LOG" 2>/dev/null; then
+            if ! grep -q "WorkerNode.*Waiting for dispatch" "$LOG" 2>/dev/null; then
                 all_ready=false
             fi
         done
@@ -525,6 +555,26 @@ cmd_run() {
     echo "  Start: $(date)"
     echo "═══════════════════════════════════════════════════"
 
+    # --- Phase 0: Clean TiKV data for a fresh run ---
+    echo ""
+    echo "--- Phase 0: Clean TiKV data ---"
+
+    # Stop ALL sptag containers on ALL compute nodes (catches stale containers
+    # from prior runs that used different node counts)
+    local all_hosts=()
+    for h in "${NODE_HOSTS[@]}" "${TIKV_HOSTS[@]}"; do
+        local found=false
+        for ah in "${all_hosts[@]}"; do [ "$ah" = "$h" ] && found=true; done
+        $found || all_hosts+=("$h")
+    done
+    echo "  Stopping all SPTAG containers on ${#all_hosts[@]} hosts..."
+    for host in "${all_hosts[@]}"; do
+        remote_exec "$host" "docker ps -a --filter name=sptag- -q | xargs -r docker rm -f 2>/dev/null || true"
+    done
+
+    cmd_clean_tikv_data
+    cmd_start_tikv
+
     # --- Phase 1: Build index on driver (router disabled) ---
     echo ""
     echo "--- Phase 1: Build index on driver ---"
@@ -574,9 +624,13 @@ cmd_run() {
         return 1
     }
 
-    # Run driver with routing enabled, rebuild disabled
+    # Run driver with routing enabled (if multi-node), rebuild disabled
     local DRIVER_INI
-    DRIVER_INI=$(generate_ini "$SCALE" 0 "Rebuild=false") || exit 1
+    if [ "$NUM_NODES" -eq 1 ]; then
+        DRIVER_INI=$(generate_ini "$SCALE" 0 "Rebuild=false" "RouterEnabled=false") || exit 1
+    else
+        DRIVER_INI=$(generate_ini "$SCALE" 0 "Rebuild=false") || exit 1
+    fi
 
     echo ""
     echo "Starting driver on ${NODE_HOSTS[0]}..."
@@ -605,6 +659,9 @@ cmd_run() {
     echo "  Results: output_${SCALE}_${NUM_NODES}node.json"
     echo "  Logs:    $LOGDIR/benchmark_${SCALE}_${NUM_NODES}node_*.log"
     echo "═══════════════════════════════════════════════════"
+
+    # Stop TiKV/PD containers after run completes
+    cmd_stop_tikv
 }
 
 # ─── Cleanup ───
@@ -643,7 +700,7 @@ fi
 parse_config "$CONF"
 
 # Trap for cleanup on interrupt
-trap 'echo ""; echo "Interrupted!"; stop_remote_workers 5; exit 1' INT TERM
+trap 'echo ""; echo "Interrupted!"; stop_remote_workers 5; cmd_stop_tikv; exit 1' INT TERM
 
 case "$CMD" in
     deploy)
