@@ -240,6 +240,7 @@ DefineSSDParameter(m_shareDB, bool, true, "ShareDB")
 
 #ifdef DefineRouterParameter
 DefineRouterParameter(m_routerEnabled, bool, false, "RouterEnabled")
+DefineRouterParameter(m_routerIsDispatcher, bool, false, "RouterIsDispatcher")
 DefineRouterParameter(m_routerLocalNodeIndex, int, 0, "RouterLocalNodeIndex")
 DefineRouterParameter(m_routerNodeAddrs, std::string, std::string(""), "RouterNodeAddrs")
 DefineRouterParameter(m_routerNodeStores, std::string, std::string(""), "RouterNodeStores")

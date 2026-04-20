@@ -37,6 +37,10 @@ enum class PacketType : std::uint8_t
 
     DispatchCommand = 0x09,
 
+    NodeRegisterRequest = 0x0A,
+
+    RingUpdate = 0x0B,
+
     ResponseMask = 0x80,
 
     HeartbeatResponse = ResponseMask | HeartbeatRequest,

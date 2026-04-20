@@ -770,6 +770,7 @@ void ApplyRouterParams(std::shared_ptr<VectorIndex>& index,
 {
     static const std::vector<std::pair<std::string, std::string>> routerKeys = {
         {"routerenabled", "RouterEnabled"},
+        {"routerisdispatcher", "RouterIsDispatcher"},
         {"routerlocalnodeindex", "RouterLocalNodeIndex"},
         {"routernodeaddrs", "RouterNodeAddrs"},
         {"routernodestores", "RouterNodeStores"}
@@ -946,18 +947,37 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
         BOOST_REQUIRE(index != nullptr);
     }
 
-    // Enable distributed routing if configured
-    ApplyRouterParams(index, ssdOverrides);
+    // Enable distributed routing if configured.
+    // The driver node acts as the dispatcher (manages the hash ring).
+    {
+        auto overridesWithDispatcher = ssdOverrides;
+        overridesWithDispatcher["routerisdispatcher"] = "true";
+        ApplyRouterParams(index, overridesWithDispatcher);
+    }
     index->SetHeadSyncCallback();
     std::shared_ptr<VectorIndex> routerOwner = index; // track who owns the router
     // Get router pointer for dispatch coordination
     router = static_cast<SPANN::PostingRouter*>(index->GetRouter());
 
-    // Wait for all worker nodes to establish bidirectional connections
+    // Wait for all worker nodes to register and establish connections
     if (router && router->IsEnabled()) {
         SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Waiting for all peer connections...\n");
         BOOST_REQUIRE_MESSAGE(router->WaitForAllPeersConnected(120),
             "Timed out waiting for peer connections");
+
+        // Dispatcher: wait for all workers to register (ring fully populated)
+        if (numNodes > 1) {
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+            while (std::chrono::steady_clock::now() < deadline) {
+                if (router->GetNumNodes() >= numNodes) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            BOOST_REQUIRE_MESSAGE(router->GetNumNodes() >= numNodes,
+                "Timed out waiting for all workers to register (have "
+                + std::to_string(router->GetNumNodes()) + "/" + std::to_string(numNodes) + ")");
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "All %d nodes registered in hash ring\n", router->GetNumNodes());
+        }
     }
 
     auto queryset = TestUtils::TestDataGenerator<T>::LoadVectorSet(pqueryset, M);
@@ -2462,6 +2482,13 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
     ApplyRouterParams(index, ssdOverrides);
     index->SetHeadSyncCallback();
 
+    // Get router pointer and wait for ring from dispatcher
+    auto* router = static_cast<SPANN::PostingRouter*>(index->GetRouter());
+    BOOST_REQUIRE_MESSAGE(router != nullptr && router->IsEnabled(),
+                          "WorkerNode requires an enabled PostingRouter");
+    BOOST_REQUIRE_MESSAGE(router->WaitForRing(120),
+                          "WorkerNode: Timed out waiting for ring from dispatcher");
+
     BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Ready, numNodes=" << numNodes
                        << " perNodeBatch=" << perNodeBatch);
 
@@ -2488,11 +2515,6 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
         queryset = TestUtils::TestDataGenerator<float>::LoadVectorSet(pqueryset, dimension);
     BOOST_REQUIRE_MESSAGE(queryset != nullptr, "WorkerNode: Failed to load query set from " << pqueryset);
     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Loaded %d queries\n", nodeIndex, (int)queryset->Count());
-
-    // Get router pointer for dispatch
-    auto* router = static_cast<SPANN::PostingRouter*>(index->GetRouter());
-    BOOST_REQUIRE_MESSAGE(router != nullptr && router->IsEnabled(),
-                          "WorkerNode requires an enabled PostingRouter");
 
     // Register dispatch callback — executed on a dedicated thread per command
     std::promise<void> stopPromise;

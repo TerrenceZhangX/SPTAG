@@ -417,7 +417,8 @@ namespace SPTAG::SPANN {
             auto nodeStores = Helper::StrUtils::SplitString(p_opt.m_routerNodeStores, ",");
 
             m_router.reset(new PostingRouter());
-            if (!m_router->Initialize(db, p_opt.m_routerLocalNodeIndex, nodeAddrs, nodeStores)) {
+            if (!m_router->Initialize(db, p_opt.m_routerLocalNodeIndex, nodeAddrs, nodeStores,
+                                      p_opt.m_routerIsDispatcher)) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "PostingRouter initialization failed, disabling routing\n");
                 m_router.reset();
                 return;

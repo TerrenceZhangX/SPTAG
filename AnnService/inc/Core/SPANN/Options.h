@@ -220,6 +220,7 @@ namespace SPTAG {
 
             // Distributed routing
             bool m_routerEnabled;
+            bool m_routerIsDispatcher;
             int m_routerLocalNodeIndex;
             std::string m_routerNodeAddrs;
             std::string m_routerNodeStores;

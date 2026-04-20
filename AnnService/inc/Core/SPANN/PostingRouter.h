@@ -61,17 +61,20 @@ namespace SPTAG::SPANN {
         }
 
         /// Initialize the router from configuration.
-        /// @param p_db         The KeyValueIO backend (for GetKeyLocation).
-        /// @param localNodeIdx Index of this node in the compute node list.
-        /// @param nodeAddrs    "host:port" pairs for all compute nodes' router ports.
-        /// @param nodeStores   TiKV store addresses. Can be >= nodeAddrs.size();
-        ///                     stores are assigned to nodes round-robin.
-        /// @param vnodeCount   Virtual nodes per physical node for consistent hashing (default 150).
+        /// @param p_db           The KeyValueIO backend (for GetKeyLocation).
+        /// @param localNodeIdx   Index of this node in the compute node list.
+        /// @param nodeAddrs      "host:port" pairs for all compute nodes' router ports.
+        /// @param nodeStores     TiKV store addresses. Can be >= nodeAddrs.size();
+        ///                       stores are assigned to nodes round-robin.
+        /// @param isDispatcher   If true, this node manages the hash ring and accepts
+        ///                       NodeRegister requests from workers.
+        /// @param vnodeCount     Virtual nodes per physical node for consistent hashing (default 150).
         bool Initialize(
             std::shared_ptr<Helper::KeyValueIO> p_db,
             int localNodeIdx,
             const std::vector<std::pair<std::string, std::string>>& nodeAddrs,
             const std::vector<std::string>& nodeStores,
+            bool isDispatcher = false,
             int vnodeCount = 150)
         {
             if (nodeAddrs.empty() || localNodeIdx < 0 ||
@@ -87,10 +90,10 @@ namespace SPTAG::SPANN {
             m_localNodeIndex = localNodeIdx;
             m_nodeAddrs = nodeAddrs;
             m_nodeStores = nodeStores;
+            m_isDispatcher = isDispatcher;
+            m_vnodeCount = vnodeCount;
 
             // Build store → node list mapping (sub-partitioned)
-            // Each node is assigned to one store round-robin, so multiple nodes
-            // can share a store. Within a store, headID % nodesPerStore picks the owner.
             int numNodes = static_cast<int>(nodeAddrs.size());
             int numStores = static_cast<int>(nodeStores.size());
             for (int nodeIdx = 0; nodeIdx < numNodes; nodeIdx++) {
@@ -109,17 +112,15 @@ namespace SPTAG::SPANN {
                 "PostingRouter: %d stores mapped to %d nodes (sub-partitioned)\n",
                 numStores, numNodes);
 
-            // Build consistent hash ring (lock-free via atomic shared_ptr)
-            {
-                auto ring = std::make_shared<ConsistentHashRing>(vnodeCount);
-                for (int i = 0; i < numNodes; i++) {
-                    ring->AddNode(i);
-                }
-                std::atomic_store(&m_hashRing, std::shared_ptr<const ConsistentHashRing>(std::move(ring)));
-            }
+            // Start with empty hash ring.
+            // Dispatcher: workers register via NodeRegister to populate the ring.
+            // Workers: receive RingUpdate from dispatcher after registration.
+            std::atomic_store(&m_hashRing,
+                std::shared_ptr<const ConsistentHashRing>(
+                    std::make_shared<ConsistentHashRing>(vnodeCount)));
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "PostingRouter: Consistent hash ring built with %d nodes, %d vnodes/node\n",
-                numNodes, vnodeCount);
+                "PostingRouter: %s initialized with empty ring (%d vnodes/node)\n",
+                isDispatcher ? "Dispatcher" : "Worker", vnodeCount);
 
             m_enabled = true;
 
@@ -188,6 +189,18 @@ namespace SPTAG::SPANN {
                     m_dispatch.HandleDispatchResult(connID, std::move(packet));
                 });
 
+            // Ring management: dispatcher accepts registrations, workers accept ring updates
+            if (m_isDispatcher) {
+                serverHandlers->emplace(Socket::PacketType::NodeRegisterRequest,
+                    [this](Socket::ConnectionID connID, Socket::Packet packet) {
+                        HandleNodeRegisterRequest(connID, std::move(packet));
+                    });
+            }
+            serverHandlers->emplace(Socket::PacketType::RingUpdate,
+                [this](Socket::ConnectionID connID, Socket::Packet packet) {
+                    HandleRingUpdate(connID, std::move(packet));
+                });
+
             const auto& localAddr = m_nodeAddrs[m_localNodeIndex];
             m_server.reset(new Socket::Server(
                 localAddr.first, localAddr.second, serverHandlers, 2));
@@ -219,12 +232,12 @@ namespace SPTAG::SPANN {
             m_peerConnections.resize(m_nodeAddrs.size(), Socket::c_invalidConnectionID);
 
             // Launch background thread that keeps retrying failed peer connections.
-            // This handles the case where workers start before the driver's router
-            // is listening — the thread will keep trying until all peers are connected.
+            // Once all peers are connected, workers send their NodeRegister to dispatcher.
             m_bgConnectStop.store(false);
             m_bgConnectThread = std::thread([this]() {
                 int numNodes = static_cast<int>(m_nodeAddrs.size());
                 int delayMs = 500;
+                bool registered = false;
                 while (!m_bgConnectStop.load()) {
                     bool allConnected = true;
                     for (int i = 0; i < numNodes; i++) {
@@ -237,6 +250,17 @@ namespace SPTAG::SPANN {
                         allConnected = false;
                         ConnectToPeer(i, 1, 0);
                     }
+
+                    // Workers: register with dispatcher once connected to it
+                    if (!m_isDispatcher && !registered) {
+                        std::lock_guard<std::mutex> lock(m_connMutex);
+                        if (m_dispatcherNodeIndex < (int)m_peerConnections.size() &&
+                            m_peerConnections[m_dispatcherNodeIndex] != Socket::c_invalidConnectionID) {
+                            SendNodeRegister();
+                            registered = true;
+                        }
+                    }
+
                     if (allConnected) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
                             "PostingRouter: All peer connections established\n");
@@ -397,6 +421,162 @@ namespace SPTAG::SPANN {
             return std::atomic_load(&m_hashRing);
         }
 
+        bool IsDispatcher() const { return m_isDispatcher; }
+
+        // ==================================================================
+        //  Ring management protocol
+        // ==================================================================
+
+        /// Worker → dispatcher: register this node to be added to the hash ring.
+        void SendNodeRegister() {
+            NodeRegisterMsg msg;
+            msg.m_nodeIndex = m_localNodeIndex;
+            msg.m_host = m_nodeAddrs[m_localNodeIndex].first;
+            msg.m_port = m_nodeAddrs[m_localNodeIndex].second;
+            int numStores = static_cast<int>(m_nodeStores.size());
+            msg.m_store = (numStores > 0) ? m_nodeStores[m_localNodeIndex % numStores] : "";
+
+            std::size_t bodySize = msg.EstimateBufferSize();
+            Socket::Packet pkt;
+            pkt.Header().m_packetType = Socket::PacketType::NodeRegisterRequest;
+            pkt.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+            pkt.Header().m_connectionID = Socket::c_invalidConnectionID;
+            pkt.Header().m_resourceID = 0;
+            pkt.Header().m_bodyLength = static_cast<std::uint32_t>(bodySize);
+            pkt.AllocateBuffer(static_cast<std::uint32_t>(bodySize));
+            msg.Write(pkt.Body());
+            pkt.Header().WriteBuffer(pkt.HeaderBuffer());
+
+            auto connID = GetPeerConnection(m_dispatcherNodeIndex);
+            if (connID != Socket::c_invalidConnectionID) {
+                m_client->SendPacket(connID, std::move(pkt), nullptr);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                    "PostingRouter: Sent NodeRegister (node %d) to dispatcher (node %d)\n",
+                    m_localNodeIndex, m_dispatcherNodeIndex);
+            } else {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "PostingRouter: Cannot register — no connection to dispatcher (node %d)\n",
+                    m_dispatcherNodeIndex);
+            }
+        }
+
+        /// Dispatcher: handle a worker's NodeRegister request.
+        void HandleNodeRegisterRequest(Socket::ConnectionID connID, Socket::Packet packet) {
+            NodeRegisterMsg msg;
+            if (!msg.Read(packet.Body())) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "PostingRouter: Failed to parse NodeRegisterRequest\n");
+                return;
+            }
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "PostingRouter: NodeRegister from node %d (%s:%s, store=%s)\n",
+                msg.m_nodeIndex, msg.m_host.c_str(), msg.m_port.c_str(), msg.m_store.c_str());
+
+            {
+                std::lock_guard<std::mutex> guard(m_ringWriteMutex);
+                auto oldRing = std::atomic_load(&m_hashRing);
+                if (oldRing && oldRing->HasNode(msg.m_nodeIndex)) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                        "PostingRouter: Node %d already in ring, broadcasting current ring\n",
+                        msg.m_nodeIndex);
+                } else {
+                    auto newRing = oldRing
+                        ? std::make_shared<ConsistentHashRing>(*oldRing)
+                        : std::make_shared<ConsistentHashRing>(m_vnodeCount);
+                    newRing->AddNode(msg.m_nodeIndex);
+                    std::atomic_store(&m_hashRing,
+                        std::shared_ptr<const ConsistentHashRing>(std::move(newRing)));
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                        "PostingRouter: Added node %d to ring, total=%d\n",
+                        msg.m_nodeIndex, (int)std::atomic_load(&m_hashRing)->NodeCount());
+                }
+            }
+
+            BroadcastRingUpdate();
+        }
+
+        /// Worker: handle a ring update pushed from the dispatcher.
+        void HandleRingUpdate(Socket::ConnectionID connID, Socket::Packet packet) {
+            RingUpdateMsg msg;
+            if (!msg.Read(packet.Body())) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "PostingRouter: Failed to parse RingUpdate\n");
+                return;
+            }
+
+            auto newRing = std::make_shared<ConsistentHashRing>(msg.m_vnodeCount);
+            for (auto idx : msg.m_nodeIndices) {
+                newRing->AddNode(idx);
+            }
+
+            {
+                std::lock_guard<std::mutex> guard(m_ringWriteMutex);
+                std::atomic_store(&m_hashRing,
+                    std::shared_ptr<const ConsistentHashRing>(std::move(newRing)));
+            }
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "PostingRouter: Ring updated — %d nodes\n", (int)msg.m_nodeIndices.size());
+        }
+
+        /// Dispatcher: broadcast current ring to all connected workers.
+        void BroadcastRingUpdate() {
+            auto ring = std::atomic_load(&m_hashRing);
+            if (!ring) return;
+
+            RingUpdateMsg msg;
+            msg.m_vnodeCount = ring->GetVNodeCount();
+            for (int idx : ring->GetNodes()) {
+                msg.m_nodeIndices.push_back(idx);
+            }
+
+            std::size_t bodySize = msg.EstimateBufferSize();
+            int numNodes = static_cast<int>(m_nodeAddrs.size());
+
+            for (int i = 0; i < numNodes; i++) {
+                if (i == m_localNodeIndex) continue;
+
+                auto peerConn = GetPeerConnection(i);
+                if (peerConn == Socket::c_invalidConnectionID) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                        "PostingRouter: Cannot send RingUpdate to node %d (no connection)\n", i);
+                    continue;
+                }
+
+                Socket::Packet pkt;
+                pkt.Header().m_packetType = Socket::PacketType::RingUpdate;
+                pkt.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+                pkt.Header().m_connectionID = Socket::c_invalidConnectionID;
+                pkt.Header().m_resourceID = 0;
+                pkt.Header().m_bodyLength = static_cast<std::uint32_t>(bodySize);
+                pkt.AllocateBuffer(static_cast<std::uint32_t>(bodySize));
+                msg.Write(pkt.Body());
+                pkt.Header().WriteBuffer(pkt.HeaderBuffer());
+
+                m_client->SendPacket(peerConn, std::move(pkt), nullptr);
+            }
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "PostingRouter: Broadcast RingUpdate (%d nodes) to %d peers\n",
+                (int)msg.m_nodeIndices.size(), numNodes - 1);
+        }
+
+        /// Block until the hash ring has at least one node (workers wait
+        /// for the dispatcher to push a RingUpdate after registration).
+        bool WaitForRing(int timeoutSec = 120) {
+            if (m_isDispatcher) return true;
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec);
+            while (std::chrono::steady_clock::now() < deadline) {
+                auto ring = std::atomic_load(&m_hashRing);
+                if (ring && ring->NodeCount() > 0) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                "PostingRouter: Timed out waiting for ring (%ds)\n", timeoutSec);
+            return false;
+        }
+
         /// Send an append request to a remote compute node (delegated to RemotePostingOps).
         ErrorCode SendRemoteAppend(
             int targetNodeIndex,
@@ -552,6 +732,9 @@ namespace SPTAG::SPANN {
 
         bool m_enabled;
         int m_localNodeIndex;
+        bool m_isDispatcher = false;
+        int m_dispatcherNodeIndex = 0;  // by convention, node 0 is the dispatcher
+        int m_vnodeCount = 150;
         std::shared_ptr<Helper::KeyValueIO> m_db;
 
         // Consistent hash ring for headID → node routing (lock-free RCU)

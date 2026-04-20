@@ -377,4 +377,96 @@ namespace SPTAG::SPANN {
         }
     };
 
+    /// Worker → dispatcher registration message.
+    struct NodeRegisterMsg {
+        static constexpr std::uint16_t MajorVersion() { return 1; }
+        static constexpr std::uint16_t MirrorVersion() { return 0; }
+
+        std::int32_t m_nodeIndex = 0;
+        std::string m_host;
+        std::string m_port;
+        std::string m_store;
+
+        std::size_t EstimateBufferSize() const {
+            std::size_t size = 0;
+            size += sizeof(std::uint16_t) * 2;
+            size += sizeof(std::int32_t);
+            size += sizeof(std::uint32_t) + m_host.size();
+            size += sizeof(std::uint32_t) + m_port.size();
+            size += sizeof(std::uint32_t) + m_store.size();
+            return size;
+        }
+
+        std::uint8_t* Write(std::uint8_t* p_buffer) const {
+            using namespace Socket::SimpleSerialization;
+            p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(m_nodeIndex, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_host, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_port, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_store, p_buffer);
+            return p_buffer;
+        }
+
+        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
+            using namespace Socket::SimpleSerialization;
+            std::uint16_t majorVer = 0, mirrorVer = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, majorVer);
+            p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
+            if (majorVer != MajorVersion()) return nullptr;
+            p_buffer = SimpleReadBuffer(p_buffer, m_nodeIndex);
+            p_buffer = SimpleReadBuffer(p_buffer, m_host);
+            p_buffer = SimpleReadBuffer(p_buffer, m_port);
+            p_buffer = SimpleReadBuffer(p_buffer, m_store);
+            return p_buffer;
+        }
+    };
+
+    /// Dispatcher → worker ring update (full node list).
+    struct RingUpdateMsg {
+        static constexpr std::uint16_t MajorVersion() { return 1; }
+        static constexpr std::uint16_t MirrorVersion() { return 0; }
+
+        std::int32_t m_vnodeCount = 150;
+        std::vector<std::int32_t> m_nodeIndices;
+
+        std::size_t EstimateBufferSize() const {
+            std::size_t size = 0;
+            size += sizeof(std::uint16_t) * 2;
+            size += sizeof(std::int32_t);       // vnodeCount
+            size += sizeof(std::uint32_t);      // numNodes
+            size += sizeof(std::int32_t) * m_nodeIndices.size();
+            return size;
+        }
+
+        std::uint8_t* Write(std::uint8_t* p_buffer) const {
+            using namespace Socket::SimpleSerialization;
+            p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(m_vnodeCount, p_buffer);
+            std::uint32_t count = static_cast<std::uint32_t>(m_nodeIndices.size());
+            p_buffer = SimpleWriteBuffer(count, p_buffer);
+            for (auto idx : m_nodeIndices) {
+                p_buffer = SimpleWriteBuffer(idx, p_buffer);
+            }
+            return p_buffer;
+        }
+
+        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
+            using namespace Socket::SimpleSerialization;
+            std::uint16_t majorVer = 0, mirrorVer = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, majorVer);
+            p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
+            if (majorVer != MajorVersion()) return nullptr;
+            p_buffer = SimpleReadBuffer(p_buffer, m_vnodeCount);
+            std::uint32_t count = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, count);
+            m_nodeIndices.resize(count);
+            for (std::uint32_t i = 0; i < count; i++) {
+                p_buffer = SimpleReadBuffer(p_buffer, m_nodeIndices[i]);
+            }
+            return p_buffer;
+        }
+    };
+
 } // namespace SPTAG::SPANN
