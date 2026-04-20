@@ -41,6 +41,8 @@ enum class PacketType : std::uint8_t
 
     RingUpdate = 0x0B,
 
+    RingUpdateACK = 0x0C,
+
     ResponseMask = 0x80,
 
     HeartbeatResponse = ResponseMask | HeartbeatRequest,

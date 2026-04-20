@@ -189,11 +189,15 @@ namespace SPTAG::SPANN {
                     m_dispatch.HandleDispatchResult(connID, std::move(packet));
                 });
 
-            // Ring management: dispatcher accepts registrations, workers accept ring updates
+            // Ring management: dispatcher accepts registrations + ACKs, workers accept ring updates
             if (m_isDispatcher) {
                 serverHandlers->emplace(Socket::PacketType::NodeRegisterRequest,
                     [this](Socket::ConnectionID connID, Socket::Packet packet) {
                         HandleNodeRegisterRequest(connID, std::move(packet));
+                    });
+                serverHandlers->emplace(Socket::PacketType::RingUpdateACK,
+                    [this](Socket::ConnectionID connID, Socket::Packet packet) {
+                        HandleRingUpdateACK(connID, std::move(packet));
                     });
             }
             serverHandlers->emplace(Socket::PacketType::RingUpdate,
@@ -231,14 +235,16 @@ namespace SPTAG::SPANN {
 
             m_peerConnections.resize(m_nodeAddrs.size(), Socket::c_invalidConnectionID);
 
-            // Launch background thread that keeps retrying failed peer connections.
-            // Once all peers are connected, workers send their NodeRegister to dispatcher.
+            // Launch background thread for connection maintenance and ring protocol.
+            // - Retries failed peer connections
+            // - Workers: retry NodeRegister until ring is received
+            // - Dispatcher: retry RingUpdate to unACK'd workers
             m_bgConnectStop.store(false);
             m_bgConnectThread = std::thread([this]() {
                 int numNodes = static_cast<int>(m_nodeAddrs.size());
                 int delayMs = 500;
-                bool registered = false;
                 while (!m_bgConnectStop.load()) {
+                    // Phase 1: Maintain peer connections
                     bool allConnected = true;
                     for (int i = 0; i < numNodes; i++) {
                         if (i == m_localNodeIndex) continue;
@@ -251,19 +257,36 @@ namespace SPTAG::SPANN {
                         ConnectToPeer(i, 1, 0);
                     }
 
-                    // Workers: register with dispatcher once connected to it
-                    if (!m_isDispatcher && !registered) {
-                        std::lock_guard<std::mutex> lock(m_connMutex);
-                        if (m_dispatcherNodeIndex < (int)m_peerConnections.size() &&
-                            m_peerConnections[m_dispatcherNodeIndex] != Socket::c_invalidConnectionID) {
-                            SendNodeRegister();
-                            registered = true;
+                    // Phase 2: Ring protocol
+                    if (!m_isDispatcher) {
+                        // Worker: keep sending NodeRegister until ring is populated
+                        auto ring = std::atomic_load(&m_hashRing);
+                        if (!ring || ring->NodeCount() == 0) {
+                            std::lock_guard<std::mutex> lock(m_connMutex);
+                            if (m_dispatcherNodeIndex < (int)m_peerConnections.size() &&
+                                m_peerConnections[m_dispatcherNodeIndex] != Socket::c_invalidConnectionID) {
+                                SendNodeRegister();
+                            }
+                        }
+                    } else {
+                        // Dispatcher: retry ring updates to unACK'd workers
+                        if (m_currentRingVersion.load() > 0) {
+                            RetryUnackedRingUpdates();
                         }
                     }
 
-                    if (allConnected) {
+                    // Check if we can exit: all connected + ring settled
+                    bool ringSettled = false;
+                    if (!m_isDispatcher) {
+                        auto ring = std::atomic_load(&m_hashRing);
+                        ringSettled = ring && ring->NodeCount() > 0;
+                    } else {
+                        ringSettled = AllWorkersAcked();
+                    }
+
+                    if (allConnected && ringSettled) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                            "PostingRouter: All peer connections established\n");
+                            "PostingRouter: All peers connected and ring synchronized\n");
                         break;
                     }
                     std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
@@ -478,8 +501,8 @@ namespace SPTAG::SPANN {
                 auto oldRing = std::atomic_load(&m_hashRing);
                 if (oldRing && oldRing->HasNode(msg.m_nodeIndex)) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                        "PostingRouter: Node %d already in ring, broadcasting current ring\n",
-                        msg.m_nodeIndex);
+                        "PostingRouter: Node %d already in ring, broadcasting current ring (v%u)\n",
+                        msg.m_nodeIndex, m_currentRingVersion.load());
                 } else {
                     auto newRing = oldRing
                         ? std::make_shared<ConsistentHashRing>(*oldRing)
@@ -487,9 +510,11 @@ namespace SPTAG::SPANN {
                     newRing->AddNode(msg.m_nodeIndex);
                     std::atomic_store(&m_hashRing,
                         std::shared_ptr<const ConsistentHashRing>(std::move(newRing)));
+                    m_currentRingVersion.fetch_add(1);
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                        "PostingRouter: Added node %d to ring, total=%d\n",
-                        msg.m_nodeIndex, (int)std::atomic_load(&m_hashRing)->NodeCount());
+                        "PostingRouter: Added node %d to ring, total=%d (v%u)\n",
+                        msg.m_nodeIndex, (int)std::atomic_load(&m_hashRing)->NodeCount(),
+                        m_currentRingVersion.load());
                 }
             }
 
@@ -517,7 +542,11 @@ namespace SPTAG::SPANN {
             }
 
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "PostingRouter: Ring updated — %d nodes\n", (int)msg.m_nodeIndices.size());
+                "PostingRouter: Ring updated — %d nodes (v%u)\n",
+                (int)msg.m_nodeIndices.size(), msg.m_ringVersion);
+
+            // ACK back to dispatcher
+            SendRingUpdateACK(msg.m_ringVersion);
         }
 
         /// Dispatcher: broadcast current ring to all connected workers.
@@ -525,7 +554,9 @@ namespace SPTAG::SPANN {
             auto ring = std::atomic_load(&m_hashRing);
             if (!ring) return;
 
+            std::uint32_t version = m_currentRingVersion.load();
             RingUpdateMsg msg;
+            msg.m_ringVersion = version;
             msg.m_vnodeCount = ring->GetVNodeCount();
             for (int idx : ring->GetNodes()) {
                 msg.m_nodeIndices.push_back(idx);
@@ -540,7 +571,8 @@ namespace SPTAG::SPANN {
                 auto peerConn = GetPeerConnection(i);
                 if (peerConn == Socket::c_invalidConnectionID) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                        "PostingRouter: Cannot send RingUpdate to node %d (no connection)\n", i);
+                        "PostingRouter: Cannot send RingUpdate v%u to node %d (no connection)\n",
+                        version, i);
                     continue;
                 }
 
@@ -558,8 +590,121 @@ namespace SPTAG::SPANN {
             }
 
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "PostingRouter: Broadcast RingUpdate (%d nodes) to %d peers\n",
-                (int)msg.m_nodeIndices.size(), numNodes - 1);
+                "PostingRouter: Broadcast RingUpdate v%u (%d nodes) to %d peers\n",
+                version, (int)msg.m_nodeIndices.size(), numNodes - 1);
+        }
+
+        /// Worker → dispatcher: ACK receipt of a ring update.
+        void SendRingUpdateACK(std::uint32_t ringVersion) {
+            RingUpdateACKMsg msg;
+            msg.m_nodeIndex = m_localNodeIndex;
+            msg.m_ringVersion = ringVersion;
+
+            std::size_t bodySize = msg.EstimateBufferSize();
+            Socket::Packet pkt;
+            pkt.Header().m_packetType = Socket::PacketType::RingUpdateACK;
+            pkt.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+            pkt.Header().m_connectionID = Socket::c_invalidConnectionID;
+            pkt.Header().m_resourceID = 0;
+            pkt.Header().m_bodyLength = static_cast<std::uint32_t>(bodySize);
+            pkt.AllocateBuffer(static_cast<std::uint32_t>(bodySize));
+            msg.Write(pkt.Body());
+            pkt.Header().WriteBuffer(pkt.HeaderBuffer());
+
+            auto connID = GetPeerConnection(m_dispatcherNodeIndex);
+            if (connID != Socket::c_invalidConnectionID) {
+                m_client->SendPacket(connID, std::move(pkt), nullptr);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                    "PostingRouter: Sent RingUpdateACK v%u to dispatcher\n", ringVersion);
+            }
+        }
+
+        /// Dispatcher: handle a worker's ACK for a ring update.
+        void HandleRingUpdateACK(Socket::ConnectionID connID, Socket::Packet packet) {
+            RingUpdateACKMsg msg;
+            if (!msg.Read(packet.Body())) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "PostingRouter: Failed to parse RingUpdateACK\n");
+                return;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(m_ackMutex);
+                auto& ver = m_workerAckedVersion[msg.m_nodeIndex];
+                if (msg.m_ringVersion > ver) {
+                    ver = msg.m_ringVersion;
+                }
+            }
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "PostingRouter: RingUpdateACK from node %d (v%u)\n",
+                msg.m_nodeIndex, msg.m_ringVersion);
+        }
+
+        /// Dispatcher: re-send ring update to workers that haven't ACK'd the current version.
+        void RetryUnackedRingUpdates() {
+            auto ring = std::atomic_load(&m_hashRing);
+            if (!ring) return;
+            std::uint32_t currentVer = m_currentRingVersion.load();
+            if (currentVer == 0) return;
+
+            // Find unACK'd workers
+            std::vector<int> unacked;
+            {
+                std::lock_guard<std::mutex> lock(m_ackMutex);
+                int numNodes = static_cast<int>(m_nodeAddrs.size());
+                for (int i = 0; i < numNodes; i++) {
+                    if (i == m_localNodeIndex) continue;
+                    auto it = m_workerAckedVersion.find(i);
+                    if (it == m_workerAckedVersion.end() || it->second < currentVer) {
+                        unacked.push_back(i);
+                    }
+                }
+            }
+            if (unacked.empty()) return;
+
+            // Build message once
+            RingUpdateMsg msg;
+            msg.m_ringVersion = currentVer;
+            msg.m_vnodeCount = ring->GetVNodeCount();
+            for (int idx : ring->GetNodes()) {
+                msg.m_nodeIndices.push_back(idx);
+            }
+            std::size_t bodySize = msg.EstimateBufferSize();
+
+            for (int nodeIdx : unacked) {
+                auto peerConn = GetPeerConnection(nodeIdx);
+                if (peerConn == Socket::c_invalidConnectionID) continue;
+
+                Socket::Packet pkt;
+                pkt.Header().m_packetType = Socket::PacketType::RingUpdate;
+                pkt.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+                pkt.Header().m_connectionID = Socket::c_invalidConnectionID;
+                pkt.Header().m_resourceID = 0;
+                pkt.Header().m_bodyLength = static_cast<std::uint32_t>(bodySize);
+                pkt.AllocateBuffer(static_cast<std::uint32_t>(bodySize));
+                msg.Write(pkt.Body());
+                pkt.Header().WriteBuffer(pkt.HeaderBuffer());
+
+                m_client->SendPacket(peerConn, std::move(pkt), nullptr);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                    "PostingRouter: Retrying RingUpdate v%u to unACK'd node %d\n",
+                    currentVer, nodeIdx);
+            }
+        }
+
+        /// Dispatcher: check if all workers have ACK'd the current ring version.
+        bool AllWorkersAcked() const {
+            std::uint32_t currentVer = m_currentRingVersion.load();
+            if (currentVer == 0) return false;
+            std::lock_guard<std::mutex> lock(m_ackMutex);
+            int numNodes = static_cast<int>(m_nodeAddrs.size());
+            for (int i = 0; i < numNodes; i++) {
+                if (i == m_localNodeIndex) continue;
+                auto it = m_workerAckedVersion.find(i);
+                if (it == m_workerAckedVersion.end() || it->second < currentVer) return false;
+            }
+            return true;
         }
 
         /// Block until the hash ring has at least one node (workers wait
@@ -742,6 +887,11 @@ namespace SPTAG::SPANN {
         // Writers: copy-on-write under m_ringWriteMutex, then atomic_store
         std::shared_ptr<const ConsistentHashRing> m_hashRing;
         std::mutex m_ringWriteMutex;  // serializes AddNode/RemoveNode (rare)
+
+        // Ring versioning and ACK tracking (dispatcher only)
+        std::atomic<std::uint32_t> m_currentRingVersion{0};
+        mutable std::mutex m_ackMutex;
+        std::unordered_map<int, std::uint32_t> m_workerAckedVersion;
 
         // Node configuration
         std::vector<std::pair<std::string, std::string>> m_nodeAddrs;  // host:port per node

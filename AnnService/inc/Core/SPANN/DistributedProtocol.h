@@ -422,17 +422,19 @@ namespace SPTAG::SPANN {
         }
     };
 
-    /// Dispatcher → worker ring update (full node list).
+    /// Dispatcher → worker ring update (full node list, versioned).
     struct RingUpdateMsg {
         static constexpr std::uint16_t MajorVersion() { return 1; }
         static constexpr std::uint16_t MirrorVersion() { return 0; }
 
+        std::uint32_t m_ringVersion = 0;
         std::int32_t m_vnodeCount = 150;
         std::vector<std::int32_t> m_nodeIndices;
 
         std::size_t EstimateBufferSize() const {
             std::size_t size = 0;
             size += sizeof(std::uint16_t) * 2;
+            size += sizeof(std::uint32_t);      // ringVersion
             size += sizeof(std::int32_t);       // vnodeCount
             size += sizeof(std::uint32_t);      // numNodes
             size += sizeof(std::int32_t) * m_nodeIndices.size();
@@ -443,6 +445,7 @@ namespace SPTAG::SPANN {
             using namespace Socket::SimpleSerialization;
             p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
             p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(m_ringVersion, p_buffer);
             p_buffer = SimpleWriteBuffer(m_vnodeCount, p_buffer);
             std::uint32_t count = static_cast<std::uint32_t>(m_nodeIndices.size());
             p_buffer = SimpleWriteBuffer(count, p_buffer);
@@ -458,6 +461,7 @@ namespace SPTAG::SPANN {
             p_buffer = SimpleReadBuffer(p_buffer, majorVer);
             p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
             if (majorVer != MajorVersion()) return nullptr;
+            p_buffer = SimpleReadBuffer(p_buffer, m_ringVersion);
             p_buffer = SimpleReadBuffer(p_buffer, m_vnodeCount);
             std::uint32_t count = 0;
             p_buffer = SimpleReadBuffer(p_buffer, count);
@@ -465,6 +469,39 @@ namespace SPTAG::SPANN {
             for (std::uint32_t i = 0; i < count; i++) {
                 p_buffer = SimpleReadBuffer(p_buffer, m_nodeIndices[i]);
             }
+            return p_buffer;
+        }
+    };
+
+    /// Worker → dispatcher ACK for a ring update.
+    struct RingUpdateACKMsg {
+        static constexpr std::uint16_t MajorVersion() { return 1; }
+        static constexpr std::uint16_t MirrorVersion() { return 0; }
+
+        std::int32_t m_nodeIndex = -1;
+        std::uint32_t m_ringVersion = 0;
+
+        std::size_t EstimateBufferSize() const {
+            return sizeof(std::uint16_t) * 2 + sizeof(std::int32_t) + sizeof(std::uint32_t);
+        }
+
+        std::uint8_t* Write(std::uint8_t* p_buffer) const {
+            using namespace Socket::SimpleSerialization;
+            p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(m_nodeIndex, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_ringVersion, p_buffer);
+            return p_buffer;
+        }
+
+        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
+            using namespace Socket::SimpleSerialization;
+            std::uint16_t majorVer = 0, mirrorVer = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, majorVer);
+            p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
+            if (majorVer != MajorVersion()) return nullptr;
+            p_buffer = SimpleReadBuffer(p_buffer, m_nodeIndex);
+            p_buffer = SimpleReadBuffer(p_buffer, m_ringVersion);
             return p_buffer;
         }
     };
