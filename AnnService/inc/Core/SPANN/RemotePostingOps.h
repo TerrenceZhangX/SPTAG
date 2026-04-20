@@ -26,7 +26,7 @@ namespace SPTAG::SPANN {
     ///   - RemoteLock (cross-node locking for merge/split)
     ///
     /// This class owns the request/response matching state and serialization
-    /// logic. It is independent of routing decisions — PostingRouter decides
+    /// logic. It is independent of routing decisions — WorkerNode decides
     /// *where* to send, RemotePostingOps handles *how*.
     class RemotePostingOps {
     public:
@@ -39,7 +39,7 @@ namespace SPTAG::SPANN {
         using HeadSyncCallback = std::function<void(const HeadSyncEntry& entry)>;
         using RemoteLockCallback = std::function<bool(SizeType headID, bool lock)>;
 
-        /// Abstract interface for network access (implemented by PostingRouter).
+        /// Abstract interface for network access (implemented by NetworkNode).
         class NetworkAccess {
         public:
             virtual ~NetworkAccess() = default;
@@ -278,7 +278,7 @@ namespace SPTAG::SPANN {
         }
 
         // ==================================================================
-        //  Inbound packet handlers (called by PostingRouter's server/client)
+        //  Inbound packet handlers (called by WorkerNode's server/client)
         // ==================================================================
 
         void HandleAppendRequest(Socket::ConnectionID connID, Socket::Packet packet) {

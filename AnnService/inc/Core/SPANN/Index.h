@@ -322,33 +322,6 @@ namespace SPTAG
                 return true;
             }
 
-            void EnableRouter() override {
-                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
-                    m_extraSearchers[0]->EnableRouter(m_options);
-                }
-            }
-
-            void AdoptRouter(VectorIndex* source) override {
-                auto* srcIndex = dynamic_cast<Index<T>*>(source);
-                if (srcIndex && !srcIndex->m_extraSearchers.empty() && srcIndex->m_extraSearchers[0]
-                    && !m_extraSearchers.empty() && m_extraSearchers[0]) {
-                    m_extraSearchers[0]->AdoptRouter(srcIndex->m_extraSearchers[0].get());
-                }
-            }
-
-            void SetHeadSyncCallback() override {
-                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
-                    m_extraSearchers[0]->SetHeadSyncCallback();
-                }
-            }
-
-            void* GetRouter() override {
-                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
-                    return m_extraSearchers[0]->GetRouter();
-                }
-                return nullptr;
-            }
-
             void GetDBStat() { 
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Current Vector Num: %d, Deleted: %d .\n", GetNumSamples(), GetNumDeleted());
                 if (m_options.m_storage != Storage::STATIC) {

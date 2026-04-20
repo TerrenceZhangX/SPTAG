@@ -1,0 +1,242 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
+#pragma once
+
+#include "inc/Core/SPANN/NetworkNode.h"
+
+namespace SPTAG::SPANN {
+
+    /// Dispatcher node: manages the consistent hash ring and coordinates
+    /// external dispatch commands (Insert/Search/Stop) to worker nodes.
+    ///
+    /// The dispatcher does NOT perform search or posting operations.
+    /// It is a lightweight coordination point that:
+    ///   - Accepts NodeRegister requests from workers
+    ///   - Maintains the authoritative hash ring and broadcasts updates
+    ///   - Tracks per-worker ACK status with retry
+    ///   - Delegates BroadcastDispatchCommand / WaitForAllResults
+    class DispatcherNode : public NetworkNode {
+    public:
+        using DispatchCallback = DispatchCoordinator::DispatchCallback;
+
+        bool Initialize(
+            int localNodeIdx,
+            const std::vector<std::pair<std::string, std::string>>& nodeAddrs,
+            int vnodeCount = 150)
+        {
+            if (!InitializeNetwork(localNodeIdx, nodeAddrs, vnodeCount)) return false;
+
+            m_dispatch.SetNetwork(this);
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "DispatcherNode: initialized (node %d, %d vnodes/node)\n",
+                localNodeIdx, vnodeCount);
+            return true;
+        }
+
+        bool Start() { return StartNetwork(); }
+
+        // ---- Dispatch protocol ----
+
+        std::uint64_t BroadcastDispatchCommand(DispatchCommand::Type type, std::uint32_t round) {
+            return m_dispatch.BroadcastDispatchCommand(type, round);
+        }
+
+        std::vector<double> WaitForAllResults(std::uint64_t dispatchId, int timeoutSec = 300) {
+            return m_dispatch.WaitForAllResults(dispatchId, timeoutSec);
+        }
+
+        void SetDispatchCallback(DispatchCallback cb) {
+            m_dispatch.SetDispatchCallback(std::move(cb));
+        }
+
+        void ClearDispatchCallback() {
+            m_dispatch.ClearDispatchCallback();
+        }
+
+        // ---- Ring management ----
+
+        bool AllWorkersAcked() const {
+            std::uint32_t currentVer = m_currentRingVersion.load();
+            if (currentVer == 0) return false;
+            std::lock_guard<std::mutex> lock(m_ackMutex);
+            int numNodes = static_cast<int>(m_nodeAddrs.size());
+            for (int i = 0; i < numNodes; i++) {
+                if (i == m_localNodeIndex) continue;
+                auto it = m_workerAckedVersion.find(i);
+                if (it == m_workerAckedVersion.end() || it->second < currentVer) return false;
+            }
+            return true;
+        }
+
+    protected:
+        void RegisterServerHandlers(Socket::PacketHandlerMapPtr& handlers) override {
+            handlers->emplace(Socket::PacketType::NodeRegisterRequest,
+                [this](Socket::ConnectionID c, Socket::Packet p) { HandleNodeRegisterRequest(c, std::move(p)); });
+            handlers->emplace(Socket::PacketType::RingUpdateACK,
+                [this](Socket::ConnectionID c, Socket::Packet p) { HandleRingUpdateACK(c, std::move(p)); });
+            handlers->emplace(Socket::PacketType::DispatchCommand,
+                [this](Socket::ConnectionID c, Socket::Packet p) { m_dispatch.HandleDispatchCommand(c, std::move(p)); });
+            handlers->emplace(Socket::PacketType::DispatchResult,
+                [this](Socket::ConnectionID c, Socket::Packet p) { m_dispatch.HandleDispatchResult(c, std::move(p)); });
+        }
+
+        void RegisterClientHandlers(Socket::PacketHandlerMapPtr& handlers) override {
+            handlers->emplace(Socket::PacketType::DispatchResult,
+                [this](Socket::ConnectionID c, Socket::Packet p) { m_dispatch.HandleDispatchResult(c, std::move(p)); });
+        }
+
+        void BgProtocolStep() override {
+            if (m_currentRingVersion.load() > 0) {
+                RetryUnackedRingUpdates();
+            }
+        }
+
+        bool IsRingSettled() const override {
+            return AllWorkersAcked();
+        }
+
+    private:
+        void HandleNodeRegisterRequest(Socket::ConnectionID connID, Socket::Packet packet) {
+            NodeRegisterMsg msg;
+            if (!msg.Read(packet.Body())) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "DispatcherNode: Failed to parse NodeRegisterRequest\n");
+                return;
+            }
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "DispatcherNode: NodeRegister from node %d (%s:%s, store=%s)\n",
+                msg.m_nodeIndex, msg.m_host.c_str(), msg.m_port.c_str(), msg.m_store.c_str());
+
+            {
+                std::lock_guard<std::mutex> guard(m_ringWriteMutex);
+                auto oldRing = std::atomic_load(&m_hashRing);
+                if (oldRing && oldRing->HasNode(msg.m_nodeIndex)) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                        "DispatcherNode: Node %d already in ring, broadcasting current ring (v%u)\n",
+                        msg.m_nodeIndex, m_currentRingVersion.load());
+                } else {
+                    auto newRing = oldRing
+                        ? std::make_shared<ConsistentHashRing>(*oldRing)
+                        : std::make_shared<ConsistentHashRing>(m_vnodeCount);
+                    newRing->AddNode(msg.m_nodeIndex);
+                    std::atomic_store(&m_hashRing,
+                        std::shared_ptr<const ConsistentHashRing>(std::move(newRing)));
+                    m_currentRingVersion.fetch_add(1);
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                        "DispatcherNode: Added node %d to ring, total=%d (v%u)\n",
+                        msg.m_nodeIndex, (int)std::atomic_load(&m_hashRing)->NodeCount(),
+                        m_currentRingVersion.load());
+                }
+            }
+
+            BroadcastRingUpdate();
+        }
+
+        void HandleRingUpdateACK(Socket::ConnectionID connID, Socket::Packet packet) {
+            RingUpdateACKMsg msg;
+            if (!msg.Read(packet.Body())) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "DispatcherNode: Failed to parse RingUpdateACK\n");
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(m_ackMutex);
+                auto& ver = m_workerAckedVersion[msg.m_nodeIndex];
+                if (msg.m_ringVersion > ver) ver = msg.m_ringVersion;
+            }
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "DispatcherNode: RingUpdateACK from node %d (v%u)\n",
+                msg.m_nodeIndex, msg.m_ringVersion);
+        }
+
+        void BroadcastRingUpdate() {
+            auto ring = std::atomic_load(&m_hashRing);
+            if (!ring) return;
+
+            std::uint32_t version = m_currentRingVersion.load();
+            RingUpdateMsg msg;
+            msg.m_ringVersion = version;
+            msg.m_vnodeCount = ring->GetVNodeCount();
+            for (int idx : ring->GetNodes()) {
+                msg.m_nodeIndices.push_back(idx);
+            }
+
+            std::size_t bodySize = msg.EstimateBufferSize();
+            int numNodes = static_cast<int>(m_nodeAddrs.size());
+
+            for (int i = 0; i < numNodes; i++) {
+                if (i == m_localNodeIndex) continue;
+                auto peerConn = GetPeerConnection(i);
+                if (peerConn == Socket::c_invalidConnectionID) continue;
+
+                Socket::Packet pkt;
+                pkt.Header().m_packetType = Socket::PacketType::RingUpdate;
+                pkt.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+                pkt.Header().m_connectionID = Socket::c_invalidConnectionID;
+                pkt.Header().m_resourceID = 0;
+                pkt.Header().m_bodyLength = static_cast<std::uint32_t>(bodySize);
+                pkt.AllocateBuffer(static_cast<std::uint32_t>(bodySize));
+                msg.Write(pkt.Body());
+                pkt.Header().WriteBuffer(pkt.HeaderBuffer());
+
+                m_client->SendPacket(peerConn, std::move(pkt), nullptr);
+            }
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "DispatcherNode: Broadcast RingUpdate v%u (%d nodes)\n",
+                version, (int)msg.m_nodeIndices.size());
+        }
+
+        void RetryUnackedRingUpdates() {
+            auto ring = std::atomic_load(&m_hashRing);
+            if (!ring) return;
+            std::uint32_t currentVer = m_currentRingVersion.load();
+            if (currentVer == 0) return;
+
+            std::vector<int> unacked;
+            {
+                std::lock_guard<std::mutex> lock(m_ackMutex);
+                int numNodes = static_cast<int>(m_nodeAddrs.size());
+                for (int i = 0; i < numNodes; i++) {
+                    if (i == m_localNodeIndex) continue;
+                    auto it = m_workerAckedVersion.find(i);
+                    if (it == m_workerAckedVersion.end() || it->second < currentVer)
+                        unacked.push_back(i);
+                }
+            }
+            if (unacked.empty()) return;
+
+            RingUpdateMsg msg;
+            msg.m_ringVersion = currentVer;
+            msg.m_vnodeCount = ring->GetVNodeCount();
+            for (int idx : ring->GetNodes()) msg.m_nodeIndices.push_back(idx);
+            std::size_t bodySize = msg.EstimateBufferSize();
+
+            for (int nodeIdx : unacked) {
+                auto peerConn = GetPeerConnection(nodeIdx);
+                if (peerConn == Socket::c_invalidConnectionID) continue;
+
+                Socket::Packet pkt;
+                pkt.Header().m_packetType = Socket::PacketType::RingUpdate;
+                pkt.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+                pkt.Header().m_connectionID = Socket::c_invalidConnectionID;
+                pkt.Header().m_resourceID = 0;
+                pkt.Header().m_bodyLength = static_cast<std::uint32_t>(bodySize);
+                pkt.AllocateBuffer(static_cast<std::uint32_t>(bodySize));
+                msg.Write(pkt.Body());
+                pkt.Header().WriteBuffer(pkt.HeaderBuffer());
+
+                m_client->SendPacket(peerConn, std::move(pkt), nullptr);
+            }
+        }
+
+        DispatchCoordinator m_dispatch;
+        std::atomic<std::uint32_t> m_currentRingVersion{0};
+        mutable std::mutex m_ackMutex;
+        std::unordered_map<int, std::uint32_t> m_workerAckedVersion;
+    };
+
+} // namespace SPTAG::SPANN

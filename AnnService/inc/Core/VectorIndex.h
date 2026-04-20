@@ -204,14 +204,6 @@ public:
     }
 
     virtual std::string GetPriorityID(int queryID) const { return ""; }
-
-    // Distributed routing lifecycle (no-op defaults for non-SPANN indexes).
-    // Data-plane methods (GetNumNodes, FlushRemoteAppends, …) live on
-    // PostingRouter directly — callers obtain it via GetRouter().
-    virtual void EnableRouter() {}
-    virtual void AdoptRouter(VectorIndex* source) {}
-    virtual void SetHeadSyncCallback() {}
-    virtual void* GetRouter() { return nullptr; }
     
   private:
     ErrorCode LoadIndexConfig(Helper::IniReader& p_reader);

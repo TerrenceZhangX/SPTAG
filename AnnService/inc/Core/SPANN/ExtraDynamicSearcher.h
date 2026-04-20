@@ -19,7 +19,7 @@
 #include "inc/Core/Common/LocalVersionMap.h"
 #include "inc/Core/Common/TiKVVersionMap.h"
 #include "ExtraFileController.h"
-#include "PostingRouter.h"
+#include "WorkerNode.h"
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -262,10 +262,12 @@ namespace SPTAG::SPANN {
         std::mutex m_asyncAppendLock;
         Helper::Concurrent::ConcurrentPriorityQueue<AppendPair> m_asyncAppendQueue;
         std::shared_ptr<Helper::KeyValueIO> db;
-        std::unique_ptr<PostingRouter> m_router;
+        WorkerNode* m_router = nullptr;  // externally owned, set via SetRouter()
 
-        void* GetRouter() override { return m_router.get(); }
+    public:
+        std::shared_ptr<Helper::KeyValueIO> GetDB() const { return db; }
 
+    private:
         SPANN::Index<ValueType>* m_headIndex;
         std::unique_ptr<COMMON::IVersionMap> m_versionMap;
         Options* m_opt;
@@ -389,69 +391,57 @@ namespace SPTAG::SPANN {
             return m_initialVectorSize + (localVID - m_initialVectorSize) * numNodes + GetLocalNodeIndex();
         }
 
-        void InitializeRouter(SPANN::Options& p_opt) {
-            std::vector<std::pair<std::string, std::string>> nodeAddrs;
-            {
-                auto parts = Helper::StrUtils::SplitString(p_opt.m_routerNodeAddrs, ",");
-                for (auto& part : parts) {
-                    auto hp = Helper::StrUtils::SplitString(part, ":");
-                    if (hp.size() == 2) {
-                        nodeAddrs.emplace_back(hp[0], hp[1]);
-                    }
+        /// Set the external WorkerNode pointer and bind all callbacks
+        /// (append, head-sync, remote-lock).
+        /// Called by SPFreshTest after creating the WorkerNode independently.
+        void SetRouter(WorkerNode* router) {
+            m_router = router;
+            if (!m_router) return;
+
+            // Append callback: routes incoming remote appends to local Append()
+            m_router->SetAppendCallback(
+                [this](SizeType headID, std::shared_ptr<std::string> headVec,
+                       int appendNum, std::string& appendPosting) -> ErrorCode {
+                    ExtraWorkSpace workSpace;
+                    InitWorkSpace(&workSpace);
+                    return Append(&workSpace, headID, appendNum, appendPosting);
+                });
+
+            // Head sync callback: apply head index updates from peers
+            auto* headIndex = m_headIndex;
+            int layer = m_layer;
+            m_router->SetHeadSyncCallback([headIndex, layer](const HeadSyncEntry& entry) {
+                if (entry.op == HeadSyncEntry::Op::Add) {
+                    headIndex->AddHeadIndex(entry.headVector.data(), entry.headVID, 0,
+                        static_cast<DimensionType>(entry.headVector.size() / sizeof(ValueType)),
+                        layer + 1, nullptr);
+                } else {
+                    headIndex->DeleteIndex(entry.headVID, layer + 1);
                 }
-            }
+            });
 
-            auto nodeStores = Helper::StrUtils::SplitString(p_opt.m_routerNodeStores, ",");
+            // Remote lock callback: per-bucket atomic flags
+            m_router->SetRemoteLockCallback([this](SizeType headID, bool lock) -> bool {
+                unsigned bucket = COMMON::FineGrainedRWLock::hash_func(static_cast<unsigned>(headID));
+                if (lock) {
+                    bool expected = false;
+                    if (!m_remoteBucketLocked[bucket].compare_exchange_strong(expected, true)) {
+                        return false;
+                    }
+                    if (!m_rwLocks[headID].try_lock()) {
+                        m_remoteBucketLocked[bucket].store(false);
+                        return false;
+                    }
+                    m_rwLocks[headID].unlock();
+                    return true;
+                } else {
+                    m_remoteBucketLocked[bucket].store(false);
+                    return true;
+                }
+            });
 
-            m_router.reset(new PostingRouter());
-            if (!m_router->Initialize(db, p_opt.m_routerLocalNodeIndex, nodeAddrs, nodeStores,
-                                      p_opt.m_routerIsDispatcher)) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "PostingRouter initialization failed, disabling routing\n");
-                m_router.reset();
-                return;
-            }
-
-            m_router->SetAppendCallback(
-                [this](SizeType headID, std::shared_ptr<std::string> headVec,
-                       int appendNum, std::string& appendPosting) -> ErrorCode {
-                    ExtraWorkSpace workSpace;
-                    InitWorkSpace(&workSpace);
-                    return Append(&workSpace, headID, appendNum, appendPosting);
-                });
-
-            m_router->Start();
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "PostingRouter started for layer %d\n",
-                m_layer);
-        }
-
-    public:
-        void EnableRouter(Options& p_opt)
-        {
-            if (!m_router && p_opt.m_routerEnabled && !p_opt.m_routerNodeAddrs.empty()) {
-                InitializeRouter(p_opt);
-            }
-        }
-
-        // Transfer the live PostingRouter from a previous searcher instance.
-        // Called during Split/Rebuild when SPANN replaces the ExtraDynamicSearcher
-        // with a fresh one. We move the router (preserving TCP connections and hash
-        // ring) and re-bind callbacks so the `this` pointer targets the new object.
-        void AdoptRouter(IExtraSearcher* source) override
-        {
-            auto* src = dynamic_cast<ExtraDynamicSearcher*>(source);
-            if (!src || !src->m_router) return;
-
-            m_router = std::move(src->m_router);
-            m_router->SetAppendCallback(
-                [this](SizeType headID, std::shared_ptr<std::string> headVec,
-                       int appendNum, std::string& appendPosting) -> ErrorCode {
-                    ExtraWorkSpace workSpace;
-                    InitWorkSpace(&workSpace);
-                    return Append(&workSpace, headID, appendNum, appendPosting);
-                });
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "PostingRouter adopted from previous index (layer %d)\n", m_layer);
+                "WorkerNode bound to ExtraDynamicSearcher (layer %d)\n", m_layer);
         }
 
         virtual bool Available() override
@@ -1179,7 +1169,7 @@ namespace SPTAG::SPANN {
 
                     // RAII guard: releases the remote lock on scope exit (continue/return/exception)
                     struct RemoteLockGuard {
-                        PostingRouter* router = nullptr;
+                        WorkerNode* router = nullptr;
                         int nodeIndex = -1;
                         SizeType headID = -1;
                         bool active = false;
@@ -1197,7 +1187,7 @@ namespace SPTAG::SPANN {
                                     m_splitThreadPool->add(curJob);
                                     return ErrorCode::Success;
                                 }
-                                remoteLockGuard.router = m_router.get();
+                                remoteLockGuard.router = m_router;
                                 remoteLockGuard.nodeIndex = target.nodeIndex;
                                 remoteLockGuard.headID = queryResult->VID;
                                 remoteLockGuard.active = true;
@@ -2888,48 +2878,6 @@ namespace SPTAG::SPANN {
                 return m_router->GetRemoteQueueSize();
             }
             return 0;
-        }
-
-        void SetHeadSyncCallback() {
-            if (m_router && m_router->IsEnabled()) {
-                auto* headIndex = m_headIndex;
-                int layer = m_layer;
-                m_router->SetHeadSyncCallback([headIndex, layer](const HeadSyncEntry& entry) {
-                    if (entry.op == HeadSyncEntry::Op::Add) {
-                        headIndex->AddHeadIndex(entry.headVector.data(), entry.headVID, 0,
-                            static_cast<DimensionType>(entry.headVector.size() / sizeof(ValueType)),
-                            layer + 1, nullptr);
-                    } else {
-                        headIndex->DeleteIndex(entry.headVID, layer + 1);
-                    }
-                });
-
-                // Remote lock callback: uses per-bucket atomic flags instead of
-                // cross-thread mutex lock/unlock (which would be UB).
-                // On lock: atomically set the bucket flag, then probe m_rwLocks with
-                //   same-thread try_lock+unlock to verify no local operation is ongoing.
-                // On unlock: clear the bucket flag.
-                // MergePostings checks the flag after acquiring m_rwLocks to defer if set.
-                m_router->SetRemoteLockCallback([this](SizeType headID, bool lock) -> bool {
-                    unsigned bucket = COMMON::FineGrainedRWLock::hash_func(static_cast<unsigned>(headID));
-                    if (lock) {
-                        bool expected = false;
-                        if (!m_remoteBucketLocked[bucket].compare_exchange_strong(expected, true)) {
-                            return false; // bucket already remotely locked
-                        }
-                        // Probe: verify no local merge holds this bucket's mutex
-                        if (!m_rwLocks[headID].try_lock()) {
-                            m_remoteBucketLocked[bucket].store(false); // rollback
-                            return false;
-                        }
-                        m_rwLocks[headID].unlock(); // same thread — no UB
-                        return true;
-                    } else {
-                        m_remoteBucketLocked[bucket].store(false);
-                        return true;
-                    }
-                });
-            }
         }
 
         bool AllFinished() {

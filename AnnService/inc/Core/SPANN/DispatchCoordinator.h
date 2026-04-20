@@ -31,8 +31,8 @@ namespace SPTAG::SPANN {
     class DispatchCoordinator {
     public:
         /// Abstract interface for sending packets to peer nodes.
-        /// PostingRouter implements this so DispatchCoordinator doesn't
-        /// depend on the full router.
+        /// NetworkNode implements this so DispatchCoordinator doesn't
+        /// depend on the full node class.
         class PeerNetwork {
         public:
             virtual ~PeerNetwork() = default;
@@ -222,7 +222,7 @@ namespace SPTAG::SPANN {
             m_network->SendPacket(connID, std::move(pkt), nullptr);
         }
 
-        // ---- Packet handlers (called by PostingRouter's server/client) ----
+        // ---- Packet handlers (called by NetworkNode's server/client) ----
 
         /// Handle an incoming dispatch command from the driver (worker side).
         void HandleDispatchCommand(Socket::ConnectionID connID, Socket::Packet packet) {

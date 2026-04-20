@@ -5,7 +5,9 @@
 #include "inc/Core/Common/DistanceUtils.h"
 #include "inc/Core/Common/QueryResultSet.h"
 #include "inc/Core/SPANN/Index.h"
-#include "inc/Core/SPANN/PostingRouter.h"
+#include "inc/Core/SPANN/WorkerNode.h"
+#include "inc/Core/SPANN/DispatcherNode.h"
+#include "inc/Core/SPANN/ExtraDynamicSearcher.h"
 #include "inc/Core/SPANN/SPANNResultIterator.h"
 #include "inc/Core/VectorIndex.h"
 #include "inc/Core/Common/IQuantizer.h"
@@ -57,6 +59,29 @@ static __attribute__((constructor)) void install_segfault_handler() {
 }
 
 using namespace SPTAG;
+
+// Helper: parse "host:port,host:port,..." into vector of pairs.
+static std::vector<std::pair<std::string, std::string>> ParseNodeAddrs(const std::string& addrStr) {
+    std::vector<std::pair<std::string, std::string>> result;
+    auto parts = Helper::StrUtils::SplitString(addrStr, ",");
+    for (auto& part : parts) {
+        auto hp = Helper::StrUtils::SplitString(part, ":");
+        if (hp.size() == 2) result.emplace_back(hp[0], hp[1]);
+    }
+    return result;
+}
+
+// Helper: bind a WorkerNode to the ExtraDynamicSearcher inside a VectorIndex.
+// Calls SetRouter() which wires up append, head-sync, and remote-lock callbacks.
+template <typename T>
+static void BindRouterToIndex(SPANN::WorkerNode* worker, std::shared_ptr<VectorIndex>& index) {
+    auto* spannIndex = dynamic_cast<SPANN::Index<T>*>(index.get());
+    if (!spannIndex) return;
+    auto diskIndex = spannIndex->GetDiskIndex(0);
+    if (!diskIndex) return;
+    auto* searcher = dynamic_cast<SPANN::ExtraDynamicSearcher<T>*>(diskIndex.get());
+    if (searcher) searcher->SetRouter(worker);
+}
 
 namespace SPFreshTest
 {
@@ -414,7 +439,8 @@ float Search(std::shared_ptr<VectorIndex> &vecIndex, std::shared_ptr<VectorSet> 
 
 template <typename ValueType>
 void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step,
-                   std::shared_ptr<VectorSet> addset, std::shared_ptr<MetadataSet> &metaset, int searchThreads = 0, std::shared_ptr<VectorSet> queryset = nullptr, int numQueries = 0, int k = 5, std::ostream* benchmarkData = nullptr, int start = 0)
+                   std::shared_ptr<VectorSet> addset, std::shared_ptr<MetadataSet> &metaset, int searchThreads = 0, std::shared_ptr<VectorSet> queryset = nullptr, int numQueries = 0, int k = 5, std::ostream* benchmarkData = nullptr, int start = 0,
+                   SPANN::WorkerNode* router = nullptr)
 {
     p_index->ForceCompaction();
     p_index->GetDBStat();
@@ -426,8 +452,7 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
     // When router is enabled, use bulk AddIndex to amortize RPC overhead:
     // ExtraDynamicSearcher::AddIndex batches all remote appends and flushes
     // once, instead of one RPC per vector in the per-vector path.
-    auto* insertRouter = static_cast<SPANN::PostingRouter*>(p_index->GetRouter());
-    bool useBulk = (insertRouter && insertRouter->GetNumNodes() > 1);
+    bool useBulk = (router && router->GetNumNodes() > 1);
 
     // Per-vector insert (original path): each thread grabs one vector at a time
     std::atomic_size_t vectorsSent(start);
@@ -571,10 +596,11 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
                                std::shared_ptr<VectorSet> &truth, const std::string &truthPath,
                                SizeType baseVectorCount, int topK, int searchK, int numThreads, int numQueries, int batches, int totalbatches,
                                std::ostream &benchmarkData, std::string prefix = "",
-                               int nodeIndex = 0, SPANN::PostingRouter* router = nullptr)
+                               int nodeIndex = 0, SPANN::WorkerNode* router = nullptr,
+                               SPANN::DispatcherNode* dispatcher = nullptr)
 {
     int nodeCount = (router && router->IsEnabled()) ? router->GetNumNodes() : 1;
-    bool distributed = (router != nullptr && router->IsEnabled() && nodeCount > 1);
+    bool distributed = (dispatcher != nullptr && router != nullptr && router->IsEnabled() && nodeCount > 1);
 
     // Determine this node's query range (balanced contiguous partition)
     int myStart = 0, myCount = numQueries;
@@ -598,7 +624,7 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
         // Dispatch search command to all workers via TCP
         static std::atomic<int> s_searchRound{0};
         int round = s_searchRound.fetch_add(1);
-        auto dispatchId = router->BroadcastDispatchCommand(
+        auto dispatchId = dispatcher->BroadcastDispatchCommand(
             SPANN::DispatchCommand::Type::Search, static_cast<std::uint32_t>(round));
 
         // Search our share of queries (timed)
@@ -624,7 +650,7 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
         float localWallTime = std::chrono::duration_cast<std::chrono::microseconds>(batchEnd - batchStart).count() / 1000000.0f;
 
         // Collect worker timings via TCP
-        auto workerTimes = router->WaitForAllResults(dispatchId, 300);
+        auto workerTimes = dispatcher->WaitForAllResults(dispatchId, 300);
         float maxWallTime = localWallTime;
         for (double wt : workerTimes) {
             maxWallTime = std::max(maxWallTime, static_cast<float>(wt));
@@ -764,30 +790,6 @@ ErrorCode QuantizeVectors(const std::shared_ptr<COMMON::IQuantizer>& quantizer,
     return ErrorCode::Success;
 }
 
-void ApplyRouterParams(std::shared_ptr<VectorIndex>& index,
-                       const std::map<std::string, std::string>& ssdOverrides,
-                       bool skipEnable = false)
-{
-    static const std::vector<std::pair<std::string, std::string>> routerKeys = {
-        {"routerenabled", "RouterEnabled"},
-        {"routerisdispatcher", "RouterIsDispatcher"},
-        {"routerlocalnodeindex", "RouterLocalNodeIndex"},
-        {"routernodeaddrs", "RouterNodeAddrs"},
-        {"routernodestores", "RouterNodeStores"}
-    };
-    bool hasRouter = false;
-    for (const auto& [lowerKey, paramName] : routerKeys) {
-        auto it = ssdOverrides.find(lowerKey);
-        if (it != ssdOverrides.end() && !it->second.empty()) {
-            index->SetParameter(paramName.c_str(), it->second.c_str(), "Router");
-            if (lowerKey == "routerenabled" && it->second == "true") hasRouter = true;
-        }
-    }
-    if (hasRouter && !skipEnable) {
-        index->EnableRouter();
-    }
-}
-
 template <typename T>
 void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, const std::string &truthPath,
                   DistCalcMethod distMethod, const std::string &indexPath, int dimension, int baseVectorCount,
@@ -883,7 +885,10 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     jsonFile << "  \"results\": {\n";
 
     int SearchK = enableQuantization? topK * 4 : topK;
-    SPANN::PostingRouter* router = nullptr;  // set after index is built
+    // Distributed routing: dispatcher + local worker (driver node is both)
+    std::unique_ptr<SPANN::DispatcherNode> dispatcher;
+    std::unique_ptr<SPANN::WorkerNode> worker;
+    SPANN::WorkerNode* workerPtr = nullptr;  // convenience alias
     std::shared_ptr<VectorIndex> index;
     std::shared_ptr<COMMON::IQuantizer> quantizer;
     
@@ -947,36 +952,54 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
         BOOST_REQUIRE(index != nullptr);
     }
 
-    // Enable distributed routing if configured.
-    // The driver node acts as the dispatcher (manages the hash ring).
+    // Set up distributed routing if configured.
+    // The driver node is both dispatcher (ring management) and worker 0 (compute).
     {
-        auto overridesWithDispatcher = ssdOverrides;
-        overridesWithDispatcher["routerisdispatcher"] = "true";
-        ApplyRouterParams(index, overridesWithDispatcher);
-    }
-    index->SetHeadSyncCallback();
-    std::shared_ptr<VectorIndex> routerOwner = index; // track who owns the router
-    // Get router pointer for dispatch coordination
-    router = static_cast<SPANN::PostingRouter*>(index->GetRouter());
+        auto itEnabled = ssdOverrides.find("routerenabled");
+        bool routerEnabled = (itEnabled != ssdOverrides.end() && itEnabled->second == "true");
 
-    // Wait for all worker nodes to register and establish connections
-    if (router && router->IsEnabled()) {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Waiting for all peer connections...\n");
-        BOOST_REQUIRE_MESSAGE(router->WaitForAllPeersConnected(120),
-            "Timed out waiting for peer connections");
+        if (routerEnabled && numNodes > 1) {
+            auto nodeAddrs = ParseNodeAddrs(ssdOverrides.at("routernodeaddrs"));
+            auto nodeStores = Helper::StrUtils::SplitString(
+                ssdOverrides.count("routernodestores") ? ssdOverrides.at("routernodestores") : "", ",");
 
-        // Dispatcher: wait for all workers to register (ring fully populated)
-        if (numNodes > 1) {
+            // Create dispatcher
+            dispatcher.reset(new SPANN::DispatcherNode());
+            BOOST_REQUIRE_MESSAGE(dispatcher->Initialize(nodeIndex, nodeAddrs),
+                "DispatcherNode initialization failed");
+            BOOST_REQUIRE(dispatcher->Start());
+
+            // Create local worker (driver is also worker 0)
+            auto* spannIndex = dynamic_cast<SPANN::Index<T>*>(index.get());
+            BOOST_REQUIRE(spannIndex != nullptr);
+            auto diskIndex = spannIndex->GetDiskIndex(0);
+            auto* searcher = dynamic_cast<SPANN::ExtraDynamicSearcher<T>*>(diskIndex.get());
+            BOOST_REQUIRE(searcher != nullptr);
+
+            worker.reset(new SPANN::WorkerNode());
+            BOOST_REQUIRE_MESSAGE(worker->Initialize(searcher->GetDB(), nodeIndex, nodeAddrs, nodeStores),
+                "WorkerNode initialization failed");
+            BOOST_REQUIRE(worker->Start());
+            workerPtr = worker.get();
+
+            // Bind worker to searcher (wires append + headsync + lock callbacks)
+            searcher->SetRouter(workerPtr);
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Waiting for all peer connections...\n");
+            BOOST_REQUIRE_MESSAGE(dispatcher->WaitForAllPeersConnected(120),
+                "Timed out waiting for peer connections");
+
+            // Wait for all workers to register (ring fully populated)
             auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
             while (std::chrono::steady_clock::now() < deadline) {
-                if (router->GetNumNodes() >= numNodes) break;
+                if (dispatcher->GetNumNodes() >= numNodes) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
-            BOOST_REQUIRE_MESSAGE(router->GetNumNodes() >= numNodes,
+            BOOST_REQUIRE_MESSAGE(dispatcher->GetNumNodes() >= numNodes,
                 "Timed out waiting for all workers to register (have "
-                + std::to_string(router->GetNumNodes()) + "/" + std::to_string(numNodes) + ")");
+                + std::to_string(dispatcher->GetNumNodes()) + "/" + std::to_string(numNodes) + ")");
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "All %d nodes registered in hash ring\n", router->GetNumNodes());
+                "All %d nodes registered in hash ring\n", dispatcher->GetNumNodes());
         }
     }
 
@@ -1003,11 +1026,11 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     BOOST_TEST_MESSAGE("\n=== Benchmark 0: Query Before Insertions (Round 1) ===");
     BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
                                  numSearchThreads, numQueries, 0, batches, tmpbenchmark, "",
-                                 nodeIndex, router);
+                                 nodeIndex, workerPtr, dispatcher.get());
     jsonFile << "    \"benchmark0_query_before_insert\": ";
     BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
                                  numSearchThreads, numQueries, 0, batches, jsonFile, "",
-                                 nodeIndex, router);
+                                 nodeIndex, workerPtr, dispatcher.get());
     jsonFile << ",\n";
     jsonFile.flush();
 
@@ -1015,11 +1038,11 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     BOOST_TEST_MESSAGE("\n=== Benchmark 0b: Query Before Insertions (Round 2) ===");
     BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
                                  numSearchThreads, numQueries, 0, batches, tmpbenchmark, "",
-                                 nodeIndex, router);
+                                 nodeIndex, workerPtr, dispatcher.get());
     jsonFile << "    \"benchmark0b_query_before_insert_round2\": ";
     BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
                                  numSearchThreads, numQueries, 0, batches, jsonFile, "",
-                                 nodeIndex, router);
+                                 nodeIndex, workerPtr, dispatcher.get());
     jsonFile << ",\n";
     jsonFile.flush();
 
@@ -1110,17 +1133,15 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Cloned index from %s to %s, check:%d, time: %f seconds\n",
                              prevPath.c_str(), clonePath.c_str(), (int)(cloneret == ErrorCode::Success), seconds);
 
-                // Adopt router from previous index (reuse TCP connections)
-                ApplyRouterParams(cloneIndex, ssdOverrides, true);
-                cloneIndex->AdoptRouter(routerOwner.get());
-                cloneIndex->SetHeadSyncCallback();
-                routerOwner = cloneIndex;
-                router = static_cast<SPANN::PostingRouter*>(cloneIndex->GetRouter());
+                // Re-bind the worker to the new cloned index's searcher
+                if (workerPtr) {
+                    BindRouterToIndex<T>(workerPtr, cloneIndex);
+                }
 
                 // Dispatch insert command to workers via TCP
                 std::uint64_t insertDispatchId = 0;
-                if (router && router->IsEnabled() && numNodes > 1) {
-                    insertDispatchId = router->BroadcastDispatchCommand(
+                if (dispatcher && numNodes > 1) {
+                    insertDispatchId = dispatcher->BroadcastDispatchCommand(
                         SPANN::DispatchCommand::Type::Insert, static_cast<std::uint32_t>(iter));
                 }
 
@@ -1142,18 +1163,18 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                     std::shared_ptr<MetadataSet> addmetaset = TestUtils::TestDataGenerator<T>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
                     start = std::chrono::high_resolution_clock::now();
                     InsertVectors<T>(static_cast<SPANN::Index<T> *>(cloneIndex.get()), numInsertThreads, perNodeBatch,
-                                     addset, addmetaset, numSearchDuringInsertThreads, queryset, numQueries, SearchK, &jsonFile, 0);
+                                     addset, addmetaset, numSearchDuringInsertThreads, queryset, numQueries, SearchK, &jsonFile, 0, workerPtr);
                 }
                 // Flush any pending remote appends
-                if (router) {
-                    router->FlushRemoteAppends();
-                    router->LogRouteStats(" (batch flush)");
-                    router->ResetRouteStats();
+                if (workerPtr) {
+                    workerPtr->FlushRemoteAppends();
+                    workerPtr->LogRouteStats(" (batch flush)");
+                    workerPtr->ResetRouteStats();
                 }
 
                 // Wait for all worker nodes to finish this batch via TCP
                 if (insertDispatchId > 0) {
-                    auto workerTimes = router->WaitForAllResults(insertDispatchId, 600);
+                    auto workerTimes = dispatcher->WaitForAllResults(insertDispatchId, 600);
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Driver: all %d workers finished batch %d\n",
                                  (int)workerTimes.size(), iter + 1);
                 }
@@ -1228,20 +1249,20 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                 jsonFile << "        \"search\":";
                 BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount, topK, SearchK, numSearchThreads,
                                              numQueries, iter + 1, batches, tmpbenchmark, "    ",
-                                             nodeIndex, router);
+                                             nodeIndex, workerPtr, dispatcher.get());
                 BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount,
                                              topK, SearchK, numSearchThreads, numQueries, iter + 1, batches, jsonFile, "    ",
-                                             nodeIndex, router);
+                                             nodeIndex, workerPtr, dispatcher.get());
                 jsonFile << ",\n";
 
                 BOOST_TEST_MESSAGE("\n=== Benchmark 2b: Query After Insertions and Deletions (Round 2) ===");
                 jsonFile << "        \"search_round2\":";
                 BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount, topK, SearchK, numSearchThreads,
                                              numQueries, iter + 1, batches, tmpbenchmark, "    ",
-                                             nodeIndex, router);
+                                             nodeIndex, workerPtr, dispatcher.get());
                 BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount,
                                              topK, SearchK, numSearchThreads, numQueries, iter + 1, batches, jsonFile, "    ",
-                                             nodeIndex, router);
+                                             nodeIndex, workerPtr, dispatcher.get());
                 jsonFile << ",\n";
 
                 start = std::chrono::high_resolution_clock::now();
@@ -1286,8 +1307,8 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     jsonFile.close();
 
     // Stop workers in distributed mode
-    if (router && router->IsEnabled() && numNodes > 1) {
-        router->BroadcastDispatchCommand(SPANN::DispatchCommand::Type::Stop, 0);
+    if (dispatcher && numNodes > 1) {
+        dispatcher->BroadcastDispatchCommand(SPANN::DispatchCommand::Type::Stop, 0);
         SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Driver: sent Stop command to all workers\n");
     }
 
@@ -2408,7 +2429,7 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
 }
 
 /// Worker node for distributed benchmark.
-/// Loads a pre-built head index, connects to TiKV, starts PostingRouter,
+/// Loads a pre-built head index, connects to TiKV, starts WorkerNode,
 /// and waits for TCP dispatch commands from the driver node.
 BOOST_AUTO_TEST_CASE(WorkerNode)
 {
@@ -2479,13 +2500,60 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
     BOOST_REQUIRE(VectorIndex::LoadIndex(indexPath, index) == ErrorCode::Success);
     BOOST_REQUIRE(index != nullptr);
 
-    ApplyRouterParams(index, ssdOverrides);
-    index->SetHeadSyncCallback();
+    // Create WorkerNode directly (no longer via index->EnableRouter)
+    auto parsedNodeAddrs = ParseNodeAddrs(ssdOverrides.count("routernodeaddrs") ? ssdOverrides.at("routernodeaddrs") : "");
+    auto nodeStoresStr = ssdOverrides.count("routernodestores") ? ssdOverrides.at("routernodestores") : "";
+    auto nodeStores = Helper::StrUtils::SplitString(nodeStoresStr, ",");
 
-    // Get router pointer and wait for ring from dispatcher
-    auto* router = static_cast<SPANN::PostingRouter*>(index->GetRouter());
-    BOOST_REQUIRE_MESSAGE(router != nullptr && router->IsEnabled(),
-                          "WorkerNode requires an enabled PostingRouter");
+    // Get db from ExtraDynamicSearcher — needed by WorkerNode for store mapping
+    std::shared_ptr<Helper::KeyValueIO> workerDb;
+    {
+        auto* spannIdx = dynamic_cast<SPANN::Index<float>*>(index.get());
+        if (spannIdx) {
+            auto di = spannIdx->GetDiskIndex(0);
+            if (di) {
+                auto* s = dynamic_cast<SPANN::ExtraDynamicSearcher<float>*>(di.get());
+                if (s) workerDb = s->GetDB();
+            }
+        }
+        if (!workerDb) {
+            auto* spannIdx8 = dynamic_cast<SPANN::Index<std::int8_t>*>(index.get());
+            if (spannIdx8) {
+                auto di = spannIdx8->GetDiskIndex(0);
+                if (di) {
+                    auto* s = dynamic_cast<SPANN::ExtraDynamicSearcher<std::int8_t>*>(di.get());
+                    if (s) workerDb = s->GetDB();
+                }
+            }
+        }
+        if (!workerDb) {
+            auto* spannIdxU8 = dynamic_cast<SPANN::Index<std::uint8_t>*>(index.get());
+            if (spannIdxU8) {
+                auto di = spannIdxU8->GetDiskIndex(0);
+                if (di) {
+                    auto* s = dynamic_cast<SPANN::ExtraDynamicSearcher<std::uint8_t>*>(di.get());
+                    if (s) workerDb = s->GetDB();
+                }
+            }
+        }
+    }
+    BOOST_REQUIRE_MESSAGE(workerDb != nullptr, "WorkerNode: could not extract db from index");
+
+    SPANN::WorkerNode workerNode;
+    BOOST_REQUIRE_MESSAGE(workerNode.Initialize(workerDb, nodeIndex, parsedNodeAddrs, nodeStores),
+                          "WorkerNode initialization failed");
+    BOOST_REQUIRE(workerNode.Start());
+    auto* router = &workerNode;
+
+    // Bind worker to the searcher inside the index
+    if (valueType == VectorValueType::UInt8)
+        BindRouterToIndex<std::uint8_t>(router, index);
+    else if (valueType == VectorValueType::Int8)
+        BindRouterToIndex<std::int8_t>(router, index);
+    else
+        BindRouterToIndex<float>(router, index);
+
+    // Wait for ring from dispatcher
     BOOST_REQUIRE_MESSAGE(router->WaitForRing(120),
                           "WorkerNode: Timed out waiting for ring from dispatcher");
 
@@ -2584,17 +2652,20 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
                 auto addset = TestUtils::TestDataGenerator<std::uint8_t>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
                 auto addmetaset = TestUtils::TestDataGenerator<std::uint8_t>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
                 InsertVectors<std::uint8_t>(static_cast<SPANN::Index<std::uint8_t>*>(index.get()),
-                                            numInsertThreads, perNodeBatch, addset, addmetaset);
+                                            numInsertThreads, perNodeBatch, addset, addmetaset,
+                                            0, nullptr, 0, 5, nullptr, 0, router);
             } else if (valueType == VectorValueType::Int8) {
                 auto addset = TestUtils::TestDataGenerator<std::int8_t>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
                 auto addmetaset = TestUtils::TestDataGenerator<std::int8_t>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
                 InsertVectors<std::int8_t>(static_cast<SPANN::Index<std::int8_t>*>(index.get()),
-                                           numInsertThreads, perNodeBatch, addset, addmetaset);
+                                           numInsertThreads, perNodeBatch, addset, addmetaset,
+                                           0, nullptr, 0, 5, nullptr, 0, router);
             } else {
                 auto addset = TestUtils::TestDataGenerator<float>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
                 auto addmetaset = TestUtils::TestDataGenerator<float>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
                 InsertVectors<float>(static_cast<SPANN::Index<float>*>(index.get()),
-                                     numInsertThreads, perNodeBatch, addset, addmetaset);
+                                     numInsertThreads, perNodeBatch, addset, addmetaset,
+                                     0, nullptr, 0, 5, nullptr, 0, router);
             }
 
             router->FlushRemoteAppends();

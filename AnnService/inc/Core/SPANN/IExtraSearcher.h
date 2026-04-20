@@ -354,13 +354,6 @@ namespace SPTAG {
             virtual ErrorCode Checkpoint(std::string prefix) { return ErrorCode::Success; }
 
             virtual void InitWorkSpace(ExtraWorkSpace* p_exWorkSpace, bool clear = false) {}
-
-            // Distributed routing lifecycle (no-op defaults, overridden by ExtraDynamicSearcher).
-            // Data-plane methods live on PostingRouter directly.
-            virtual void EnableRouter(Options& p_opt) {}
-            virtual void AdoptRouter(IExtraSearcher* source) {}
-            virtual void SetHeadSyncCallback() {}
-            virtual void* GetRouter() { return nullptr; }
         };
     } // SPANN
 } // SPTAG
