@@ -13,6 +13,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -95,6 +96,9 @@ namespace SPTAG::SPANN {
                 if (numWorkers > 0) {
                     auto state = std::make_shared<PendingDispatch>();
                     state->remaining.store(numWorkers);
+                    for (int i = 0; i < numNodes; i++) {
+                        if (i != localIdx) state->pendingNodes.insert(i);
+                    }
                     {
                         std::lock_guard<std::mutex> lock(m_dispatchMutex);
                         m_pendingDispatches[dispatchId] = state;
@@ -166,9 +170,17 @@ namespace SPTAG::SPANN {
             }
 
             if (status == std::future_status::timeout) {
+                std::string nodeList;
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    for (int n : state->pendingNodes) {
+                        if (!nodeList.empty()) nodeList += ",";
+                        nodeList += std::to_string(n);
+                    }
+                }
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "DispatchCoordinator: Timeout waiting for results (id=%llu, %d remaining)\n",
-                    (unsigned long long)dispatchId, state->remaining.load());
+                    "DispatchCoordinator: Timeout waiting for results (id=%llu, %d remaining, nodes=[%s])\n",
+                    (unsigned long long)dispatchId, state->remaining.load(), nodeList.c_str());
                 return {};
             }
 
@@ -244,8 +256,10 @@ namespace SPTAG::SPANN {
             }
 
             auto self = this;
-            std::thread([self, callback, cmd]() {
+            int localIdx = m_network->GetLocalNodeIndex();
+            std::thread([self, callback, cmd, localIdx]() {
                 DispatchResult result = callback(cmd);
+                result.m_nodeIndex = localIdx;
                 result.m_dispatchId = cmd.m_dispatchId;
                 result.m_round = cmd.m_round;
 
@@ -273,9 +287,9 @@ namespace SPTAG::SPANN {
             }
 
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "DispatchCoordinator: Result id=%llu round=%u status=%d wallTime=%.3f\n",
+                "DispatchCoordinator: Result id=%llu round=%u node=%d status=%d wallTime=%.3f\n",
                 (unsigned long long)result.m_dispatchId, result.m_round,
-                (int)result.m_status, result.m_wallTime);
+                result.m_nodeIndex, (int)result.m_status, result.m_wallTime);
 
             std::shared_ptr<PendingDispatch> state;
             {
@@ -297,6 +311,8 @@ namespace SPTAG::SPANN {
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
                 state->wallTimes.push_back(result.m_wallTime);
+                if (result.m_nodeIndex >= 0)
+                    state->pendingNodes.erase(result.m_nodeIndex);
             }
 
             if (state->remaining.fetch_sub(1) == 1) {
@@ -311,6 +327,7 @@ namespace SPTAG::SPANN {
             std::promise<void> done;
             std::mutex mutex;
             std::vector<double> wallTimes;
+            std::set<int> pendingNodes;  // nodes that haven't responded yet
         };
 
         PeerNetwork* m_network = nullptr;
