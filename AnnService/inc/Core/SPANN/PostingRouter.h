@@ -7,6 +7,7 @@
 #include "inc/Core/SPANN/DistributedProtocol.h"
 #include "inc/Core/SPANN/ConsistentHashRing.h"
 #include "inc/Core/SPANN/DispatchCoordinator.h"
+#include "inc/Core/SPANN/RemotePostingOps.h"
 #include "inc/Helper/KeyValueIO.h"
 #include "inc/Helper/CommonHelper.h"
 #include "inc/Socket/Client.h"
@@ -39,27 +40,17 @@ namespace SPTAG::SPANN {
     /// This guarantees that the same headID always routes to the same compute
     /// node, enabling local per-headID locking for Append/Split/Merge correctness.
 
-    class PostingRouter : public DispatchCoordinator::PeerNetwork {
+    class PostingRouter : public DispatchCoordinator::PeerNetwork,
+                         public RemotePostingOps::NetworkAccess {
     public:
-        /// Callback type for handling a local append.
-        using AppendCallback = std::function<ErrorCode(
-            SizeType headID,
-            std::shared_ptr<std::string> headVec,
-            int appendNum,
-            std::string& appendPosting)>;
+        using AppendCallback = RemotePostingOps::AppendCallback;
 
         /// Callback for executing a dispatch command on a worker node.
         /// Delegated to DispatchCoordinator.
         using DispatchCallback = DispatchCoordinator::DispatchCallback;
 
-        /// Callback to apply a head sync entry on the local head index.
-        /// For Add: call AddHeadIndex with (vectorData, headVID, dim).
-        /// For Delete: call DeleteIndex with (headVID, layer).
-        using HeadSyncCallback = std::function<void(const HeadSyncEntry& entry)>;
-
-        /// Callback for remote lock: try_lock or unlock a headID on this node.
-        /// Returns true if lock was acquired (Lock) or released (Unlock).
-        using RemoteLockCallback = std::function<bool(SizeType headID, bool lock)>;
+        using HeadSyncCallback = RemotePostingOps::HeadSyncCallback;
+        using RemoteLockCallback = RemotePostingOps::RemoteLockCallback;
 
         PostingRouter()
             : m_enabled(false), m_localNodeIndex(-1) {}
@@ -132,25 +123,26 @@ namespace SPTAG::SPANN {
 
             m_enabled = true;
 
-            // Wire up dispatch coordinator
+            // Wire up dispatch coordinator and remote posting ops
             m_dispatch.SetNetwork(this);
+            m_remoteOps.SetNetwork(this);
 
             return true;
         }
 
         /// Set the callback for handling appends locally (called for incoming RPCs).
         void SetAppendCallback(AppendCallback cb) {
-            m_appendCallback = std::move(cb);
+            m_remoteOps.SetAppendCallback(std::move(cb));
         }
 
         /// Set the callback for applying head sync entries on the local head index.
         void SetHeadSyncCallback(HeadSyncCallback cb) {
-            m_headSyncCallback = std::move(cb);
+            m_remoteOps.SetHeadSyncCallback(std::move(cb));
         }
 
         /// Set the callback for remote lock/unlock of headIDs on this node.
         void SetRemoteLockCallback(RemoteLockCallback cb) {
-            m_remoteLockCallback = std::move(cb);
+            m_remoteOps.SetRemoteLockCallback(std::move(cb));
         }
 
         /// Set the callback for dispatch commands (worker side).
@@ -169,33 +161,31 @@ namespace SPTAG::SPANN {
         bool Start() {
             if (!m_enabled) return false;
 
-            // --- Server side: listen for incoming AppendRequests ---
+            // --- Server side: listen for incoming requests ---
             Socket::PacketHandlerMapPtr serverHandlers(new Socket::PacketHandlerMap);
             serverHandlers->emplace(Socket::PacketType::AppendRequest,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
-                    HandleAppendRequest(connID, std::move(packet));
+                    m_remoteOps.HandleAppendRequest(connID, std::move(packet));
                 });
             serverHandlers->emplace(Socket::PacketType::BatchAppendRequest,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
-                    HandleBatchAppendRequest(connID, std::move(packet));
+                    m_remoteOps.HandleBatchAppendRequest(connID, std::move(packet));
                 });
             serverHandlers->emplace(Socket::PacketType::HeadSyncRequest,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
-                    HandleHeadSyncRequest(connID, std::move(packet));
+                    m_remoteOps.HandleHeadSyncRequest(connID, std::move(packet));
                 });
             serverHandlers->emplace(Socket::PacketType::RemoteLockRequest,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
-                    HandleRemoteLockRequest(connID, std::move(packet));
+                    m_remoteOps.HandleRemoteLockRequest(connID, std::move(packet));
                 });
             serverHandlers->emplace(Socket::PacketType::DispatchCommand,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
-                    HandleDispatchCommand(connID, std::move(packet));
+                    m_dispatch.HandleDispatchCommand(connID, std::move(packet));
                 });
-            // DispatchResult arrives on the server when a worker's CLIENT connects
-            // to this node's SERVER to send results back.
             serverHandlers->emplace(Socket::PacketType::DispatchResult,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
-                    HandleDispatchResult(connID, std::move(packet));
+                    m_dispatch.HandleDispatchResult(connID, std::move(packet));
                 });
 
             const auto& localAddr = m_nodeAddrs[m_localNodeIndex];
@@ -205,23 +195,23 @@ namespace SPTAG::SPANN {
                 "PostingRouter server listening on %s:%s\n",
                 localAddr.first.c_str(), localAddr.second.c_str());
 
-            // --- Client side: connect to all peer nodes ---
+            // --- Client side: handle responses ---
             Socket::PacketHandlerMapPtr clientHandlers(new Socket::PacketHandlerMap);
             clientHandlers->emplace(Socket::PacketType::AppendResponse,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
-                    HandleAppendResponse(connID, std::move(packet));
+                    m_remoteOps.HandleAppendResponse(connID, std::move(packet));
                 });
             clientHandlers->emplace(Socket::PacketType::BatchAppendResponse,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
-                    HandleBatchAppendResponse(connID, std::move(packet));
+                    m_remoteOps.HandleBatchAppendResponse(connID, std::move(packet));
                 });
             clientHandlers->emplace(Socket::PacketType::RemoteLockResponse,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
-                    HandleRemoteLockResponse(connID, std::move(packet));
+                    m_remoteOps.HandleRemoteLockResponse(connID, std::move(packet));
                 });
             clientHandlers->emplace(Socket::PacketType::DispatchResult,
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
-                    HandleDispatchResult(connID, std::move(packet));
+                    m_dispatch.HandleDispatchResult(connID, std::move(packet));
                 });
 
             m_client.reset(new Socket::Client(clientHandlers, 2, 30));
@@ -407,8 +397,7 @@ namespace SPTAG::SPANN {
             return std::atomic_load(&m_hashRing);
         }
 
-        /// Send an append request to a remote compute node and wait for the response.
-        /// Returns ErrorCode::Success on success, or an error code on failure.
+        /// Send an append request to a remote compute node (delegated to RemotePostingOps).
         ErrorCode SendRemoteAppend(
             int targetNodeIndex,
             SizeType headID,
@@ -416,72 +405,8 @@ namespace SPTAG::SPANN {
             int appendNum,
             std::string& appendPosting)
         {
-            // Ensure connection to target
-            Socket::ConnectionID connID = GetPeerConnection(targetNodeIndex);
-            if (connID == Socket::c_invalidConnectionID) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: Cannot connect to node %d for headID %lld\n",
-                    targetNodeIndex, (std::int64_t)headID);
-                return ErrorCode::Fail;
-            }
-
-            // Serialize request
-            RemoteAppendRequest req;
-            req.m_headID = headID;
-            req.m_headVec = *headVec;
-            req.m_appendNum = appendNum;
-            req.m_appendPosting = appendPosting;
-
-            Socket::Packet packet;
-            packet.Header().m_packetType = Socket::PacketType::AppendRequest;
-            packet.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
-            packet.Header().m_connectionID = Socket::c_invalidConnectionID;
-
-            // Allocate a ResourceID and create a promise for the response
-            Socket::ResourceID resID = m_nextResourceId.fetch_add(1);
-            packet.Header().m_resourceID = resID;
-
-            std::promise<ErrorCode> promise;
-            std::future<ErrorCode> future = promise.get_future();
-            {
-                std::lock_guard<std::mutex> lock(m_pendingMutex);
-                m_pendingResponses.emplace(resID, std::move(promise));
-            }
-
-            // Serialize body
-            auto bodySize = static_cast<std::uint32_t>(req.EstimateBufferSize());
-            packet.Header().m_bodyLength = bodySize;
-            packet.AllocateBuffer(bodySize);
-            req.Write(packet.Body());
-            packet.Header().WriteBuffer(packet.HeaderBuffer());
-
-            // Send
-            m_client->SendPacket(connID, std::move(packet),
-                [resID, this](bool success) {
-                    if (!success) {
-                        // Send failed; complete the promise with error
-                        std::lock_guard<std::mutex> lock(m_pendingMutex);
-                        auto it = m_pendingResponses.find(resID);
-                        if (it != m_pendingResponses.end()) {
-                            it->second.set_value(ErrorCode::Fail);
-                            m_pendingResponses.erase(it);
-                        }
-                    }
-                });
-
-            // Wait for response (with timeout)
-            auto status = future.wait_for(std::chrono::seconds(30));
-            if (status == std::future_status::timeout) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: Timeout waiting for append response for headID %lld from node %d\n",
-                    (std::int64_t)headID, targetNodeIndex);
-                // Clean up pending entry
-                std::lock_guard<std::mutex> lock(m_pendingMutex);
-                m_pendingResponses.erase(resID);
-                return ErrorCode::Fail;
-            }
-
-            return future.get();
+            return m_remoteOps.SendRemoteAppend(
+                targetNodeIndex, headID, headVec, appendNum, appendPosting);
         }
 
         bool IsEnabled() const { return m_enabled; }
@@ -517,93 +442,13 @@ namespace SPTAG::SPANN {
             return false;
         }
 
-        /// Send a batch of append requests to a remote node in a single round-trip.
-        /// Returns ErrorCode::Success if all items succeeded, ErrorCode::Fail otherwise.
+        /// Send a batch of append requests to a remote node (delegated to RemotePostingOps).
         ErrorCode SendBatchRemoteAppend(
             int targetNodeIndex,
             std::vector<RemoteAppendRequest>& items)
         {
-            if (items.empty()) return ErrorCode::Success;
-
-            // Retry once on connection failure (handles driver PostingRouter re-init)
-            for (int attempt = 0; attempt < 2; attempt++) {
-                Socket::ConnectionID connID = GetPeerConnection(targetNodeIndex);
-                if (connID == Socket::c_invalidConnectionID) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                        "PostingRouter: Cannot connect to node %d for batch append (%d items, attempt %d)\n",
-                        targetNodeIndex, (int)items.size(), attempt + 1);
-                    if (attempt == 0) continue; // retry after GetPeerConnection reconnects
-                    return ErrorCode::Fail;
-                }
-
-                BatchRemoteAppendRequest batchReq;
-                batchReq.m_count = static_cast<std::uint32_t>(items.size());
-                batchReq.m_items = std::move(items); // move in for serialization
-
-                Socket::Packet packet;
-                packet.Header().m_packetType = Socket::PacketType::BatchAppendRequest;
-                packet.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
-                packet.Header().m_connectionID = Socket::c_invalidConnectionID;
-
-                Socket::ResourceID resID = m_nextResourceId.fetch_add(1);
-                packet.Header().m_resourceID = resID;
-
-                std::promise<ErrorCode> promise;
-                std::future<ErrorCode> future = promise.get_future();
-                {
-                    std::lock_guard<std::mutex> lock(m_pendingMutex);
-                    m_pendingResponses.emplace(resID, std::move(promise));
-                }
-
-                auto bodySize = static_cast<std::uint32_t>(batchReq.EstimateBufferSize());
-                packet.Header().m_bodyLength = bodySize;
-                packet.AllocateBuffer(bodySize);
-                batchReq.Write(packet.Body());
-                // Move items back after serialization so they're available for retry
-                items = std::move(batchReq.m_items);
-                packet.Header().WriteBuffer(packet.HeaderBuffer());
-
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Debug,
-                    "PostingRouter: Sending batch of %u appends to node %d (resID=%u, bodySize=%u, attempt=%d)\n",
-                    batchReq.m_count, targetNodeIndex, resID, bodySize, attempt + 1);
-
-                m_client->SendPacket(connID, std::move(packet),
-                    [resID, this](bool success) {
-                        if (!success) {
-                            std::lock_guard<std::mutex> lock(m_pendingMutex);
-                            auto it = m_pendingResponses.find(resID);
-                            if (it != m_pendingResponses.end()) {
-                                it->second.set_value(ErrorCode::Fail);
-                                m_pendingResponses.erase(it);
-                            }
-                        }
-                    });
-
-                auto status = future.wait_for(std::chrono::seconds(60));
-                if (status == std::future_status::timeout) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                        "PostingRouter: Timeout waiting for batch append response from node %d\n",
-                        targetNodeIndex);
-                    std::lock_guard<std::mutex> lock(m_pendingMutex);
-                    m_pendingResponses.erase(resID);
-                    InvalidatePeerConnection(targetNodeIndex);
-                    if (attempt == 0) continue; // retry
-                    return ErrorCode::Fail;
-                }
-
-                ErrorCode result = future.get();
-                if (result == ErrorCode::Success) return ErrorCode::Success;
-
-                // Send failed — invalidate connection and retry
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                    "PostingRouter: Batch append to node %d failed (attempt %d), reconnecting...\n",
-                    targetNodeIndex, attempt + 1);
-                InvalidatePeerConnection(targetNodeIndex);
-            }
-            return ErrorCode::Fail;
+            return m_remoteOps.SendBatchRemoteAppend(targetNodeIndex, items);
         }
-
-        // ---- Dispatch protocol (driver ↔ worker coordination) ----
 
         // ---- Dispatch protocol (delegated to DispatchCoordinator) ----
 
@@ -683,420 +528,27 @@ namespace SPTAG::SPANN {
         }
 
         /// Invalidate a cached peer connection so the next GetPeerConnection reconnects.
-        void InvalidatePeerConnection(int nodeIndex) {
+        void InvalidatePeerConnection(int nodeIndex) override {
             std::lock_guard<std::mutex> lock(m_connMutex);
             m_peerConnections[nodeIndex] = Socket::c_invalidConnectionID;
         }
 
-        /// Handle an incoming AppendRequest from a peer node.
-        void HandleAppendRequest(Socket::ConnectionID connID, Socket::Packet packet) {
-            if (packet.Header().m_bodyLength == 0) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: Empty AppendRequest received\n");
-                return;
-            }
+        // ---- Internal posting ops (delegated to RemotePostingOps) ----
 
-            if (Socket::c_invalidConnectionID == packet.Header().m_connectionID) {
-                packet.Header().m_connectionID = connID;
-            }
-
-            // Deserialize request
-            RemoteAppendRequest req;
-            if (req.Read(packet.Body()) == nullptr) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: AppendRequest version mismatch\n");
-                SendAppendResponse(packet, RemoteAppendResponse::Status::Failed);
-                return;
-            }
-
-            // Execute the append via the registered callback
-            ErrorCode result = ErrorCode::Fail;
-            if (m_appendCallback) {
-                auto headVec = std::make_shared<std::string>(std::move(req.m_headVec));
-                result = m_appendCallback(
-                    req.m_headID, headVec, req.m_appendNum, req.m_appendPosting);
-            }
-
-            auto status = (result == ErrorCode::Success)
-                ? RemoteAppendResponse::Status::Success
-                : RemoteAppendResponse::Status::Failed;
-            SendAppendResponse(packet, status);
-        }
-
-        /// Send an AppendResponse back to the requesting peer.
-        void SendAppendResponse(Socket::Packet& srcPacket, RemoteAppendResponse::Status status) {
-            RemoteAppendResponse resp;
-            resp.m_status = status;
-
-            Socket::Packet ret;
-            ret.Header().m_packetType = Socket::PacketType::AppendResponse;
-            ret.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
-            ret.Header().m_connectionID = srcPacket.Header().m_connectionID;
-            ret.Header().m_resourceID = srcPacket.Header().m_resourceID;
-
-            auto bodySize = static_cast<std::uint32_t>(resp.EstimateBufferSize());
-            ret.Header().m_bodyLength = bodySize;
-            ret.AllocateBuffer(bodySize);
-            resp.Write(ret.Body());
-            ret.Header().WriteBuffer(ret.HeaderBuffer());
-
-            m_server->SendPacket(srcPacket.Header().m_connectionID, std::move(ret), nullptr);
-        }
-
-        /// Handle an incoming AppendResponse (client side, matches pending requests).
-        void HandleAppendResponse(Socket::ConnectionID connID, Socket::Packet packet) {
-            Socket::ResourceID resID = packet.Header().m_resourceID;
-
-            std::promise<ErrorCode> promise;
-            {
-                std::lock_guard<std::mutex> lock(m_pendingMutex);
-                auto it = m_pendingResponses.find(resID);
-                if (it == m_pendingResponses.end()) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                        "PostingRouter: Received AppendResponse for unknown resourceID %u\n",
-                        resID);
-                    return;
-                }
-                promise = std::move(it->second);
-                m_pendingResponses.erase(it);
-            }
-
-            if (packet.Header().m_processStatus != Socket::PacketProcessStatus::Ok) {
-                promise.set_value(ErrorCode::Fail);
-                return;
-            }
-
-            RemoteAppendResponse resp;
-            if (resp.Read(packet.Body()) == nullptr) {
-                promise.set_value(ErrorCode::Fail);
-                return;
-            }
-
-            promise.set_value(
-                resp.m_status == RemoteAppendResponse::Status::Success
-                    ? ErrorCode::Success
-                    : ErrorCode::Fail);
-        }
-
-        /// Handle an incoming BatchAppendRequest from a peer node.
-        void HandleBatchAppendRequest(Socket::ConnectionID connID, Socket::Packet packet) {
-            if (packet.Header().m_bodyLength == 0) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: Empty BatchAppendRequest received\n");
-                return;
-            }
-
-            if (Socket::c_invalidConnectionID == packet.Header().m_connectionID) {
-                packet.Header().m_connectionID = connID;
-            }
-
-            BatchRemoteAppendRequest batchReq;
-            if (batchReq.Read(packet.Body(), packet.Header().m_bodyLength) == nullptr) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: BatchAppendRequest parse failed\n");
-                SendBatchAppendResponse(packet, 0, 1);
-                return;
-            }
-
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Debug,
-                "PostingRouter: Received batch of %u appends\n", batchReq.m_count);
-
-            // Process appends in parallel using worker threads
-            std::atomic<std::uint32_t> successCount(0), failCount(0);
-            std::vector<std::thread> workers;
-            std::atomic<size_t> nextItem(0);
-            int numWorkers = std::min(static_cast<int>(batchReq.m_items.size()), 16);
-            workers.reserve(numWorkers);
-            for (int w = 0; w < numWorkers; w++) {
-                workers.emplace_back([&]() {
-                    while (true) {
-                        size_t idx = nextItem.fetch_add(1);
-                        if (idx >= batchReq.m_items.size()) break;
-                        auto& req = batchReq.m_items[idx];
-                        ErrorCode result = ErrorCode::Fail;
-                        if (m_appendCallback) {
-                            auto headVec = std::make_shared<std::string>(std::move(req.m_headVec));
-                            result = m_appendCallback(
-                                req.m_headID, headVec, req.m_appendNum, req.m_appendPosting);
-                        }
-                        if (result == ErrorCode::Success) successCount.fetch_add(1);
-                        else failCount.fetch_add(1);
-                    }
-                });
-            }
-            for (auto& t : workers) t.join();
-
-            SendBatchAppendResponse(packet, successCount, failCount);
-        }
-
-        /// Send a BatchAppendResponse back to the requesting peer.
-        void SendBatchAppendResponse(Socket::Packet& srcPacket,
-            std::uint32_t successCount, std::uint32_t failCount) {
-            BatchRemoteAppendResponse resp;
-            resp.m_successCount = successCount;
-            resp.m_failCount = failCount;
-
-            Socket::Packet ret;
-            ret.Header().m_packetType = Socket::PacketType::BatchAppendResponse;
-            ret.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
-            ret.Header().m_connectionID = srcPacket.Header().m_connectionID;
-            ret.Header().m_resourceID = srcPacket.Header().m_resourceID;
-
-            auto bodySize = static_cast<std::uint32_t>(resp.EstimateBufferSize());
-            ret.Header().m_bodyLength = bodySize;
-            ret.AllocateBuffer(bodySize);
-            resp.Write(ret.Body());
-            ret.Header().WriteBuffer(ret.HeaderBuffer());
-
-            m_server->SendPacket(srcPacket.Header().m_connectionID, std::move(ret), nullptr);
-        }
-
-        /// Handle an incoming BatchAppendResponse (client side).
-        void HandleBatchAppendResponse(Socket::ConnectionID connID, Socket::Packet packet) {
-            Socket::ResourceID resID = packet.Header().m_resourceID;
-
-            std::promise<ErrorCode> promise;
-            {
-                std::lock_guard<std::mutex> lock(m_pendingMutex);
-                auto it = m_pendingResponses.find(resID);
-                if (it == m_pendingResponses.end()) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                        "PostingRouter: Received BatchAppendResponse for unknown resourceID %u\n",
-                        resID);
-                    return;
-                }
-                promise = std::move(it->second);
-                m_pendingResponses.erase(it);
-            }
-
-            if (packet.Header().m_processStatus != Socket::PacketProcessStatus::Ok) {
-                promise.set_value(ErrorCode::Fail);
-                return;
-            }
-
-            BatchRemoteAppendResponse resp;
-            if (resp.Read(packet.Body()) == nullptr) {
-                promise.set_value(ErrorCode::Fail);
-                return;
-            }
-
-            promise.set_value(resp.m_failCount == 0 ? ErrorCode::Success : ErrorCode::Fail);
-        }
-
-        /// Handle an incoming head sync request (fire-and-forget, no response sent).
-    public:
-        void HandleHeadSyncRequest(Socket::ConnectionID connID, Socket::Packet packet) {
-            if (!m_headSyncCallback) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                    "PostingRouter: HeadSyncRequest received but no callback set\n");
-                return;
-            }
-
-            const std::uint8_t* buf = packet.Body();
-            const std::uint8_t* bufEnd = buf + packet.Header().m_bodyLength;
-            std::uint32_t entryCount = 0;
-            buf = Socket::SimpleSerialization::SimpleReadBuffer(buf, entryCount);
-
-            // Each entry has at minimum ~13 bytes; reject corrupt counts
-            std::uint32_t bodyLength = packet.Header().m_bodyLength;
-            if (bodyLength < sizeof(std::uint32_t) || entryCount > (bodyLength - sizeof(std::uint32_t)) / 8) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: HeadSyncRequest entryCount=%u exceeds bodyLength=%u\n",
-                    entryCount, bodyLength);
-                return;
-            }
-
-            for (std::uint32_t i = 0; i < entryCount; i++) {
-                if (buf >= bufEnd) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                        "PostingRouter: HeadSyncRequest buffer overrun at entry %u/%u\n", i, entryCount);
-                    break;
-                }
-                HeadSyncEntry entry;
-                buf = entry.Read(buf);
-                if (!buf || buf > bufEnd) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                        "PostingRouter: HeadSyncRequest parse error at entry %u/%u\n", i, entryCount);
-                    break;
-                }
-                m_headSyncCallback(entry);
-            }
-        }
-
-        /// Broadcast head sync entries to all peer nodes (fire-and-forget).
         void BroadcastHeadSync(const std::vector<HeadSyncEntry>& entries) {
-            if (!m_enabled || entries.empty()) return;
-
-            // Compute total body size
-            size_t bodySize = sizeof(std::uint32_t); // entry count
-            for (const auto& e : entries) bodySize += e.EstimateBufferSize();
-
-            // Snapshot node count under lock to avoid racing with AddNode
-            int numNodes;
-            {
-                std::lock_guard<std::mutex> lock(m_connMutex);
-                numNodes = static_cast<int>(m_nodeAddrs.size());
-            }
-
-            for (int i = 0; i < numNodes; i++) {
-                if (i == m_localNodeIndex) continue;
-
-                Socket::ConnectionID connID = GetPeerConnection(i);
-                if (connID == Socket::c_invalidConnectionID) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                        "PostingRouter: Cannot broadcast head sync to node %d (no connection)\n", i);
-                    continue;
-                }
-
-                Socket::Packet pkt;
-                pkt.Header().m_packetType = Socket::PacketType::HeadSyncRequest;
-                pkt.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
-                pkt.Header().m_connectionID = Socket::c_invalidConnectionID;
-                pkt.Header().m_resourceID = 0;
-                pkt.Header().m_bodyLength = static_cast<std::uint32_t>(bodySize);
-                pkt.AllocateBuffer(static_cast<std::uint32_t>(bodySize));
-
-                std::uint8_t* buf = pkt.Body();
-                buf = Socket::SimpleSerialization::SimpleWriteBuffer(
-                    static_cast<std::uint32_t>(entries.size()), buf);
-                for (const auto& e : entries) buf = e.Write(buf);
-
-                pkt.Header().WriteBuffer(pkt.HeaderBuffer());
-
-                m_client->SendPacket(connID, std::move(pkt),
-                    [i](bool success) {
-                        if (!success) {
-                            SPTAGLIB_LOG(Helper::LogLevel::LL_Debug,
-                                "PostingRouter: Head sync send to node %d failed\n", i);
-                        }
-                    });
-            }
+            if (!m_enabled) return;
+            m_remoteOps.BroadcastHeadSync(entries);
         }
 
-        /// Send a remote lock request to a peer node (synchronous, waits for response).
-        /// Returns true if lock was granted.
         bool SendRemoteLock(int nodeIndex, SizeType headID, bool lock) {
             if (!m_enabled) return false;
-
-            Socket::ConnectionID connID = GetPeerConnection(nodeIndex);
-            if (connID == Socket::c_invalidConnectionID) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                    "PostingRouter: Cannot send remote lock to node %d\n", nodeIndex);
-                return false;
-            }
-
-            RemoteLockRequest req;
-            req.m_op = lock ? RemoteLockRequest::Op::Lock : RemoteLockRequest::Op::Unlock;
-            req.m_headID = headID;
-
-            Socket::ResourceID rid = m_nextResourceId.fetch_add(1);
-            std::promise<ErrorCode> promise;
-            auto future = promise.get_future();
-            {
-                std::lock_guard<std::mutex> guard(m_pendingMutex);
-                m_pendingResponses.emplace(rid, std::move(promise));
-            }
-
-            Socket::Packet pkt;
-            auto bodySize = req.EstimateBufferSize();
-            pkt.Header().m_packetType = Socket::PacketType::RemoteLockRequest;
-            pkt.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
-            pkt.Header().m_connectionID = Socket::c_invalidConnectionID;
-            pkt.Header().m_resourceID = rid;
-            pkt.Header().m_bodyLength = static_cast<std::uint32_t>(bodySize);
-            pkt.AllocateBuffer(static_cast<std::uint32_t>(bodySize));
-            req.Write(pkt.Body());
-            pkt.Header().WriteBuffer(pkt.HeaderBuffer());
-
-            m_client->SendPacket(connID, std::move(pkt),
-                [rid, this](bool success) {
-                    if (!success) {
-                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                            "PostingRouter: RemoteLock send failed for resourceID %u\n", rid);
-                        std::lock_guard<std::mutex> guard(m_pendingMutex);
-                        auto it = m_pendingResponses.find(rid);
-                        if (it != m_pendingResponses.end()) {
-                            it->second.set_value(ErrorCode::Fail);
-                            m_pendingResponses.erase(it);
-                        }
-                    }
-                });
-
-            auto status = future.wait_for(std::chrono::milliseconds(5000));
-            if (status != std::future_status::ready) {
-                std::lock_guard<std::mutex> guard(m_pendingMutex);
-                m_pendingResponses.erase(rid);
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                    "PostingRouter: Remote lock timeout for headID %lld on node %d\n",
-                    (std::int64_t)headID, nodeIndex);
-                return false;
-            }
-            return future.get() == ErrorCode::Success;
+            return m_remoteOps.SendRemoteLock(nodeIndex, headID, lock);
         }
 
-        /// Handle an incoming remote lock request.
-        void HandleRemoteLockRequest(Socket::ConnectionID connID, Socket::Packet packet) {
-            RemoteLockRequest req;
-            if (req.Read(packet.Body()) == nullptr) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "PostingRouter: Failed to parse RemoteLockRequest\n");
-                return;
-            }
+        // ---- NetworkAccess interface (used by RemotePostingOps) ----
 
-            RemoteLockResponse resp;
-            resp.m_status = RemoteLockResponse::Status::Denied;
-
-            if (m_remoteLockCallback) {
-                bool isLock = (req.m_op == RemoteLockRequest::Op::Lock);
-                bool success = m_remoteLockCallback(req.m_headID, isLock);
-                if (success) resp.m_status = RemoteLockResponse::Status::Granted;
-            }
-
-            Socket::Packet ret;
-            auto bodySize = resp.EstimateBufferSize();
-            ret.Header().m_packetType = Socket::PacketType::RemoteLockResponse;
-            ret.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
-            ret.Header().m_connectionID = connID;
-            ret.Header().m_resourceID = packet.Header().m_resourceID;
-            ret.Header().m_bodyLength = static_cast<std::uint32_t>(bodySize);
-            ret.AllocateBuffer(static_cast<std::uint32_t>(bodySize));
-            resp.Write(ret.Body());
-            ret.Header().WriteBuffer(ret.HeaderBuffer());
-
-            m_server->SendPacket(connID, std::move(ret), nullptr);
-        }
-
-        /// Handle remote lock response.
-        void HandleRemoteLockResponse(Socket::ConnectionID connID, Socket::Packet packet) {
-            Socket::ResourceID rid = packet.Header().m_resourceID;
-            std::promise<ErrorCode> promise;
-            {
-                std::lock_guard<std::mutex> guard(m_pendingMutex);
-                auto it = m_pendingResponses.find(rid);
-                if (it == m_pendingResponses.end()) return;
-                promise = std::move(it->second);
-                m_pendingResponses.erase(it);
-            }
-
-            RemoteLockResponse resp;
-            if (resp.Read(packet.Body()) == nullptr) {
-                promise.set_value(ErrorCode::Fail);
-                return;
-            }
-
-            promise.set_value(resp.m_status == RemoteLockResponse::Status::Granted
-                ? ErrorCode::Success : ErrorCode::Fail);
-        }
-
-        /// Delegate dispatch command handling to DispatchCoordinator.
-        void HandleDispatchCommand(Socket::ConnectionID connID, Socket::Packet packet) {
-            m_dispatch.HandleDispatchCommand(connID, std::move(packet));
-        }
-
-        /// Delegate dispatch result handling to DispatchCoordinator.
-        void HandleDispatchResult(Socket::ConnectionID connID, Socket::Packet packet) {
-            m_dispatch.HandleDispatchResult(connID, std::move(packet));
-        }
+        Socket::Client* GetClient() override { return m_client.get(); }
+        Socket::Server* GetServer() override { return m_server.get(); }
 
         bool m_enabled;
         int m_localNodeIndex;
@@ -1125,22 +577,9 @@ namespace SPTAG::SPANN {
         std::thread m_bgConnectThread;
         std::atomic<bool> m_bgConnectStop{false};
 
-        // Response matching for synchronous sends
-        std::atomic<Socket::ResourceID> m_nextResourceId{1};
-        std::mutex m_pendingMutex;
-        std::unordered_map<Socket::ResourceID, std::promise<ErrorCode>> m_pendingResponses;
-
-        // Append callback (set by ExtraDynamicSearcher)
-        AppendCallback m_appendCallback;
-
-        // Head sync callback (set by ExtraDynamicSearcher)
-        HeadSyncCallback m_headSyncCallback;
-
-        // Remote lock callback (set by ExtraDynamicSearcher for cross-node Merge)
-        RemoteLockCallback m_remoteLockCallback;
-
-        // Dispatch coordinator (external driver↔worker coordination)
-        DispatchCoordinator m_dispatch;
+        // Delegated subsystems
+        RemotePostingOps m_remoteOps;       // Internal posting RPCs (append/headsync/lock)
+        DispatchCoordinator m_dispatch;     // External dispatch (driver↔worker coordination)
 
         // Batched remote append queue (queue items from multiple AddIndex calls, flush once)
         mutable std::mutex m_appendQueueMutex;
