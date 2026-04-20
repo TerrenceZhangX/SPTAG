@@ -192,30 +192,66 @@ namespace SPTAG
 
                 if (m_layer > 0 && globalIDs != nullptr && globalIDs->R() > 0) {
                     // Non-leaf layer: only globalIDs are alive, rest deleted
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                        "TiKVVersionMap::Initialize layer=%d: initializing non-leaf with size=%d, totalChunks=%d, globalIDs=%d\n",
+                        m_layer, size, totalChunks, globalIDs->R());
+
                     std::string defaultChunk(m_chunkSize, static_cast<char>(0xfe));
+                    SizeType writtenChunks = 0;
                     for (SizeType c = 0; c < totalChunks; c++) {
-                        WriteChunk(c, defaultChunk);
+                        auto ret = WriteChunk(c, defaultChunk);
+                        if (ret == ErrorCode::Success) writtenChunks++;
+                        else if (c < 5) {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                "TiKVVersionMap::Initialize: failed to write default chunk (layer=%d, chunk=%d, ret=%d)\n",
+                                m_layer, c, static_cast<int>(ret));
+                        }
                     }
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                        "TiKVVersionMap::Initialize layer=%d: wrote %d/%d default chunks (all-deleted)\n",
+                        m_layer, writtenChunks, totalChunks);
+
                     m_deleted = size;
 
                     // Mark vectors in globalIDs as version 0 (not deleted)
                     std::unordered_map<SizeType, std::string> dirtyChunks;
+                    SizeType markedAlive = 0;
                     for (SizeType i = 0; i < globalIDs->R(); i++) {
                         SizeType globalID = *(globalIDs->At(i));
                         SizeType cid = ChunkId(globalID);
                         if (dirtyChunks.find(cid) == dirtyChunks.end()) {
                             dirtyChunks[cid] = ReadChunk(cid);
                             if (dirtyChunks[cid].empty()) {
+                                if (i < 50) {
+                                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                        "TiKVVersionMap::Initialize layer=%d: ReadChunk(%d) returned empty; reinitializing locally\n",
+                                        m_layer, cid);
+                                }
                                 dirtyChunks[cid].assign(m_chunkSize, static_cast<char>(0xfe));
                             }
                         }
                         uint8_t oldVal = static_cast<uint8_t>(dirtyChunks[cid][ChunkOffset(globalID)]);
                         dirtyChunks[cid][ChunkOffset(globalID)] = 0x00;
+                        markedAlive++;
                         if (oldVal == 0xfe) m_deleted--;
                     }
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                        "TiKVVersionMap::Initialize layer=%d: marked %d globalIDs alive, %d dirty chunks to flush\n",
+                        m_layer, markedAlive, static_cast<int>(dirtyChunks.size()));
+
+                    SizeType flushedChunks = 0;
                     for (auto& [cid, data] : dirtyChunks) {
-                        WriteChunk(cid, data);
+                        auto ret = WriteChunk(cid, data);
+                        if (ret == ErrorCode::Success) flushedChunks++;
+                        else {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                "TiKVVersionMap::Initialize: failed to flush dirty chunk (layer=%d, chunk=%d, ret=%d)\n",
+                                m_layer, cid, static_cast<int>(ret));
+                        }
                     }
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                        "TiKVVersionMap::Initialize layer=%d: flushed %d/%d dirty chunks, m_deleted=%d\n",
+                        m_layer, flushedChunks, static_cast<int>(dirtyChunks.size()), m_deleted.load());
                 } else {
                     // Leaf layer (layer 0) or no globalIDs: all VIDs start alive (version 0)
                     std::string aliveChunk(m_chunkSize, static_cast<char>(0x00));
@@ -449,12 +485,24 @@ namespace SPTAG
                     for (SizeType cid : missChunkIds) {
                         keys.push_back(ChunkKey(cid));
                     }
-                    m_db->MultiGet(keys, &fetchedValues, MaxTimeout, nullptr);
+                    auto batchRet = m_db->MultiGet(keys, &fetchedValues, MaxTimeout, nullptr);
+                    if (batchRet != ErrorCode::Success) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                     "TiKVVersionMap::BatchGetVersions: MultiGet failed (layer=%d, ret=%d, missChunks=%d, vids=%d). Missing versions are treated as deleted (0xfe).\n",
+                                     m_layer, static_cast<int>(batchRet), static_cast<int>(missChunkIds.size()), static_cast<int>(vids.size()));
+                    }
 
                     for (size_t i = 0; i < missChunkIds.size(); i++) {
                         if (i < fetchedValues.size() && !fetchedValues[i].empty()) {
                             fetchedChunks[missChunkIds[i]] = std::move(fetchedValues[i]);
                         }
+                    }
+
+                    SizeType missingChunks = static_cast<SizeType>(missChunkIds.size() - fetchedChunks.size());
+                    if (missingChunks > 0) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                     "TiKVVersionMap::BatchGetVersions: missing chunk data after MultiGet (layer=%d, missing=%d/%d, sampleChunk=%d). Missing versions are treated as deleted (0xfe).\n",
+                                     m_layer, missingChunks, static_cast<int>(missChunkIds.size()), missChunkIds[0]);
                     }
 
                     // Update LRU cache with fetched chunks (exclusive lock)
@@ -467,6 +515,7 @@ namespace SPTAG
                 }
 
                 // Phase 3: Resolve all VIDs
+                SizeType fallbackDeletedCount = 0;
                 for (auto& [cid, indices] : chunkToIndices) {
                     const std::string* chunkData = nullptr;
 
@@ -485,15 +534,22 @@ namespace SPTAG
                     for (size_t idx : indices) {
                         if (chunkData == nullptr) {
                             versions[idx] = 0xfe;
+                            fallbackDeletedCount++;
                         } else {
                             int offset = ChunkOffset(vids[idx]);
                             if (offset < (int)chunkData->size()) {
                                 versions[idx] = static_cast<uint8_t>((*chunkData)[offset]);
                             } else {
                                 versions[idx] = 0xfe;
+                                fallbackDeletedCount++;
                             }
                         }
                     }
+                }
+                if (fallbackDeletedCount > 0) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                 "TiKVVersionMap::BatchGetVersions: fallback-to-deleted count=%d/%d (layer=%d).\n",
+                                 fallbackDeletedCount, static_cast<int>(vids.size()), m_layer);
                 }
             }
 
@@ -507,7 +563,15 @@ namespace SPTAG
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "TiKVVersionMap: Loaded count=%d from TiKV\n", m_count.load());
                 } else {
                     m_count = 0;
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVVersionMap: No count found in TiKV, starting at 0\n");
+                    if (ret != ErrorCode::Success) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                     "TiKVVersionMap: failed to read count key '%s' (layer=%d, ret=%d). Set m_count=0; subsequent GetVersion may return 0xfe for all VIDs.\n",
+                                     CountKey().c_str(), m_layer, static_cast<int>(ret));
+                    } else {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                     "TiKVVersionMap: invalid count value for key '%s' (layer=%d, valueSize=%d, expected>=%d). Set m_count=0; subsequent GetVersion may return 0xfe for all VIDs.\n",
+                                     CountKey().c_str(), m_layer, static_cast<int>(val.size()), static_cast<int>(sizeof(SizeType)));
+                    }
                 }
                 // Scan all chunks to compute accurate delete count
                 SizeType count = m_count.load();

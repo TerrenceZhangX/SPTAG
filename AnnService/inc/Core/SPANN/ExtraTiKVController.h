@@ -398,8 +398,14 @@ namespace SPTAG::SPANN
                     SetDeadline(ctx, timeout);
 
                     auto status = stub->RawBatchGet(&ctx, request, &response);
-                    if (!status.ok()) {
-                        // Fallback: individual gets for this group
+                    if (!status.ok() || (status.ok() && response.has_region_error())) {
+                        // Region error or gRPC failure: invalidate cache and fallback to individual gets
+                        // (Get has its own region error retry logic)
+                        if (status.ok() && response.has_region_error()) {
+                            for (auto& [idx, pkey] : group) {
+                                InvalidateRegionCache(pkey);
+                            }
+                        }
                         for (auto& [idx, pkey] : group) {
                             std::string val;
                             auto ret = Get(keys[idx], &val, timeout, reqs);
@@ -498,8 +504,14 @@ namespace SPTAG::SPANN
                 SetDeadline(ctx, timeout);
 
                 auto status = stub->RawBatchGet(&ctx, request, &response);
-                if (!status.ok()) {
-                    // Fallback to individual gets
+                if (!status.ok() || (status.ok() && response.has_region_error())) {
+                    // Region error or gRPC failure: invalidate cache and fallback to individual gets
+                    // (Get has its own region error retry logic)
+                    if (status.ok() && response.has_region_error()) {
+                        for (auto& [idx, pkey] : group) {
+                            InvalidateRegionCache(pkey);
+                        }
+                    }
                     for (auto& [idx, pkey] : group) {
                         std::string val;
                         if (Get(keys[idx], &val, timeout, reqs) == ErrorCode::Success) {
@@ -979,9 +991,13 @@ namespace SPTAG::SPANN
             std::string countKey = MakeCountKey(headID);
             std::string countValue(reinterpret_cast<const char*>(&newCount), sizeof(int32_t));
 
-            for (int attempt = 0; attempt < 10; attempt++) {
+            // Try RawBatchPut first (single round trip).
+            // If region error (e.g. after split, chunkKey and countKey may be
+            // in different regions), fall back to individual Put calls which
+            // each have their own region-aware retry logic.
+            for (int attempt = 0; attempt < 3; attempt++) {
                 auto stub = GetStubForKey(chunkKey);
-                if (!stub) return ErrorCode::Fail;
+                if (!stub) break;
 
                 kvrpcpb::RawBatchPutRequest request;
                 SetContext(request.mutable_context(), chunkKey);
@@ -1006,6 +1022,7 @@ namespace SPTAG::SPANN
                 }
                 if (response.has_region_error()) {
                     InvalidateRegionCache(chunkKey);
+                    InvalidateRegionCache(countKey);
                     std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
                     continue;
                 }
@@ -1016,7 +1033,24 @@ namespace SPTAG::SPANN
                 }
                 return ErrorCode::Success;
             }
-            return ErrorCode::Fail;
+
+            // Fallback: write chunk and count separately.
+            // Each call has its own region discovery + retry logic,
+            // so this handles cross-region splits reliably.
+            // Note: chunkKey/countKey are already prefixed, use RawPutWithRetry.
+            auto ret1 = RawPutWithRetry(chunkKey, chunkValue, timeout);
+            if (ret1 != ErrorCode::Success) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "TiKVIO::PutChunkAndCount fallback: PutChunk failed headID=%d\n", headID);
+                return ret1;
+            }
+            auto ret2 = RawPutWithRetry(countKey, countValue, timeout);
+            if (ret2 != ErrorCode::Success) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "TiKVIO::PutChunkAndCount fallback: PutCount failed headID=%d\n", headID);
+                return ret2;
+            }
+            return ErrorCode::Success;
         }
 
         // Multi-posting scan: read multiple postings in parallel.
@@ -1176,6 +1210,39 @@ namespace SPTAG::SPANN
             result.push_back('_');
             result.append(key);
             return result;
+        }
+
+        // ---- Helper: RawPut with retry for an already-prefixed key ----
+        ErrorCode RawPutWithRetry(const std::string& prefixedKey, const std::string& value,
+                                  const std::chrono::microseconds& timeout) {
+            for (int attempt = 0; attempt < 10; attempt++) {
+                auto stub = GetStubForKey(prefixedKey);
+                if (!stub) return ErrorCode::Fail;
+
+                kvrpcpb::RawPutRequest request;
+                request.set_key(prefixedKey);
+                request.set_value(value);
+                SetContext(request.mutable_context(), prefixedKey);
+
+                kvrpcpb::RawPutResponse response;
+                grpc::ClientContext ctx;
+                SetDeadline(ctx, timeout);
+
+                auto status = stub->RawPut(&ctx, request, &response);
+                if (!status.ok()) {
+                    InvalidateRegionCache(prefixedKey);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    continue;
+                }
+                if (response.has_region_error()) {
+                    InvalidateRegionCache(prefixedKey);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    continue;
+                }
+                if (!response.error().empty()) return ErrorCode::Fail;
+                return ErrorCode::Success;
+            }
+            return ErrorCode::Fail;
         }
 
         std::string StripPrefix(const std::string& prefixedKey) const {
