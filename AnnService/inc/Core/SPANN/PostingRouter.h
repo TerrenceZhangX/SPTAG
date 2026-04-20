@@ -492,6 +492,11 @@ namespace SPTAG::SPANN {
         PostingRouter()
             : m_enabled(false), m_localNodeIndex(-1) {}
 
+        ~PostingRouter() {
+            m_bgConnectStop.store(true);
+            if (m_bgConnectThread.joinable()) m_bgConnectThread.join();
+        }
+
         /// Initialize the router from configuration.
         /// @param p_db         The KeyValueIO backend (for GetKeyLocation).
         /// @param localNodeIdx Index of this node in the compute node list.
@@ -615,6 +620,12 @@ namespace SPTAG::SPANN {
                 [this](Socket::ConnectionID connID, Socket::Packet packet) {
                     HandleDispatchCommand(connID, std::move(packet));
                 });
+            // DispatchResult arrives on the server when a worker's CLIENT connects
+            // to this node's SERVER to send results back.
+            serverHandlers->emplace(Socket::PacketType::DispatchResult,
+                [this](Socket::ConnectionID connID, Socket::Packet packet) {
+                    HandleDispatchResult(connID, std::move(packet));
+                });
 
             const auto& localAddr = m_nodeAddrs[m_localNodeIndex];
             m_server.reset(new Socket::Server(
@@ -645,11 +656,35 @@ namespace SPTAG::SPANN {
             m_client.reset(new Socket::Client(clientHandlers, 2, 30));
 
             m_peerConnections.resize(m_nodeAddrs.size(), Socket::c_invalidConnectionID);
-            for (int i = 0; i < static_cast<int>(m_nodeAddrs.size()); i++) {
-                if (i == m_localNodeIndex) continue;
-                // Try once; lazy reconnect via GetPeerConnection handles failures
-                ConnectToPeer(i, 3, 500);
-            }
+
+            // Launch background thread that keeps retrying failed peer connections.
+            // This handles the case where workers start before the driver's router
+            // is listening — the thread will keep trying until all peers are connected.
+            m_bgConnectStop.store(false);
+            m_bgConnectThread = std::thread([this]() {
+                int numNodes = static_cast<int>(m_nodeAddrs.size());
+                int delayMs = 500;
+                while (!m_bgConnectStop.load()) {
+                    bool allConnected = true;
+                    for (int i = 0; i < numNodes; i++) {
+                        if (i == m_localNodeIndex) continue;
+                        {
+                            std::lock_guard<std::mutex> lock(m_connMutex);
+                            if (m_peerConnections[i] != Socket::c_invalidConnectionID)
+                                continue;
+                        }
+                        allConnected = false;
+                        ConnectToPeer(i, 1, 0);
+                    }
+                    if (allConnected) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                            "PostingRouter: All peer connections established\n");
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+                    delayMs = std::min(delayMs + 500, 5000);
+                }
+            });
 
             return true;
         }
@@ -884,6 +919,37 @@ namespace SPTAG::SPANN {
         }
 
         bool IsEnabled() const { return m_enabled; }
+
+        /// Block until all outbound peer connections are established.
+        /// Call from the driver after workers are ready, before dispatching.
+        /// Returns true if all peers connected within the timeout.
+        bool WaitForAllPeersConnected(int timeoutSec = 120) {
+            if (!m_enabled) return true;
+            int numNodes = static_cast<int>(m_nodeAddrs.size());
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec);
+
+            while (std::chrono::steady_clock::now() < deadline) {
+                bool allConnected = true;
+                for (int i = 0; i < numNodes; i++) {
+                    if (i == m_localNodeIndex) continue;
+                    std::lock_guard<std::mutex> lock(m_connMutex);
+                    if (m_peerConnections[i] == Socket::c_invalidConnectionID) {
+                        allConnected = false;
+                        break;
+                    }
+                }
+                if (allConnected) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                        "PostingRouter: All %d peers connected\n", numNodes - 1);
+                    return true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                "PostingRouter: Timed out waiting for peer connections (%ds)\n", timeoutSec);
+            return false;
+        }
 
         /// Send a batch of append requests to a remote node in a single round-trip.
         /// Returns ErrorCode::Success if all items succeeded, ErrorCode::Fail otherwise.
@@ -1706,6 +1772,10 @@ namespace SPTAG::SPANN {
         std::unique_ptr<Socket::Client> m_client;
         std::mutex m_connMutex;
         std::vector<Socket::ConnectionID> m_peerConnections;
+
+        // Background peer connection thread
+        std::thread m_bgConnectThread;
+        std::atomic<bool> m_bgConnectStop{false};
 
         // Response matching for synchronous sends
         std::atomic<Socket::ResourceID> m_nextResourceId{1};
