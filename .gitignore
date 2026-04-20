@@ -469,3 +469,6 @@ perftest_*
 proidx_*/
 truth_*
 benchmark_logs/
+output_*.json
+cluster.conf
+cluster_1node.conf
