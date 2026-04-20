@@ -353,6 +353,8 @@ namespace SPTAG {
 
             virtual ErrorCode Checkpoint(std::string prefix) { return ErrorCode::Success; }
 
+            virtual void InitWorkSpace(ExtraWorkSpace* p_exWorkSpace, bool clear = false) {}
+
             // Distributed routing (no-op defaults, overridden by ExtraDynamicSearcher)
             virtual void EnableRouter(Options& p_opt) {}
             virtual void AdoptRouter(IExtraSearcher* source) {}

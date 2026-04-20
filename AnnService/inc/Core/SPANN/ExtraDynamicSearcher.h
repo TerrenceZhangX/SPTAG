@@ -1087,8 +1087,7 @@ namespace SPTAG::SPANN {
                     lock.unlock();
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
                         "MergePostings: headID %d deferred (bucket %u remotely locked)\n", headID, bucket);
-                    auto* curJob = new MergeAsyncJob(this, headID, reassign, nullptr);
-                    m_mergeJobsInFlight++;
+                    auto* curJob = new MergeAsyncJob(this, headID, nullptr);
                     m_splitThreadPool->add(curJob);
                     return ErrorCode::Success;
                 }
