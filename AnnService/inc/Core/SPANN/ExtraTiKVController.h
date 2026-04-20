@@ -1647,7 +1647,7 @@ namespace SPTAG::SPANN
                 return results;
             }
 
-            if (numResults > (data.size() - 12) / 12) return results;
+            if (data.size() < 12 + numResults * 12) return results;
 
             results.reserve(numResults);
             for (uint32_t i = 0; i < numResults; i++) {
