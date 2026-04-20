@@ -355,13 +355,10 @@ namespace SPTAG {
 
             virtual void InitWorkSpace(ExtraWorkSpace* p_exWorkSpace, bool clear = false) {}
 
-            // Distributed routing (no-op defaults, overridden by ExtraDynamicSearcher)
+            // Distributed routing lifecycle (no-op defaults, overridden by ExtraDynamicSearcher).
+            // Data-plane methods live on PostingRouter directly.
             virtual void EnableRouter(Options& p_opt) {}
             virtual void AdoptRouter(IExtraSearcher* source) {}
-            virtual ErrorCode FlushRemoteAppends() { return ErrorCode::Success; }
-            virtual size_t GetRemoteQueueSize() const { return 0; }
-            virtual int GetNumNodes() const { return 1; }
-            virtual int GetLocalNodeIndex() const { return 0; }
             virtual void SetHeadSyncCallback() {}
             virtual void* GetRouter() { return nullptr; }
         };

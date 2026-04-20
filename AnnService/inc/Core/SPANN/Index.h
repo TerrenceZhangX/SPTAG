@@ -336,34 +336,6 @@ namespace SPTAG
                 }
             }
 
-            ErrorCode FlushRemoteAppends() override {
-                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
-                    return m_extraSearchers[0]->FlushRemoteAppends();
-                }
-                return ErrorCode::Success;
-            }
-
-            size_t GetRemoteQueueSize() const override {
-                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
-                    return m_extraSearchers[0]->GetRemoteQueueSize();
-                }
-                return 0;
-            }
-
-            int GetNumNodes() const override {
-                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
-                    return m_extraSearchers[0]->GetNumNodes();
-                }
-                return 1;
-            }
-
-            int GetLocalNodeIndex() const override {
-                if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
-                    return m_extraSearchers[0]->GetLocalNodeIndex();
-                }
-                return 0;
-            }
-
             void SetHeadSyncCallback() override {
                 if (!m_extraSearchers.empty() && m_extraSearchers[0]) {
                     m_extraSearchers[0]->SetHeadSyncCallback();

@@ -426,7 +426,8 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
     // When router is enabled, use bulk AddIndex to amortize RPC overhead:
     // ExtraDynamicSearcher::AddIndex batches all remote appends and flushes
     // once, instead of one RPC per vector in the per-vector path.
-    bool useBulk = (p_index->GetNumNodes() > 1);
+    auto* insertRouter = static_cast<SPANN::PostingRouter*>(p_index->GetRouter());
+    bool useBulk = (insertRouter && insertRouter->GetNumNodes() > 1);
 
     // Per-vector insert (original path): each thread grabs one vector at a time
     std::atomic_size_t vectorsSent(start);
@@ -572,8 +573,7 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
                                std::ostream &benchmarkData, std::string prefix = "",
                                int nodeIndex = 0, SPANN::PostingRouter* router = nullptr)
 {
-    auto* spannIndex = static_cast<SPANN::Index<T>*>(index.get());
-    int nodeCount = spannIndex->GetNumNodes();
+    int nodeCount = (router && router->IsEnabled()) ? router->GetNumNodes() : 1;
     bool distributed = (router != nullptr && router->IsEnabled() && nodeCount > 1);
 
     // Determine this node's query range (balanced contiguous partition)
@@ -1125,7 +1125,11 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                                      addset, addmetaset, numSearchDuringInsertThreads, queryset, numQueries, SearchK, &jsonFile, 0);
                 }
                 // Flush any pending remote appends
-                cloneIndex->FlushRemoteAppends();
+                if (router) {
+                    router->FlushRemoteAppends();
+                    router->LogRouteStats(" (batch flush)");
+                    router->ResetRouteStats();
+                }
 
                 // Wait for all worker nodes to finish this batch via TCP
                 if (insertDispatchId > 0) {
@@ -2571,7 +2575,9 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
                                      numInsertThreads, perNodeBatch, addset, addmetaset);
             }
 
-            index->FlushRemoteAppends();
+            router->FlushRemoteAppends();
+            router->LogRouteStats(" (batch flush)");
+            router->ResetRouteStats();
             auto t2 = std::chrono::high_resolution_clock::now();
             double secs = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000000.0;
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Batch %u done - %d vectors in %.2f s (%.1f vec/s)\n",

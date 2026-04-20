@@ -389,7 +389,7 @@ namespace SPTAG::SPANN {
             return 1;
         }
 
-        int GetLocalNodeIndex() const override {
+        int GetLocalNodeIndex() const {
             if (m_router && m_router->IsEnabled()) {
                 return m_router->GetLocalNodeIndex();
             }
