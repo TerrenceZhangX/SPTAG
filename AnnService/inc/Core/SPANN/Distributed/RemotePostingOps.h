@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "inc/Core/SPANN/DistributedProtocol.h"
+#include "inc/Core/SPANN/Distributed/DistributedProtocol.h"
 #include "inc/Socket/Client.h"
 #include "inc/Socket/Server.h"
 #include "inc/Socket/Packet.h"

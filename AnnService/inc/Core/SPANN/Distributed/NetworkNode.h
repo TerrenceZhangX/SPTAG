@@ -4,10 +4,10 @@
 #ifndef _SPTAG_SPANN_NETWORKNODE_H_
 #define _SPTAG_SPANN_NETWORKNODE_H_
 
-#include "inc/Core/SPANN/DistributedProtocol.h"
-#include "inc/Core/SPANN/ConsistentHashRing.h"
-#include "inc/Core/SPANN/DispatchCoordinator.h"
-#include "inc/Core/SPANN/RemotePostingOps.h"
+#include "inc/Core/SPANN/Distributed/DistributedProtocol.h"
+#include "inc/Core/SPANN/Distributed/ConsistentHashRing.h"
+#include "inc/Core/SPANN/Distributed/DispatchCoordinator.h"
+#include "inc/Core/SPANN/Distributed/RemotePostingOps.h"
 #include "inc/Socket/Client.h"
 #include "inc/Socket/Server.h"
 #include "inc/Socket/Packet.h"

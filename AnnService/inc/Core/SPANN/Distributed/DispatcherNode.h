@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "inc/Core/SPANN/NetworkNode.h"
+#include "inc/Core/SPANN/Distributed/NetworkNode.h"
 
 namespace SPTAG::SPANN {
 

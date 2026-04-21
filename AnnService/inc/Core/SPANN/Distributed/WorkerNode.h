@@ -4,7 +4,7 @@
 #ifndef _SPTAG_SPANN_WORKERNODE_H_
 #define _SPTAG_SPANN_WORKERNODE_H_
 
-#include "inc/Core/SPANN/NetworkNode.h"
+#include "inc/Core/SPANN/Distributed/NetworkNode.h"
 #include "inc/Helper/KeyValueIO.h"
 #include "inc/Helper/CommonHelper.h"
 #include "inc/Socket/SimpleSerialization.h"

@@ -19,7 +19,7 @@
 #include "inc/Core/Common/LocalVersionMap.h"
 #include "inc/Core/Common/TiKVVersionMap.h"
 #include "ExtraFileController.h"
-#include "WorkerNode.h"
+#include "Distributed/WorkerNode.h"
 #include <chrono>
 #include <cstdint>
 #include <map>
