@@ -45,6 +45,8 @@ enum class PacketType : std::uint8_t
 
     ResponseMask = 0x80,
 
+    NodeRegisterResponse = ResponseMask | NodeRegisterRequest,
+
     HeartbeatResponse = ResponseMask | HeartbeatRequest,
 
     RegisterResponse = ResponseMask | RegisterRequest,

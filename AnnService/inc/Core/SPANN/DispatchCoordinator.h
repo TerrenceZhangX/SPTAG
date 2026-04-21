@@ -60,6 +60,10 @@ namespace SPTAG::SPANN {
             m_network = network;
         }
 
+        /// Mark a worker node as "local" — its work is done inline by the
+        /// driver so it should be skipped during broadcast/result collection.
+        void SetLocalWorkerIndex(int idx) { m_localWorkerIndex = idx; }
+
         /// Set the callback for executing dispatch commands (worker side).
         void SetDispatchCallback(DispatchCallback cb) {
             m_dispatchCallback = std::move(cb);
@@ -90,26 +94,34 @@ namespace SPTAG::SPANN {
             int numNodes = m_network->GetNumNodes();
             int localIdx = m_network->GetLocalNodeIndex();
 
+            // Build list of nodes to skip (dispatcher + local worker if set)
+            auto shouldSkip = [&](int i) {
+                return i == localIdx || i == m_localWorkerIndex;
+            };
+
+            // Count remote workers (nodes we will actually dispatch to)
+            int remoteWorkers = 0;
+            for (int i = 0; i < numNodes; i++) {
+                if (!shouldSkip(i)) remoteWorkers++;
+            }
+
             // Set up pending state for collecting results (not for Stop)
-            if (type != DispatchCommand::Type::Stop) {
-                int numWorkers = numNodes - 1;
-                if (numWorkers > 0) {
-                    auto state = std::make_shared<PendingDispatch>();
-                    state->remaining.store(numWorkers);
-                    for (int i = 0; i < numNodes; i++) {
-                        if (i != localIdx) state->pendingNodes.insert(i);
-                    }
-                    {
-                        std::lock_guard<std::mutex> lock(m_dispatchMutex);
-                        m_pendingDispatches[dispatchId] = state;
-                    }
+            if (type != DispatchCommand::Type::Stop && remoteWorkers > 0) {
+                auto state = std::make_shared<PendingDispatch>();
+                state->remaining.store(remoteWorkers);
+                for (int i = 0; i < numNodes; i++) {
+                    if (!shouldSkip(i)) state->pendingNodes.insert(i);
+                }
+                {
+                    std::lock_guard<std::mutex> lock(m_dispatchMutex);
+                    m_pendingDispatches[dispatchId] = state;
                 }
             }
 
             auto bodySize = static_cast<std::uint32_t>(cmd.EstimateBufferSize());
 
             for (int i = 0; i < numNodes; i++) {
-                if (i == localIdx) continue;
+                if (shouldSkip(i)) continue;
 
                 Socket::ConnectionID connID = m_network->GetPeerConnection(i);
                 if (connID == Socket::c_invalidConnectionID) {
@@ -145,7 +157,7 @@ namespace SPTAG::SPANN {
                 "DispatchCoordinator: Dispatched %s (id=%llu round=%u) to %d workers\n",
                 type == DispatchCommand::Type::Search ? "Search" :
                 type == DispatchCommand::Type::Insert ? "Insert" : "Stop",
-                (unsigned long long)dispatchId, round, numNodes - 1);
+                (unsigned long long)dispatchId, round, remoteWorkers);
 
             return dispatchId;
         }
@@ -331,6 +343,7 @@ namespace SPTAG::SPANN {
         };
 
         PeerNetwork* m_network = nullptr;
+        int m_localWorkerIndex = -1;  // driver's worker node to skip in broadcasts
         DispatchCallback m_dispatchCallback;
         std::atomic<std::uint64_t> m_nextDispatchId{1};
         std::mutex m_dispatchMutex;

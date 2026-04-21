@@ -72,16 +72,62 @@ static std::vector<std::pair<std::string, std::string>> ParseNodeAddrs(const std
 }
 
 // Helper: bind a WorkerNode to the ExtraDynamicSearcher inside a VectorIndex.
-// Calls SetRouter() which wires up append, head-sync, and remote-lock callbacks.
+// Calls SetWorker() which wires up append, head-sync, and remote-lock callbacks.
 template <typename T>
-static void BindRouterToIndex(SPANN::WorkerNode* worker, std::shared_ptr<VectorIndex>& index) {
+static void BindWorkerToIndex(SPANN::WorkerNode* worker, std::shared_ptr<VectorIndex>& index) {
     auto* spannIndex = dynamic_cast<SPANN::Index<T>*>(index.get());
     if (!spannIndex) return;
     auto diskIndex = spannIndex->GetDiskIndex(0);
     if (!diskIndex) return;
     auto* searcher = dynamic_cast<SPANN::ExtraDynamicSearcher<T>*>(diskIndex.get());
-    if (searcher) searcher->SetRouter(worker);
+    if (searcher) searcher->SetWorker(worker);
 }
+
+// Configuration for distributed mode, read from [Distributed] ini section.
+struct DistributedConfig {
+    bool enabled = false;
+    int workerIndex = 0;          // 0-based: 0 = driver (dispatcher + worker 0), 1+ = remote worker
+    std::string dispatcherAddr;   // "host:port"
+    std::string workerAddrs;      // "host:port,host:port,..."
+    std::string storeAddrs;       // "addr,addr,..."
+    std::string pdAddrs;          // "host:port,host:port,..." (per-worker PD)
+
+    // Number of workers (for query/insert partitioning)
+    int GetNumWorkers() const {
+        if (!enabled || workerAddrs.empty()) return 1;
+        return (int)std::count(workerAddrs.begin(), workerAddrs.end(), ',') + 1;
+    }
+
+    // Parse dispatcher address into host:port pair
+    std::pair<std::string, std::string> GetDispatcherAddr() const {
+        auto hp = Helper::StrUtils::SplitString(dispatcherAddr, ":");
+        if (hp.size() == 2) return {hp[0], hp[1]};
+        return {"", ""};
+    }
+
+    // Get PD address for this worker (falls back to global TiKVPDAddresses)
+    std::string GetLocalPDAddr() const {
+        if (pdAddrs.empty()) return "";
+        auto addrs = Helper::StrUtils::SplitString(pdAddrs, ",");
+        if (workerIndex < (int)addrs.size()) return addrs[workerIndex];
+        return addrs[0];
+    }
+
+    static DistributedConfig FromIni(Helper::IniReader& ini) {
+        DistributedConfig cfg;
+        cfg.enabled = ini.GetParameter("Distributed", "Enabled", false);
+        cfg.dispatcherAddr = ini.GetParameter("Distributed", "DispatcherAddr", std::string(""));
+        cfg.workerAddrs = ini.GetParameter("Distributed", "WorkerAddrs", std::string(""));
+        cfg.storeAddrs = ini.GetParameter("Distributed", "StoreAddrs", std::string(""));
+        cfg.pdAddrs = ini.GetParameter("Distributed", "PDAddrs", std::string(""));
+
+        // Worker index from env var (0 = driver, 1+ = remote worker)
+        const char* wiEnv = std::getenv("WORKER_INDEX");
+        cfg.workerIndex = wiEnv ? std::atoi(wiEnv) : 0;
+
+        return cfg;
+    }
+};
 
 namespace SPFreshTest
 {
@@ -599,7 +645,9 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
                                int nodeIndex = 0, SPANN::WorkerNode* router = nullptr,
                                SPANN::DispatcherNode* dispatcher = nullptr)
 {
-    int nodeCount = (router && router->IsEnabled()) ? router->GetNumNodes() : 1;
+    // Use hash ring node count (workers only) for partitioning, not GetNumNodes() (includes dispatcher)
+    auto ring = (router && router->IsEnabled()) ? router->GetHashRing() : nullptr;
+    int nodeCount = ring ? static_cast<int>(ring->NodeCount()) : 1;
     bool distributed = (dispatcher != nullptr && router != nullptr && router->IsEnabled() && nodeCount > 1);
 
     // Determine this node's query range (balanced contiguous partition)
@@ -798,7 +846,8 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                   const std::string &quantizerFilePath = std::string(""), int quantizedDim = 0, int layers = 1,
                   const std::map<std::string, std::string>& ssdOverrides = {},
                   bool rebuildSsdOnly = false,
-                  bool buildOnly = false)
+                  bool buildOnly = false,
+                  const DistributedConfig& distCfg = {})
 {
     int oldM = M, oldK = K, oldN = N, oldQueries = queries;
     N = baseVectorCount;
@@ -809,22 +858,9 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     int insertBatchSize = insertVectorCount / max(batches, 1);
     int deleteBatchSize = deleteVectorCount / max(batches, 1);
 
-    // Detect multi-node partitioning from router params
-    int nodeIndex = 0;
-    int numNodes = 1;
-    {
-        bool routerEnabled = false;
-        auto itEn = ssdOverrides.find("routerenabled");
-        if (itEn != ssdOverrides.end() && itEn->second == "true") routerEnabled = true;
-        auto it = ssdOverrides.find("routerlocalnodeindex");
-        if (it != ssdOverrides.end()) nodeIndex = std::stoi(it->second);
-        if (routerEnabled) {
-            auto it2 = ssdOverrides.find("routernodeaddrs");
-            if (it2 != ssdOverrides.end() && !it2->second.empty()) {
-                numNodes = (int)std::count(it2->second.begin(), it2->second.end(), ',') + 1;
-            }
-        }
-    }
+    // Use distributed config for multi-node partitioning
+    int nodeIndex = distCfg.workerIndex;
+    int numNodes = distCfg.GetNumWorkers();
     int myInsertStart = (numNodes > 1) ? (nodeIndex * insertBatchSize) / numNodes : 0;
     int myInsertEnd = (numNodes > 1) ? ((nodeIndex + 1) * insertBatchSize) / numNodes : insertBatchSize;
     int perNodeBatch = myInsertEnd - myInsertStart;
@@ -955,21 +991,18 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     // Set up distributed routing if configured.
     // The driver node is both dispatcher (ring management) and worker 0 (compute).
     {
-        auto itEnabled = ssdOverrides.find("routerenabled");
-        bool routerEnabled = (itEnabled != ssdOverrides.end() && itEnabled->second == "true");
+        if (distCfg.enabled && !buildOnly) {
+            auto dispAddr = distCfg.GetDispatcherAddr();
+            auto workerAddrs = ParseNodeAddrs(distCfg.workerAddrs);
+            auto storeAddrs = Helper::StrUtils::SplitString(distCfg.storeAddrs, ",");
 
-        if (routerEnabled && numNodes > 1) {
-            auto nodeAddrs = ParseNodeAddrs(ssdOverrides.at("routernodeaddrs"));
-            auto nodeStores = Helper::StrUtils::SplitString(
-                ssdOverrides.count("routernodestores") ? ssdOverrides.at("routernodestores") : "", ",");
-
-            // Create dispatcher
+            // Create dispatcher (builds full ring at startup)
             dispatcher.reset(new SPANN::DispatcherNode());
-            BOOST_REQUIRE_MESSAGE(dispatcher->Initialize(nodeIndex, nodeAddrs),
+            BOOST_REQUIRE_MESSAGE(dispatcher->Initialize(dispAddr, workerAddrs),
                 "DispatcherNode initialization failed");
             BOOST_REQUIRE(dispatcher->Start());
 
-            // Create local worker (driver is also worker 0)
+            // Create local worker (driver is also worker 0, with its own port)
             auto* spannIndex = dynamic_cast<SPANN::Index<T>*>(index.get());
             BOOST_REQUIRE(spannIndex != nullptr);
             auto diskIndex = spannIndex->GetDiskIndex(0);
@@ -977,29 +1010,35 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
             BOOST_REQUIRE(searcher != nullptr);
 
             worker.reset(new SPANN::WorkerNode());
-            BOOST_REQUIRE_MESSAGE(worker->Initialize(searcher->GetDB(), nodeIndex, nodeAddrs, nodeStores),
+            BOOST_REQUIRE_MESSAGE(worker->Initialize(searcher->GetDB(), 0, dispAddr, workerAddrs, storeAddrs),
                 "WorkerNode initialization failed");
             BOOST_REQUIRE(worker->Start());
             workerPtr = worker.get();
 
             // Bind worker to searcher (wires append + headsync + lock callbacks)
-            searcher->SetRouter(workerPtr);
+            searcher->SetWorker(workerPtr);
+
+            // Tell dispatcher to skip the driver's local worker in broadcasts
+            dispatcher->SetLocalWorkerIndex(worker->GetLocalNodeIndex());
+
+            // Push pre-built ring from dispatcher to local worker
+            worker->SetHashRing(dispatcher->GetHashRing());
 
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Waiting for all peer connections...\n");
             BOOST_REQUIRE_MESSAGE(dispatcher->WaitForAllPeersConnected(120),
                 "Timed out waiting for peer connections");
 
-            // Wait for all workers to register (ring fully populated)
+            // Wait for all workers to ACK the ring
             auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
             while (std::chrono::steady_clock::now() < deadline) {
-                if (dispatcher->GetNumNodes() >= numNodes) break;
+                if (dispatcher->AllWorkersAcked()) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
-            BOOST_REQUIRE_MESSAGE(dispatcher->GetNumNodes() >= numNodes,
-                "Timed out waiting for all workers to register (have "
-                + std::to_string(dispatcher->GetNumNodes()) + "/" + std::to_string(numNodes) + ")");
+            BOOST_REQUIRE_MESSAGE(dispatcher->AllWorkersAcked(),
+                "Timed out waiting for workers to ACK ring");
+
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "All %d nodes registered in hash ring\n", dispatcher->GetNumNodes());
+                "All %d workers connected and ring synchronized\n", numNodes);
         }
     }
 
@@ -1135,7 +1174,7 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
 
                 // Re-bind the worker to the new cloned index's searcher
                 if (workerPtr) {
-                    BindRouterToIndex<T>(workerPtr, cloneIndex);
+                    BindWorkerToIndex<T>(workerPtr, cloneIndex);
                 }
 
                 // Dispatch insert command to workers via TCP
@@ -2287,6 +2326,14 @@ BOOST_AUTO_TEST_CASE(IterativeSearchPerf)
     std::filesystem::remove_all("original_index");
 }
 
+// Forward declaration
+template <typename T>
+void RunWorker(const std::string& indexPath, int dimension, int baseVectorCount,
+               int insertVectorCount, int batches, int topK, int numSearchThreads,
+               int numInsertThreads, int numQueries, VectorValueType valueType,
+               const std::map<std::string, std::string>& ssdOverrides,
+               const DistributedConfig& distCfg, int workerTimeout);
+
 BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
 {
     using namespace SPFreshTest;
@@ -2349,10 +2396,6 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     if (!storage.empty()) {
         ssdOverrides["Storage"] = storage;
     }
-    std::string tikvPDAddresses = iniReader.GetParameter("Benchmark", "TiKVPDAddresses", std::string(""));
-    if (!tikvPDAddresses.empty()) {
-        ssdOverrides["TiKVPDAddresses"] = tikvPDAddresses;
-    }
     std::string tikvKeyPrefix = iniReader.GetParameter("Benchmark", "TiKVKeyPrefix", std::string(""));
     if (!tikvKeyPrefix.empty()) {
         ssdOverrides["TiKVKeyPrefix"] = tikvKeyPrefix;
@@ -2364,10 +2407,16 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
         ssdOverrides[key] = val;
     }
 
-    // Pass through [Router] section params
-    auto routerParams = iniReader.GetParameters("Router");
-    for (const auto &[key, val] : routerParams) {
-        ssdOverrides[key] = val;
+    // Read distributed config from [Distributed] section
+    auto distCfg = DistributedConfig::FromIni(iniReader);
+
+    // Use per-worker PD address from [Distributed].PDAddrs
+    std::string localPD = distCfg.GetLocalPDAddr();
+    if (!localPD.empty()) {
+        ssdOverrides["TiKVPDAddresses"] = localPD;
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+            "Using local PD address: %s (workerIndex=%d)\n",
+            localPD.c_str(), distCfg.workerIndex);
     }
 
     // Pass through [SelectHead] and [BuildHead] params as overrides too
@@ -2400,191 +2449,113 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
         BOOST_TEST_MESSAGE("QuantizedDim: " << quantizedDim);
     }
 
+    // Worker node path: if distributed and workerIndex > 0, run as remote worker and return
+    if (distCfg.enabled && distCfg.workerIndex > 0) {
+        int workerTimeout = iniReader.GetParameter("Benchmark", "WorkerTimeout", 3600);
+        BOOST_TEST_MESSAGE("Running as worker node " << distCfg.workerIndex);
+        if (valueType == VectorValueType::Float)
+            RunWorker<float>(indexPath, dimension, baseVectorCount, insertVectorCount, batchNum, topK, numSearchThreads, numInsertThreads, numQueries, valueType, ssdOverrides, distCfg, workerTimeout);
+        else if (valueType == VectorValueType::Int8)
+            RunWorker<std::int8_t>(indexPath, dimension, baseVectorCount, insertVectorCount, batchNum, topK, numSearchThreads, numInsertThreads, numQueries, valueType, ssdOverrides, distCfg, workerTimeout);
+        else if (valueType == VectorValueType::UInt8)
+            RunWorker<std::uint8_t>(indexPath, dimension, baseVectorCount, insertVectorCount, batchNum, topK, numSearchThreads, numInsertThreads, numQueries, valueType, ssdOverrides, distCfg, workerTimeout);
+        return;
+    }
+
     // Get output file path from environment variable or use default
     const char *outputPath = std::getenv("BENCHMARK_OUTPUT");
     std::string outputFile = outputPath ? std::string(outputPath) : "output.json";
     BOOST_TEST_MESSAGE("Output File: " << outputFile);
 
-    // Dispatch to appropriate type
+    // Driver path (nodeIndex == 0 or single-node mode)
     if (valueType == VectorValueType::Float)
     {
         RunBenchmark<float>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                     insertVectorCount, deleteVectorCount, batchNum, topK, numSearchThreads, numInsertThreads, numSearchDuringInsertThreads, numQueries, outputFile, 
-                    rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly, buildOnly);
+                    rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly, buildOnly, distCfg);
     }
     else if (valueType == VectorValueType::Int8)
     {
         RunBenchmark<std::int8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                       insertVectorCount, deleteVectorCount, batchNum, topK, numSearchThreads, numInsertThreads, numSearchDuringInsertThreads, numQueries,
-                      outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly, buildOnly);
+                      outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly, buildOnly, distCfg);
     }
     else if (valueType == VectorValueType::UInt8)
     {
         RunBenchmark<std::uint8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                        insertVectorCount, deleteVectorCount, batchNum, topK, numSearchThreads, numInsertThreads, numSearchDuringInsertThreads, numQueries,
-                       outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly, buildOnly);
+                       outputFile, rebuild, resume, quantizerFilePath, quantizedDim, layers, ssdOverrides, rebuildSsdOnly, buildOnly, distCfg);
     }
-
-    //std::filesystem::remove_all(indexPath);
 }
 
-/// Worker node for distributed benchmark.
+/// Worker node path for distributed benchmark (nodeIndex > 0).
 /// Loads a pre-built head index, connects to TiKV, starts WorkerNode,
 /// and waits for TCP dispatch commands from the driver node.
-BOOST_AUTO_TEST_CASE(WorkerNode)
+template <typename T>
+void RunWorker(const std::string& indexPath, int dimension, int baseVectorCount,
+               int insertVectorCount, int batches, int topK, int numSearchThreads,
+               int numInsertThreads, int numQueries, VectorValueType valueType,
+               const std::map<std::string, std::string>& ssdOverrides,
+               const DistributedConfig& distCfg, int workerTimeout)
 {
-    using namespace SPFreshTest;
+    int oldN = N, oldM = M, oldK = K, oldQ = queries;
+    N = baseVectorCount; M = dimension; K = topK; queries = numQueries;
 
-    const char *configPath = std::getenv("BENCHMARK_CONFIG");
-    if (configPath == nullptr) {
-        BOOST_TEST_MESSAGE("Skipping WorkerNode - BENCHMARK_CONFIG not set");
-        return;
-    }
-
-    Helper::IniReader iniReader;
-    BOOST_REQUIRE(iniReader.LoadIniFile(configPath) == ErrorCode::Success);
-
-    std::string indexPath = iniReader.GetParameter("Benchmark", "IndexPath", std::string(""));
-    BOOST_REQUIRE(!indexPath.empty());
-
-    // Read benchmark parameters for active insert
-    int dimension = iniReader.GetParameter("Benchmark", "Dimension", 128);
-    int baseVectorCount = iniReader.GetParameter("Benchmark", "BaseVectorCount", 0);
-    int insertVectorCount = iniReader.GetParameter("Benchmark", "InsertVectorCount", 0);
-    int batches = iniReader.GetParameter("Benchmark", "BatchNum", 1);
-    int numInsertThreads = iniReader.GetParameter("Benchmark", "NumInsertThreads", 8);
-    int numQueries = iniReader.GetParameter("Benchmark", "NumQueries", 200);
-    int topK = iniReader.GetParameter("Benchmark", "TopK", 5);
-
-    VectorValueType valueType = VectorValueType::Float;
-    std::string valueTypeStr = iniReader.GetParameter("Benchmark", "ValueType", std::string("Float"));
-    if (valueTypeStr == "UInt8") valueType = VectorValueType::UInt8;
-    else if (valueTypeStr == "Int8") valueType = VectorValueType::Int8;
-
-    std::map<std::string, std::string> ssdOverrides;
-    std::string storage = iniReader.GetParameter("Benchmark", "Storage", std::string(""));
-    if (!storage.empty()) ssdOverrides["Storage"] = storage;
-    std::string tikvPD = iniReader.GetParameter("Benchmark", "TiKVPDAddresses", std::string(""));
-    if (!tikvPD.empty()) ssdOverrides["TiKVPDAddresses"] = tikvPD;
-    std::string tikvPrefix = iniReader.GetParameter("Benchmark", "TiKVKeyPrefix", std::string(""));
-    if (!tikvPrefix.empty()) ssdOverrides["TiKVKeyPrefix"] = tikvPrefix;
-
-    auto buildSSDParams = iniReader.GetParameters("BuildSSDIndex");
-    for (const auto &[key, val] : buildSSDParams) {
-        ssdOverrides[key] = val;
-    }
-
-    // Pass through [Router] section params
-    auto routerParams = iniReader.GetParameters("Router");
-    for (const auto &[key, val] : routerParams) {
-        ssdOverrides[key] = val;
-    }
-
-    // Get node info
-    int nodeIndex = std::stoi(ssdOverrides.count("routerlocalnodeindex")
-        ? ssdOverrides.at("routerlocalnodeindex") : "0");
-    std::string nodeAddrs = ssdOverrides.count("routernodeaddrs")
-        ? ssdOverrides.at("routernodeaddrs") : "";
-    int numNodes = 1;
-    if (!nodeAddrs.empty()) {
-        numNodes = (int)std::count(nodeAddrs.begin(), nodeAddrs.end(), ',') + 1;
-    }
-
+    int nodeIndex = distCfg.workerIndex;
+    int numNodes = distCfg.GetNumWorkers();
     int insertBatchSize = insertVectorCount / std::max(batches, 1);
     int myInsertStart = (numNodes > 1) ? (nodeIndex * insertBatchSize) / numNodes : 0;
     int myInsertEnd = (numNodes > 1) ? ((nodeIndex + 1) * insertBatchSize) / numNodes : insertBatchSize;
     int perNodeBatch = myInsertEnd - myInsertStart;
 
-    BOOST_TEST_MESSAGE("WorkerNode: Loading index from " << indexPath);
+    BOOST_TEST_MESSAGE("Worker node " << nodeIndex << ": Loading index from " << indexPath);
     std::shared_ptr<VectorIndex> index;
     BOOST_REQUIRE(VectorIndex::LoadIndex(indexPath, index) == ErrorCode::Success);
     BOOST_REQUIRE(index != nullptr);
 
-    // Create WorkerNode directly (no longer via index->EnableRouter)
-    auto parsedNodeAddrs = ParseNodeAddrs(ssdOverrides.count("routernodeaddrs") ? ssdOverrides.at("routernodeaddrs") : "");
-    auto nodeStoresStr = ssdOverrides.count("routernodestores") ? ssdOverrides.at("routernodestores") : "";
-    auto nodeStores = Helper::StrUtils::SplitString(nodeStoresStr, ",");
+    // Create WorkerNode
+    auto dispAddr = distCfg.GetDispatcherAddr();
+    auto workerAddrs = ParseNodeAddrs(distCfg.workerAddrs);
+    auto storeAddrs = Helper::StrUtils::SplitString(distCfg.storeAddrs, ",");
 
-    // Get db from ExtraDynamicSearcher — needed by WorkerNode for store mapping
-    std::shared_ptr<Helper::KeyValueIO> workerDb;
-    {
-        auto* spannIdx = dynamic_cast<SPANN::Index<float>*>(index.get());
-        if (spannIdx) {
-            auto di = spannIdx->GetDiskIndex(0);
-            if (di) {
-                auto* s = dynamic_cast<SPANN::ExtraDynamicSearcher<float>*>(di.get());
-                if (s) workerDb = s->GetDB();
-            }
-        }
-        if (!workerDb) {
-            auto* spannIdx8 = dynamic_cast<SPANN::Index<std::int8_t>*>(index.get());
-            if (spannIdx8) {
-                auto di = spannIdx8->GetDiskIndex(0);
-                if (di) {
-                    auto* s = dynamic_cast<SPANN::ExtraDynamicSearcher<std::int8_t>*>(di.get());
-                    if (s) workerDb = s->GetDB();
-                }
-            }
-        }
-        if (!workerDb) {
-            auto* spannIdxU8 = dynamic_cast<SPANN::Index<std::uint8_t>*>(index.get());
-            if (spannIdxU8) {
-                auto di = spannIdxU8->GetDiskIndex(0);
-                if (di) {
-                    auto* s = dynamic_cast<SPANN::ExtraDynamicSearcher<std::uint8_t>*>(di.get());
-                    if (s) workerDb = s->GetDB();
-                }
-            }
-        }
-    }
-    BOOST_REQUIRE_MESSAGE(workerDb != nullptr, "WorkerNode: could not extract db from index");
+    auto* spannIndex = dynamic_cast<SPANN::Index<T>*>(index.get());
+    BOOST_REQUIRE_MESSAGE(spannIndex != nullptr, "Failed to cast to SPANN::Index<T>");
+    auto diskIndex = spannIndex->GetDiskIndex(0);
+    BOOST_REQUIRE(diskIndex != nullptr);
+    auto* searcher = dynamic_cast<SPANN::ExtraDynamicSearcher<T>*>(diskIndex.get());
+    BOOST_REQUIRE(searcher != nullptr);
+    auto workerDb = searcher->GetDB();
+    BOOST_REQUIRE_MESSAGE(workerDb != nullptr, "Worker: could not extract db from index");
 
     SPANN::WorkerNode workerNode;
-    BOOST_REQUIRE_MESSAGE(workerNode.Initialize(workerDb, nodeIndex, parsedNodeAddrs, nodeStores),
+    BOOST_REQUIRE_MESSAGE(workerNode.Initialize(workerDb, nodeIndex, dispAddr, workerAddrs, storeAddrs),
                           "WorkerNode initialization failed");
     BOOST_REQUIRE(workerNode.Start());
     auto* router = &workerNode;
 
-    // Bind worker to the searcher inside the index
-    if (valueType == VectorValueType::UInt8)
-        BindRouterToIndex<std::uint8_t>(router, index);
-    else if (valueType == VectorValueType::Int8)
-        BindRouterToIndex<std::int8_t>(router, index);
-    else
-        BindRouterToIndex<float>(router, index);
+    // Bind worker to the searcher
+    searcher->SetWorker(router);
 
     // Wait for ring from dispatcher
     BOOST_REQUIRE_MESSAGE(router->WaitForRing(120),
-                          "WorkerNode: Timed out waiting for ring from dispatcher");
+                          "Worker: Timed out waiting for ring from dispatcher");
 
-    BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Ready, numNodes=" << numNodes
+    BOOST_TEST_MESSAGE("Worker " << nodeIndex << ": Ready, numNodes=" << numNodes
                        << " perNodeBatch=" << perNodeBatch);
 
-    // Generate data file paths (files already exist from driver's build phase)
-    int oldN = N, oldM = M, oldK = K, oldQ = queries;
-    N = baseVectorCount; M = dimension; K = topK; queries = numQueries;
-
-    // Build data file names using the same convention as TestDataGenerator::RunLargeBatches
+    // Build data file names
     std::string typeStr = Helper::Convert::ConvertToString(valueType);
     std::string paddset = "perftest_addvector.bin." + typeStr + "_" + std::to_string(insertVectorCount) + "_" + std::to_string(dimension);
     std::string paddmeta = "perftest_addmeta.bin." + std::to_string(baseVectorCount) + "_" + std::to_string(insertVectorCount);
     std::string paddmetaidx = "perftest_addmetaidx.bin." + std::to_string(baseVectorCount) + "_" + std::to_string(insertVectorCount);
 
-    // Load query set for distributed search
-    int numSearchThreads = iniReader.GetParameter("Benchmark", "NumSearchThreads", 8);
+    // Load query set
     int searchK = topK;
     std::string pqueryset = "perftest_query.bin." + typeStr + "_" + std::to_string(numQueries) + "_" + std::to_string(dimension);
-    std::shared_ptr<VectorSet> queryset;
-    if (valueType == VectorValueType::UInt8)
-        queryset = TestUtils::TestDataGenerator<std::uint8_t>::LoadVectorSet(pqueryset, dimension);
-    else if (valueType == VectorValueType::Int8)
-        queryset = TestUtils::TestDataGenerator<std::int8_t>::LoadVectorSet(pqueryset, dimension);
-    else
-        queryset = TestUtils::TestDataGenerator<float>::LoadVectorSet(pqueryset, dimension);
-    BOOST_REQUIRE_MESSAGE(queryset != nullptr, "WorkerNode: Failed to load query set from " << pqueryset);
-    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Loaded %d queries\n", nodeIndex, (int)queryset->Count());
+    auto queryset = TestUtils::TestDataGenerator<T>::LoadVectorSet(pqueryset, dimension);
+    BOOST_REQUIRE_MESSAGE(queryset != nullptr, "Worker: Failed to load query set from " << pqueryset);
 
-    // Register dispatch callback — executed on a dedicated thread per command
+    // Register dispatch callback
     std::promise<void> stopPromise;
     auto stopFuture = stopPromise.get_future();
     std::once_flag stopOnce;
@@ -2595,7 +2566,7 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
         result.m_round = cmd.m_round;
 
         if (cmd.m_type == SPANN::DispatchCommand::Type::Stop) {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Stop command received\n", nodeIndex);
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Worker %d: Stop command received\n", nodeIndex);
             std::call_once(stopOnce, [&]() { stopPromise.set_value(); });
             result.m_status = SPANN::DispatchResult::Status::Success;
             return result;
@@ -2606,7 +2577,7 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
             int myEnd = (int)((long long)(nodeIndex + 1) * numQueries / numNodes);
             int myCount = myEnd - myStart;
 
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Search round %u - %d queries [%d, %d)\n",
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Worker %d: Search round %u - %d queries [%d, %d)\n",
                          nodeIndex, cmd.m_round, myCount, myStart, myEnd);
 
             auto t1 = std::chrono::high_resolution_clock::now();
@@ -2615,7 +2586,6 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
                 for (int i = 0; i < myCount; i++) {
                     results[i] = QueryResult(queryset->GetVector(myStart + i), searchK, false);
                 }
-
                 std::atomic_size_t queriesSent(0);
                 std::vector<std::thread> threads;
                 int nThreads = std::min(numSearchThreads, myCount);
@@ -2633,9 +2603,8 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
             auto t2 = std::chrono::high_resolution_clock::now();
             double wallTime = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000000.0;
 
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Search round %u done - %.1fms\n",
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Worker %d: Search round %u done - %.1fms\n",
                          nodeIndex, cmd.m_round, wallTime * 1000);
-
             result.m_status = SPANN::DispatchResult::Status::Success;
             result.m_wallTime = wallTime;
             return result;
@@ -2643,37 +2612,21 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
 
         if (cmd.m_type == SPANN::DispatchCommand::Type::Insert) {
             int insertStart = cmd.m_round * insertBatchSize + myInsertStart;
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Batch %u - inserting %d vectors (offset %d)\n",
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Worker %d: Batch %u - inserting %d vectors (offset %d)\n",
                          nodeIndex, cmd.m_round + 1, perNodeBatch, insertStart);
 
             auto t1 = std::chrono::high_resolution_clock::now();
-
-            if (valueType == VectorValueType::UInt8) {
-                auto addset = TestUtils::TestDataGenerator<std::uint8_t>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
-                auto addmetaset = TestUtils::TestDataGenerator<std::uint8_t>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
-                InsertVectors<std::uint8_t>(static_cast<SPANN::Index<std::uint8_t>*>(index.get()),
-                                            numInsertThreads, perNodeBatch, addset, addmetaset,
-                                            0, nullptr, 0, 5, nullptr, 0, router);
-            } else if (valueType == VectorValueType::Int8) {
-                auto addset = TestUtils::TestDataGenerator<std::int8_t>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
-                auto addmetaset = TestUtils::TestDataGenerator<std::int8_t>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
-                InsertVectors<std::int8_t>(static_cast<SPANN::Index<std::int8_t>*>(index.get()),
-                                           numInsertThreads, perNodeBatch, addset, addmetaset,
-                                           0, nullptr, 0, 5, nullptr, 0, router);
-            } else {
-                auto addset = TestUtils::TestDataGenerator<float>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
-                auto addmetaset = TestUtils::TestDataGenerator<float>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
-                InsertVectors<float>(static_cast<SPANN::Index<float>*>(index.get()),
-                                     numInsertThreads, perNodeBatch, addset, addmetaset,
-                                     0, nullptr, 0, 5, nullptr, 0, router);
-            }
+            auto addset = TestUtils::TestDataGenerator<T>::LoadVectorSet(paddset, dimension, insertStart, perNodeBatch);
+            auto addmetaset = TestUtils::TestDataGenerator<T>::LoadMetadataSet(paddmeta, paddmetaidx, insertStart, perNodeBatch);
+            InsertVectors<T>(spannIndex, numInsertThreads, perNodeBatch, addset, addmetaset,
+                             0, nullptr, 0, 5, nullptr, 0, router);
 
             router->FlushRemoteAppends();
             router->LogRouteStats(" (batch flush)");
             router->ResetRouteStats();
             auto t2 = std::chrono::high_resolution_clock::now();
             double secs = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / 1000000.0;
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Batch %u done - %d vectors in %.2f s (%.1f vec/s)\n",
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Worker %d: Batch %u done - %d vectors in %.2f s (%.1f vec/s)\n",
                          nodeIndex, cmd.m_round + 1, perNodeBatch, secs, perNodeBatch / secs);
 
             result.m_status = SPANN::DispatchResult::Status::Success;
@@ -2681,26 +2634,22 @@ BOOST_AUTO_TEST_CASE(WorkerNode)
             return result;
         }
 
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "WorkerNode %d: Unknown command type %d\n",
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "Worker %d: Unknown command type %d\n",
                      nodeIndex, (int)cmd.m_type);
         result.m_status = SPANN::DispatchResult::Status::Failed;
         return result;
     });
 
-    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "WorkerNode %d: Waiting for dispatch commands\n", nodeIndex);
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Worker %d: Waiting for dispatch commands\n", nodeIndex);
 
-    // Block until Stop command received (with timeout)
-    int timeoutSec = iniReader.GetParameter("Benchmark", "WorkerTimeout", 3600);
-    auto status = stopFuture.wait_for(std::chrono::seconds(timeoutSec));
+    auto status = stopFuture.wait_for(std::chrono::seconds(workerTimeout));
     if (status == std::future_status::timeout) {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "WorkerNode %d: Timeout after %ds\n", nodeIndex, timeoutSec);
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "Worker %d: Timeout after %ds\n", nodeIndex, workerTimeout);
     }
 
-    // Clear callback and wait for in-flight dispatches before locals go out of scope
     router->ClearDispatchCallback();
-
     N = oldN; M = oldM; K = oldK; queries = oldQ;
-    BOOST_TEST_MESSAGE("WorkerNode " << nodeIndex << ": Shutting down");
+    BOOST_TEST_MESSAGE("Worker " << nodeIndex << ": Shutting down");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

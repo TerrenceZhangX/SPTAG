@@ -262,7 +262,7 @@ namespace SPTAG::SPANN {
         std::mutex m_asyncAppendLock;
         Helper::Concurrent::ConcurrentPriorityQueue<AppendPair> m_asyncAppendQueue;
         std::shared_ptr<Helper::KeyValueIO> db;
-        WorkerNode* m_router = nullptr;  // externally owned, set via SetRouter()
+        WorkerNode* m_worker = nullptr;  // externally owned, set via SetWorker()
 
     public:
         std::shared_ptr<Helper::KeyValueIO> GetDB() const { return db; }
@@ -372,15 +372,15 @@ namespace SPTAG::SPANN {
         ~ExtraDynamicSearcher() {}
 
         int GetNumNodes() const {
-            if (m_router && m_router->IsEnabled()) {
-                return m_router->GetNumNodes();
+            if (m_worker && m_worker->IsEnabled()) {
+                return m_worker->GetNumNodes();
             }
             return 1;
         }
 
         int GetLocalNodeIndex() const {
-            if (m_router && m_router->IsEnabled()) {
-                return m_router->GetLocalNodeIndex();
+            if (m_worker && m_worker->IsEnabled()) {
+                return m_worker->GetLocalNodeIndex();
             }
             return 0;
         }
@@ -394,12 +394,12 @@ namespace SPTAG::SPANN {
         /// Set the external WorkerNode pointer and bind all callbacks
         /// (append, head-sync, remote-lock).
         /// Called by SPFreshTest after creating the WorkerNode independently.
-        void SetRouter(WorkerNode* router) {
-            m_router = router;
-            if (!m_router) return;
+        void SetWorker(WorkerNode* router) {
+            m_worker = router;
+            if (!m_worker) return;
 
             // Append callback: routes incoming remote appends to local Append()
-            m_router->SetAppendCallback(
+            m_worker->SetAppendCallback(
                 [this](SizeType headID, std::shared_ptr<std::string> headVec,
                        int appendNum, std::string& appendPosting) -> ErrorCode {
                     ExtraWorkSpace workSpace;
@@ -410,7 +410,7 @@ namespace SPTAG::SPANN {
             // Head sync callback: apply head index updates from peers
             auto* headIndex = m_headIndex;
             int layer = m_layer;
-            m_router->SetHeadSyncCallback([headIndex, layer](const HeadSyncEntry& entry) {
+            m_worker->SetHeadSyncCallback([headIndex, layer](const HeadSyncEntry& entry) {
                 if (entry.op == HeadSyncEntry::Op::Add) {
                     headIndex->AddHeadIndex(entry.headVector.data(), entry.headVID, 0,
                         static_cast<DimensionType>(entry.headVector.size() / sizeof(ValueType)),
@@ -421,7 +421,7 @@ namespace SPTAG::SPANN {
             });
 
             // Remote lock callback: per-bucket atomic flags
-            m_router->SetRemoteLockCallback([this](SizeType headID, bool lock) -> bool {
+            m_worker->SetRemoteLockCallback([this](SizeType headID, bool lock) -> bool {
                 unsigned bucket = COMMON::FineGrainedRWLock::hash_func(static_cast<unsigned>(headID));
                 if (lock) {
                     bool expected = false;
@@ -988,7 +988,7 @@ namespace SPTAG::SPANN {
                 }
 
                 // Broadcast HeadSync to peer nodes
-                if (m_router && m_router->IsEnabled()) {
+                if (m_worker && m_worker->IsEnabled()) {
                     std::vector<HeadSyncEntry> headSyncEntries;
                     // Split uses k-means(k=2). Iterate over the 2 clusters:
                     // args.counts[k] = #vectors in cluster k, args.centers + k*D = centroid.
@@ -1008,7 +1008,7 @@ namespace SPTAG::SPANN {
                         headSyncEntries.push_back(std::move(entry));
                     }
                     if (!headSyncEntries.empty()) {
-                        m_router->BroadcastHeadSync(headSyncEntries);
+                        m_worker->BroadcastHeadSync(headSyncEntries);
                     }
                 }
 
@@ -1038,8 +1038,8 @@ namespace SPTAG::SPANN {
 
                 m_stat.m_reassignScanCost += elapsedMSeconds;
 
-                if (m_router && m_router->IsEnabled()) {
-                    ErrorCode flushRet = m_router->FlushRemoteAppends();
+                if (m_worker && m_worker->IsEnabled()) {
+                    ErrorCode flushRet = m_worker->FlushRemoteAppends();
                     if (flushRet != ErrorCode::Success) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
                             "Split: FlushRemoteAppends failed (code=%d) for headID %lld\n",
@@ -1179,15 +1179,15 @@ namespace SPTAG::SPANN {
 
                     // SPTAGLIB_LOG(Helper::LogLevel::LL_Info,"Locked: %d, to be lock: %d\n", headID, queryResult->VID);
                     if (m_rwLocks.hash_func(queryResult->VID) != m_rwLocks.hash_func(headID)) {
-                        if (m_router && m_router->IsEnabled()) {
-                            auto target = m_router->GetOwner(queryResult->VID);
+                        if (m_worker && m_worker->IsEnabled()) {
+                            auto target = m_worker->GetOwner(queryResult->VID);
                             if (!target.isLocal) {
-                                if (!m_router->SendRemoteLock(target.nodeIndex, queryResult->VID, true)) {
+                                if (!m_worker->SendRemoteLock(target.nodeIndex, queryResult->VID, true)) {
                                     auto* curJob = new MergeAsyncJob(this, headID, nullptr);
                                     m_splitThreadPool->add(curJob);
                                     return ErrorCode::Success;
                                 }
-                                remoteLockGuard.router = m_router;
+                                remoteLockGuard.router = m_worker;
                                 remoteLockGuard.nodeIndex = target.nodeIndex;
                                 remoteLockGuard.headID = queryResult->VID;
                                 remoteLockGuard.active = true;
@@ -1319,13 +1319,13 @@ namespace SPTAG::SPANN {
                 }
 
                 // Broadcast HeadSync for deleted head after merge
-                if (m_router && m_router->IsEnabled() && deletedHeadID >= 0) {
+                if (m_worker && m_worker->IsEnabled() && deletedHeadID >= 0) {
                     std::vector<HeadSyncEntry> headSyncEntries;
                     HeadSyncEntry entry;
                     entry.op = HeadSyncEntry::Op::Delete;
                     entry.headVID = deletedHeadID;
                     headSyncEntries.push_back(std::move(entry));
-                    m_router->BroadcastHeadSync(headSyncEntries);
+                    m_worker->BroadcastHeadSync(headSyncEntries);
                 }
 
                 {
@@ -1808,15 +1808,15 @@ namespace SPTAG::SPANN {
                 for (int i = 0; i < replicaCount && m_versionMap->GetVersion(VID) == version; i++) {
                     SizeType newHeadID = selections[i].VID;
                     //LOG(Helper::LogLevel::LL_Info, "Reassign: headID:%d, oldVID:%d, newVID:%d, posting length:%d, dist:%f, string size:%d\n", newHeadID, oldVID, VID, m_postingSizes[newHeadID].load(), selections[i].Dist, vectorInfo->size());
-                    if (m_router && m_router->IsEnabled()) {
-                        auto target = m_router->GetOwner(newHeadID);
+                    if (m_worker && m_worker->IsEnabled()) {
+                        auto target = m_worker->GetOwner(newHeadID);
                         if (!target.isLocal) {
                             RemoteAppendRequest req;
                             req.m_headID = newHeadID;
                             req.m_headVec.assign((const char*)(selections[i].Vec.Data()), m_vectorDataSize);
                             req.m_appendNum = 1;
                             req.m_appendPosting = *vectorInfo;
-                            m_router->QueueRemoteAppend(target.nodeIndex, std::move(req));
+                            m_worker->QueueRemoteAppend(target.nodeIndex, std::move(req));
                             continue;
                         }
                     }
@@ -1829,8 +1829,8 @@ namespace SPTAG::SPANN {
                 }
             }
             // Flush any queued remote appends from Reassign
-            if (m_router && m_router->IsEnabled()) {
-                m_router->FlushRemoteAppends();
+            if (m_worker && m_worker->IsEnabled()) {
+                m_worker->FlushRemoteAppends();
             }
             auto reassignAppendEnd = std::chrono::high_resolution_clock::now();
             elapsedMSeconds = std::chrono::duration_cast<std::chrono::microseconds>(reassignAppendEnd - reassignAppendBegin).count();
@@ -2786,7 +2786,7 @@ namespace SPTAG::SPANN {
             // node's shard, then route Append by headID ownership. The caller (SPFreshTest)
             // already partitions the insert batch across nodes — each node only calls
             // AddIndex with its own perNodeBatch vectors.
-            if (m_router && m_router->IsEnabled()) {
+            if (m_worker && m_worker->IsEnabled()) {
                 for (int v = 0; v < p_vectorSet->Count(); v++) {
                     SizeType VID = begin + v;
                     // Map local VID to interleaved globalVID for cross-node uniqueness
@@ -2804,7 +2804,7 @@ namespace SPTAG::SPANN {
 
                     // Route Append by headID ownership
                     for (int i = 0; i < replicaCount; i++) {
-                        auto target = m_router->GetOwner(selections[i].VID);
+                        auto target = m_worker->GetOwner(selections[i].VID);
                         if (!target.isLocal) {
                             std::string headVec((char*)(selections[i].Vec.Data()), m_vectorDataSize);
                             RemoteAppendRequest req;
@@ -2812,7 +2812,7 @@ namespace SPTAG::SPANN {
                             req.m_headVec = headVec;
                             req.m_appendNum = 1;
                             req.m_appendPosting = appendPosting;
-                            m_router->QueueRemoteAppend(target.nodeIndex, std::move(req));
+                            m_worker->QueueRemoteAppend(target.nodeIndex, std::move(req));
                             continue;
                         }
                         ErrorCode ret = Append(p_exWorkSpace, selections[i].VID, 1, appendPosting);
@@ -2864,18 +2864,18 @@ namespace SPTAG::SPANN {
         }
 
         ErrorCode FlushRemoteAppends() {
-            if (m_router && m_router->IsEnabled()) {
-                ErrorCode ret = m_router->FlushRemoteAppends();
-                m_router->LogRouteStats(" (batch flush)");
-                m_router->ResetRouteStats();
+            if (m_worker && m_worker->IsEnabled()) {
+                ErrorCode ret = m_worker->FlushRemoteAppends();
+                m_worker->LogRouteStats(" (batch flush)");
+                m_worker->ResetRouteStats();
                 return ret;
             }
             return ErrorCode::Success;
         }
 
         size_t GetRemoteQueueSize() const {
-            if (m_router && m_router->IsEnabled()) {
-                return m_router->GetRemoteQueueSize();
+            if (m_worker && m_worker->IsEnabled()) {
+                return m_worker->GetRemoteQueueSize();
             }
             return 0;
         }

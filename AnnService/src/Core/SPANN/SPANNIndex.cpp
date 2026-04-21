@@ -287,18 +287,6 @@ template <typename T> ErrorCode Index<T>::SaveConfig(std::shared_ptr<Helper::Dis
 #undef DefineSSDParameter
 
     IOSTRING(p_configOut, WriteString, "\n");
-
-    IOSTRING(p_configOut, WriteString, "[Router]\n");
-#define DefineRouterParameter(VarName, VarType, DefaultValue, RepresentStr)                                             \
-    IOSTRING(p_configOut, WriteString,                                                                                 \
-             (RepresentStr + std::string("=") + SPTAG::Helper::Convert::ConvertToString(m_options.VarName) +           \
-              std::string("\n"))                                                                                       \
-                 .c_str());
-
-#include "inc/Core/SPANN/ParameterDefinitionList.h"
-#undef DefineRouterParameter
-
-    IOSTRING(p_configOut, WriteString, "\n");
     return ErrorCode::Success;
 }
 

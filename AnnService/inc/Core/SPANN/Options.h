@@ -218,13 +218,6 @@ namespace SPTAG {
             SizeType m_maxID;
             bool m_shareDB;
 
-            // Distributed routing
-            bool m_routerEnabled;
-            bool m_routerIsDispatcher;
-            int m_routerLocalNodeIndex;
-            std::string m_routerNodeAddrs;
-            std::string m_routerNodeStores;
-
             Options() {
 #define DefineBasicParameter(VarName, VarType, DefaultValue, RepresentStr) \
                 VarName = DefaultValue; \
@@ -249,12 +242,6 @@ namespace SPTAG {
 
 #include "inc/Core/SPANN/ParameterDefinitionList.h"
 #undef DefineSSDParameter
-
-#define DefineRouterParameter(VarName, VarType, DefaultValue, RepresentStr) \
-                VarName = DefaultValue; \
-
-#include "inc/Core/SPANN/ParameterDefinitionList.h"
-#undef DefineRouterParameter
             }
 
             ~Options() {}
@@ -331,22 +318,6 @@ namespace SPTAG {
 
                     ;
                 }
-                else if (Helper::StrUtils::StrEqualIgnoreCase(p_section, "Router")) {
-#define DefineRouterParameter(VarName, VarType, DefaultValue, RepresentStr) \
-    if (Helper::StrUtils::StrEqualIgnoreCase(p_param, RepresentStr)) \
-    { \
-        VarType tmp; \
-        if (Helper::Convert::ConvertStringTo<VarType>(p_value, tmp)) \
-        { \
-            VarName = tmp; \
-        } \
-    } else \
-
-#include "inc/Core/SPANN/ParameterDefinitionList.h"
-#undef DefineRouterParameter
-
-                    ;
-                }
                 return ErrorCode::Success;
             }
             
@@ -399,18 +370,6 @@ namespace SPTAG {
 
 #include "inc/Core/SPANN/ParameterDefinitionList.h"
 #undef DefineSSDParameter
-
-                    ;
-                }
-                else if (Helper::StrUtils::StrEqualIgnoreCase(p_section, "Router")) {
-#define DefineRouterParameter(VarName, VarType, DefaultValue, RepresentStr) \
-        if (Helper::StrUtils::StrEqualIgnoreCase(p_param, RepresentStr)) \
-        { \
-            return SPTAG::Helper::Convert::ConvertToString(VarName); \
-        } else \
-
-#include "inc/Core/SPANN/ParameterDefinitionList.h"
-#undef DefineRouterParameter
 
                     ;
                 }

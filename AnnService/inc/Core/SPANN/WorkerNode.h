@@ -32,29 +32,40 @@ namespace SPTAG::SPANN {
         using HeadSyncCallback = RemotePostingOps::HeadSyncCallback;
         using RemoteLockCallback = RemotePostingOps::RemoteLockCallback;
 
+        /// Initialize with separate dispatcher/worker/store addresses.
+        /// workerIndex is 0-based (0 = driver/local, 1+ = remote).
+        /// Internal node index = workerIndex + 1 (0 is reserved for dispatcher).
         bool Initialize(
             std::shared_ptr<Helper::KeyValueIO> p_db,
-            int localNodeIdx,
-            const std::vector<std::pair<std::string, std::string>>& nodeAddrs,
-            const std::vector<std::string>& nodeStores,
+            int workerIndex,
+            const std::pair<std::string, std::string>& dispatcherAddr,
+            const std::vector<std::pair<std::string, std::string>>& workerAddrs,
+            const std::vector<std::string>& storeAddrs,
             int vnodeCount = 150)
         {
-            if (nodeStores.empty()) {
+            if (storeAddrs.empty()) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                    "WorkerNode::Initialize: nodeStores is empty\n");
+                    "WorkerNode::Initialize: storeAddrs is empty\n");
                 return false;
             }
-            if (!InitializeNetwork(localNodeIdx, nodeAddrs, vnodeCount)) return false;
+
+            // Build combined addr list: [dispatcher, worker0, worker1, ...]
+            std::vector<std::pair<std::string, std::string>> allAddrs;
+            allAddrs.push_back(dispatcherAddr);
+            allAddrs.insert(allAddrs.end(), workerAddrs.begin(), workerAddrs.end());
+
+            int internalIdx = workerIndex + 1;  // 0 = dispatcher, 1..N = workers
+            if (!InitializeNetwork(internalIdx, allAddrs, vnodeCount)) return false;
 
             m_db = p_db;
-            m_nodeStores = nodeStores;
+            m_nodeStores = storeAddrs;
 
-            // Build store → node list mapping
-            int numNodes = static_cast<int>(nodeAddrs.size());
-            int numStores = static_cast<int>(nodeStores.size());
-            for (int nodeIdx = 0; nodeIdx < numNodes; nodeIdx++) {
-                int storeIdx = nodeIdx % numStores;
-                m_storeToNodes[nodeStores[storeIdx]].push_back(nodeIdx);
+            // Build store → node list mapping (worker internal indices 1..N)
+            int numWorkers = static_cast<int>(workerAddrs.size());
+            int numStores = static_cast<int>(storeAddrs.size());
+            for (int wi = 0; wi < numWorkers; wi++) {
+                int storeIdx = wi % numStores;
+                m_storeToNodes[storeAddrs[storeIdx]].push_back(wi + 1);
             }
             for (auto& [store, nodes] : m_storeToNodes) {
                 std::string nodeList;
@@ -64,8 +75,8 @@ namespace SPTAG::SPANN {
             }
 
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "WorkerNode: initialized (node %d, %d stores, %d vnodes/node)\n",
-                localNodeIdx, numStores, vnodeCount);
+                "WorkerNode: initialized (workerIndex=%d, internalIdx=%d, %d stores, %d vnodes/node)\n",
+                workerIndex, internalIdx, numStores, vnodeCount);
 
             m_dispatch.SetNetwork(this);
             m_remoteOps.SetNetwork(this);
@@ -246,9 +257,13 @@ namespace SPTAG::SPANN {
             // Keep sending NodeRegister until ring is populated
             auto ring = std::atomic_load(&m_hashRing);
             if (!ring || ring->NodeCount() == 0) {
-                std::lock_guard<std::mutex> lock(m_connMutex);
-                if (m_dispatcherNodeIndex < (int)m_peerConnections.size() &&
-                    m_peerConnections[m_dispatcherNodeIndex] != Socket::c_invalidConnectionID) {
+                Socket::ConnectionID connID = Socket::c_invalidConnectionID;
+                {
+                    std::lock_guard<std::mutex> lock(m_connMutex);
+                    if (m_dispatcherNodeIndex < (int)m_peerConnections.size())
+                        connID = m_peerConnections[m_dispatcherNodeIndex];
+                }
+                if (connID != Socket::c_invalidConnectionID) {
                     SendNodeRegister();
                 }
             }
@@ -265,8 +280,10 @@ namespace SPTAG::SPANN {
             msg.m_nodeIndex = m_localNodeIndex;
             msg.m_host = m_nodeAddrs[m_localNodeIndex].first;
             msg.m_port = m_nodeAddrs[m_localNodeIndex].second;
+            // Worker's 0-based index = m_localNodeIndex - 1 (since 0 is dispatcher)
+            int workerIdx = m_localNodeIndex - 1;
             int numStores = static_cast<int>(m_nodeStores.size());
-            msg.m_store = (numStores > 0) ? m_nodeStores[m_localNodeIndex % numStores] : "";
+            msg.m_store = (numStores > 0) ? m_nodeStores[workerIdx % numStores] : "";
 
             std::size_t bodySize = msg.EstimateBufferSize();
             Socket::Packet pkt;

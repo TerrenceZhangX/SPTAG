@@ -20,24 +20,43 @@ namespace SPTAG::SPANN {
     public:
         using DispatchCallback = DispatchCoordinator::DispatchCallback;
 
+        /// Initialize the dispatcher with separate addresses.
+        /// Builds the full hash ring at startup (workers 1..N).
         bool Initialize(
-            int localNodeIdx,
-            const std::vector<std::pair<std::string, std::string>>& nodeAddrs,
+            const std::pair<std::string, std::string>& dispatcherAddr,
+            const std::vector<std::pair<std::string, std::string>>& workerAddrs,
             int vnodeCount = 150)
         {
-            if (!InitializeNetwork(localNodeIdx, nodeAddrs, vnodeCount)) return false;
+            // Build combined addr list: [dispatcher, worker0, worker1, ...]
+            std::vector<std::pair<std::string, std::string>> allAddrs;
+            allAddrs.push_back(dispatcherAddr);
+            allAddrs.insert(allAddrs.end(), workerAddrs.begin(), workerAddrs.end());
+
+            if (!InitializeNetwork(0, allAddrs, vnodeCount)) return false;
+
+            // Pre-build complete ring with all workers (internal indices 1..N)
+            int numWorkers = static_cast<int>(workerAddrs.size());
+            auto ring = std::make_shared<ConsistentHashRing>(vnodeCount);
+            for (int i = 1; i <= numWorkers; i++) {
+                ring->AddNode(i);
+            }
+            std::atomic_store(&m_hashRing,
+                std::shared_ptr<const ConsistentHashRing>(std::move(ring)));
+            m_currentRingVersion.store(1);
 
             m_dispatch.SetNetwork(this);
 
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "DispatcherNode: initialized (node %d, %d vnodes/node)\n",
-                localNodeIdx, vnodeCount);
+                "DispatcherNode: initialized with %d workers, ring v1\n", numWorkers);
             return true;
         }
 
         bool Start() { return StartNetwork(); }
 
         // ---- Dispatch protocol ----
+
+        /// Mark the driver's local worker node so broadcasts skip it.
+        void SetLocalWorkerIndex(int idx) { m_dispatch.SetLocalWorkerIndex(idx); }
 
         std::uint64_t BroadcastDispatchCommand(DispatchCommand::Type type, std::uint32_t round) {
             return m_dispatch.BroadcastDispatchCommand(type, round);
@@ -110,28 +129,7 @@ namespace SPTAG::SPANN {
                 "DispatcherNode: NodeRegister from node %d (%s:%s, store=%s)\n",
                 msg.m_nodeIndex, msg.m_host.c_str(), msg.m_port.c_str(), msg.m_store.c_str());
 
-            {
-                std::lock_guard<std::mutex> guard(m_ringWriteMutex);
-                auto oldRing = std::atomic_load(&m_hashRing);
-                if (oldRing && oldRing->HasNode(msg.m_nodeIndex)) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                        "DispatcherNode: Node %d already in ring, broadcasting current ring (v%u)\n",
-                        msg.m_nodeIndex, m_currentRingVersion.load());
-                } else {
-                    auto newRing = oldRing
-                        ? std::make_shared<ConsistentHashRing>(*oldRing)
-                        : std::make_shared<ConsistentHashRing>(m_vnodeCount);
-                    newRing->AddNode(msg.m_nodeIndex);
-                    std::atomic_store(&m_hashRing,
-                        std::shared_ptr<const ConsistentHashRing>(std::move(newRing)));
-                    m_currentRingVersion.fetch_add(1);
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                        "DispatcherNode: Added node %d to ring, total=%d (v%u)\n",
-                        msg.m_nodeIndex, (int)std::atomic_load(&m_hashRing)->NodeCount(),
-                        m_currentRingVersion.load());
-                }
-            }
-
+            // Ring is pre-built at startup, just broadcast current ring to the new connection
             BroadcastRingUpdate();
         }
 

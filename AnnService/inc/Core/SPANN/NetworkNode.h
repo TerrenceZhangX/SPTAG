@@ -69,19 +69,22 @@ namespace SPTAG::SPANN {
 
         /// Start server + client + background connection thread.
         /// Subclasses must have called InitializeNetwork() first.
+        /// Each node listens on its own address from the combined address list.
         bool StartNetwork() {
             if (!m_enabled) return false;
 
             // --- Server side ---
-            Socket::PacketHandlerMapPtr serverHandlers(new Socket::PacketHandlerMap);
-            RegisterServerHandlers(serverHandlers);
+            {
+                Socket::PacketHandlerMapPtr serverHandlers(new Socket::PacketHandlerMap);
+                RegisterServerHandlers(serverHandlers);
 
-            const auto& localAddr = m_nodeAddrs[m_localNodeIndex];
-            m_server.reset(new Socket::Server(
-                localAddr.first, localAddr.second, serverHandlers, 2));
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
-                "NetworkNode server listening on %s:%s\n",
-                localAddr.first.c_str(), localAddr.second.c_str());
+                const auto& localAddr = m_nodeAddrs[m_localNodeIndex];
+                m_server.reset(new Socket::Server(
+                    localAddr.first, localAddr.second, serverHandlers, 2));
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                    "NetworkNode server listening on %s:%s\n",
+                    localAddr.first.c_str(), localAddr.second.c_str());
+            }
 
             // --- Client side ---
             Socket::PacketHandlerMapPtr clientHandlers(new Socket::PacketHandlerMap);
@@ -128,8 +131,7 @@ namespace SPTAG::SPANN {
         int GetLocalNodeIndex() const override { return m_localNodeIndex; }
 
         int GetNumNodes() const override {
-            auto ring = std::atomic_load(&m_hashRing);
-            return ring ? static_cast<int>(ring->NodeCount()) : 0;
+            return static_cast<int>(m_nodeAddrs.size());
         }
 
         Socket::ConnectionID GetPeerConnection(int nodeIndex) override {
@@ -164,6 +166,10 @@ namespace SPTAG::SPANN {
 
         std::shared_ptr<const ConsistentHashRing> GetHashRing() const {
             return std::atomic_load(&m_hashRing);
+        }
+
+        void SetHashRing(std::shared_ptr<const ConsistentHashRing> ring) {
+            std::atomic_store(&m_hashRing, std::move(ring));
         }
 
         bool WaitForAllPeersConnected(int timeoutSec = 120) {
