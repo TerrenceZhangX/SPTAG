@@ -433,7 +433,7 @@ start_remote_worker() {
     # Start worker via SSH (foreground on remote, background locally)
     ssh $(_ssh_opts) "$SSH_USER@$host" \
         "cd $SPTAG_DIR && WORKER_INDEX=${NODE_IDX} BENCHMARK_CONFIG=worker_n${NODE_IDX}.ini \
-         ./Release/SPTAGTest --run_test=SPFreshTest/WorkerNode 2>&1" \
+         ./Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig 2>&1" \
         > "$LOG" 2>&1 &
     local ssh_pid=$!
     WORKER_SSH_PIDS+=($ssh_pid)
@@ -450,7 +450,7 @@ wait_workers_ready() {
         local all_ready=true
         for i in $(seq 1 $((NODE_COUNT - 1))); do
             local LOG="$LOGDIR/benchmark_${SCALE}_${NODE_COUNT}node_worker${i}.log"
-            if ! grep -q "WorkerNode.*[Rr]eady\|Waiting for dispatch" "$LOG" 2>/dev/null; then
+            if ! grep -q "Worker.*[Rr]eady\|Waiting for dispatch" "$LOG" 2>/dev/null; then
                 all_ready=false
             fi
         done
