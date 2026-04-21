@@ -6,10 +6,11 @@
 - **Queries**: 200 queries, TopK=5
 - **Threads**: 8 search threads + 8 insert threads per node (driver node only; worker nodes handle routed requests)
 - **Index**: 2-layer SPANN BKT, PostingPageLimit=12, BufferLength=8
-- **Storage**: TiKV (3 PD + 3 TiKV, Docker v8.5.5, host network)
+- **Storage (shared)**: TiKV shared cluster (3 PD + 3 TiKV, Docker v8.5.5, host network)
+- **Storage (indep)**: Per-worker independent TiKV (1 PD + 1 TiKV per node, Docker v8.5.1, host network)
 - **Data**: `/mnt/data_disk/sift1b/base.1B.u8bin`, `query.public.10K.u8bin`
 - **TiKV Config**: region-max-size=512MB, block-cache=40GB, grpc-concurrency=8
-- **Date**: 2026-04-10 (10M re-run: all topologies use per-node build; FullSearch recall fix applied)
+- **Date**: 2026-04-10 (shared TiKV); 2026-04-21 (independent TiKV)
 
 | Scale | Base Vectors | Insert Vectors | Batch Size |
 |-------|-------------|---------------|------------|
@@ -17,11 +18,13 @@
 | 1M | 990,000 | 10,000 | 1,000 × 10 |
 | 10M | 9,900,000 | 100,000 | 10,000 × 10 |
 
-| Topology | Nodes | Router | Description |
-|----------|-------|--------|-------------|
-| 1-node | 1 | Disabled | Single compute node, baseline |
-| 2-node | 2 | Enabled | n0 (driver) + n1 (worker), hash routing |
-| 3-node | 3 | Enabled | n0 (driver) + n1, n2 (workers), hash routing |
+| Topology | Nodes | Router | TiKV | Description |
+|----------|-------|--------|------|-------------|
+| 1-node | 1 | Disabled | shared | Single compute node, baseline |
+| 2-node | 2 | Enabled | shared | n0 (driver) + n1 (worker), hash routing |
+| 3-node | 3 | Enabled | shared | n0 (driver) + n1, n2 (workers), hash routing |
+| 1-node-indep | 1 | Disabled | independent | Single node, local PD+TiKV |
+| 2-node-indep | 2 | Enabled | independent | n0 + n1, each with local PD+TiKV |
 
 ---
 
@@ -58,6 +61,10 @@
 | 10M | 1-node | 14.88 | 14.85 | 18.07 | 20.19 | 532 | 0.951 |
 | 10M | 2-node | 14.70 | 14.64 | 17.19 | 21.03 | 539 | 0.935 |
 | 10M | 3-node | 15.43 | 15.46 | 18.02 | 21.41 | 514 | 0.948 |
+| 1M | 1-node-indep | 5.81 | 5.74 | 7.10 | 8.70 | 1355 | — |
+| 1M | 2-node-indep | 11.51 | 11.58 | 13.82 | 16.56 | 899 | — |
+| 10M | 1-node-indep | 29.26 | 29.78 | 36.23 | 37.59 | 271 | — |
+| 10M | 2-node-indep | 28.37 | 27.37 | 38.70 | 40.34 | 480 | — |
 
 ---
 
@@ -74,6 +81,20 @@
 | 10M | 1-node | 15.47 | 15.37 | 18.38 | 21.12 | 513 | 0.952 |
 | 10M | 2-node | 10.07 | 12.79 | 23.23 | 26.31 | 776 | 0.847 |
 | 10M | 3-node | 7.74 | 0.00 | 26.69 | 29.91 | 988 | 0.822 |
+| 1M | 1-node-indep | 9.56 | 9.43 | 11.37 | 12.77 | 880 | — |
+| 1M | 2-node-indep | 11.53 | 11.29 | 14.58 | 23.17 | 898 | — |
+| 10M | 1-node-indep | 29.32 | 29.41 | 36.84 | 39.53 | 271 | — |
+| 10M | 2-node-indep | 30.61 | 30.18 | 41.65 | 44.13 | 499 | — |
+
+### Avg Search QPS Scaling
+
+| Scale | 1-node | 2-node | 3-node | 2-node vs 1 | 3-node vs 1 |
+|-------|--------|--------|--------|-------------|-------------|
+| 100K | 2517 | 2481 | 2506 | -1% | -0.4% |
+| 1M | 1808 | 1133 | 1441 | -37% | -20% |
+| 10M | 513 | 776 | 988 | +51% | +93% |
+| 1M (indep) | 880 | 898 | — | +2% | — |
+| 10M (indep) | 271 | 499 | — | +84% | — |
 
 ---
 
@@ -95,6 +116,24 @@
 | 9 | 5.28 | 7.74 | 1497 | 5.41 | 10.11 | 1160 | 5.28 | 9.89 | 1188 |
 | 10 | 5.36 | 7.40 | 1473 | 5.62 | 11.38 | 1126 | 5.51 | 43.60 | 1184 |
 
+### 1M (indep-tikv)
+
+| Batch | 1-node avg (ms) | 1-node P99 (ms) | 1-node QPS | 2-node avg (ms) | 2-node P99 (ms) | 2-node QPS |
+|-------|-----------------|-----------------|------------|-----------------|-----------------|------------|
+| 0 | 5.81 | 8.70 | 1355 | 11.51 | 16.56 | 899 |
+| 1 | 5.56 | 8.09 | 1416 | 10.27 | 18.57 | 900 |
+| 2 | 7.38 | 10.51 | 1068 | 11.49 | 28.24 | 911 |
+| 3 | 8.12 | 12.03 | 969 | 11.24 | 23.87 | 881 |
+| 4 | 9.69 | 11.37 | 814 | 11.58 | 28.09 | 907 |
+| 5 | 9.19 | 12.52 | 858 | 12.26 | 26.64 | 902 |
+| 6 | 9.30 | 11.78 | 847 | 11.69 | 20.20 | 896 |
+| 7 | 9.43 | 13.02 | 839 | 11.74 | 19.52 | 907 |
+| 8 | 9.96 | 12.58 | 793 | 11.92 | 22.43 | 903 |
+| 9 | 12.29 | 15.60 | 643 | 11.43 | 25.50 | 877 |
+| 10 | 14.19 | 21.24 | 557 | 11.64 | 18.59 | 894 |
+| **Avg** | **9.56** | **12.77** | **880** | **11.53** | **23.17** | **898** |
+| **2n/1n QPS** | | | | | | **1.02x** |
+
 ### 10M
 
 | Batch | 1-node avg (ms) | 1-node P99 (ms) | 1-node QPS | 2-node avg (ms) | 2-node P99 (ms) | 2-node QPS | 3-node avg (ms) | 3-node P99 (ms) | 3-node QPS |
@@ -111,6 +150,24 @@
 | 9 | 15.16 | 22.03 | 522 | 10.08 | 25.58 | 774 | 8.05 | 30.69 | 965 |
 | 10 | 15.86 | 21.43 | 500 | 10.76 | 28.04 | 726 | 7.78 | 31.88 | 958 |
 
+### 10M (indep-tikv)
+
+| Batch | 1-node avg (ms) | 1-node P99 (ms) | 1-node QPS | 2-node avg (ms) | 2-node P99 (ms) | 2-node QPS |
+|-------|-----------------|-----------------|------------|-----------------|-----------------|------------|
+| 0 | 29.26 | 37.59 | 271 | 28.37 | 40.34 | 480 |
+| 1 | 28.20 | 35.37 | 281 | 29.37 | 45.55 | 494 |
+| 2 | 27.95 | 35.65 | 284 | 32.44 | 44.59 | 487 |
+| 3 | 29.36 | 38.52 | 270 | 31.27 | 41.92 | 475 |
+| 4 | 29.66 | 39.14 | 267 | 31.84 | 42.35 | 494 |
+| 5 | 29.84 | 47.82 | 265 | 30.98 | 46.92 | 486 |
+| 6 | 29.67 | 38.15 | 267 | 28.94 | 40.62 | 481 |
+| 7 | 30.11 | 37.88 | 264 | 30.76 | 40.92 | 512 |
+| 8 | 29.16 | 36.94 | 271 | 29.62 | 49.77 | 526 |
+| 9 | 31.09 | 45.39 | 255 | 28.37 | 40.76 | 555 |
+| 10 | 28.12 | 40.30 | 282 | 32.50 | 48.27 | 485 |
+| **Avg** | **29.32** | **39.53** | **271** | **30.61** | **44.13** | **499** |
+| **2n/1n QPS** | | | | | | **1.84x** |
+
 ---
 
 ## 5. Insert Throughput (avg vec/s)
@@ -120,6 +177,8 @@
 | 100K | 358 | 411 | 427 | +15% | +19% |
 | 1M | 411 | 548 | 622 | +33% | +51% |
 | 10M | 459 | 757 | 907 | +65% | +98% |
+| 1M (indep) | 359 | 624 | — | +74% | — |
+| 10M (indep) | 299 | 595 | — | +99% | — |
 
 ### Per-Batch Detail
 
@@ -157,6 +216,38 @@
 | **Avg speedup** | **459** | **757** | **907** | **1.65x** | **1.98x** |
 | **Max-max speedup** | **468** | **784** | **942** | **1.68x** | **2.01x** |
 
+#### 1M (indep-tikv)
+
+| Batch | 1-node | 2-node | 2n/1n |
+|-------|--------|--------|-------|
+| B1 | 397 | 632 | 1.59x |
+| B2 | 376 | 647 | 1.72x |
+| B3 | 359 | 656 | 1.83x |
+| B4 | 365 | 627 | 1.72x |
+| B5 | 369 | 626 | 1.70x |
+| B6 | 365 | 641 | 1.75x |
+| B7 | 354 | 610 | 1.73x |
+| B8 | 354 | 596 | 1.69x |
+| B9 | 323 | 594 | 1.84x |
+| B10 | 328 | 612 | 1.86x |
+| **Avg** | **359** | **624** | **1.74x** |
+
+#### 10M (indep-tikv)
+
+| Batch | 1-node | 2-node | 2n/1n |
+|-------|--------|--------|-------|
+| B1 | 303 | 598 | 1.97x |
+| B2 | 298 | 587 | 1.97x |
+| B3 | 300 | 591 | 1.97x |
+| B4 | 294 | 590 | 2.01x |
+| B5 | 298 | 582 | 1.95x |
+| B6 | 296 | 594 | 2.00x |
+| B7 | 302 | 587 | 1.94x |
+| B8 | 298 | 602 | 2.02x |
+| B9 | 298 | 605 | 2.03x |
+| B10 | 299 | 613 | 2.05x |
+| **Avg** | **299** | **595** | **1.99x** |
+
 ---
 
 ## 6. Recall@5
@@ -192,6 +283,8 @@
 | 100K | 3.11 | 3.16 | +0.05 (+2%) | 3.13 | +0.02 (+1%) |
 | 1M | 4.54 | 5.59 | +1.05 (+23%) | 5.10 | +0.56 (+12%) |
 | 10M | 15.47 | 10.07 | -5.40 (-35%) | 7.74 | -7.73 (-50%) |
+| 1M (indep) | 9.56 | 11.53 | +1.97 (+21%) | — | — |
+| 10M (indep) | 29.32 | 30.61 | +1.29 (+4%) | — | — |
 
 ---
 
@@ -208,118 +301,7 @@
 9. **Recall trade-off at 10M multi-node**: Pre-insert recall is similar across topologies (0.935-0.951). After insert, 2/3-node recall drops to 0.82-0.85 due to FullSearch routing across nodes (each node only has partial head index). This is expected and can be improved with head sync.
 10. **P99 tail latency**: 100K ~4-5ms, 1M ~5-12ms, 10M ~20-32ms. Multi-node 10M shows higher P99 (25-32ms) due to cross-node RPC tail.
 11. **HandleSearchPosting sort fix (2026-04-09)**: Fixed a bug where worker nodes returned 0 results when the TopK heap was not fully filled, causing recall degradation at small scales (100K). After fix, 1M insert throughput improved significantly (2-node: 456→548, 3-node: 475→622).
+12. **Per-worker independent TiKV — 10M insert scales ~2x**: With each worker using its own local TiKV (no shared cluster), 10M insert throughput reaches 1.99x (299→595 vec/s), up from 1.65x in the shared-TiKV configuration. Eliminates cross-network TiKV access entirely.
+13. **Per-worker independent TiKV — 1M search limited by dispatch overhead**: At 1M scale, 2-node search QPS (898) barely exceeds 1-node (880) because per-query compute (~9ms) is small relative to the ~2ms dispatch round-trip. The 2-node QPS stays flat while 1-node degrades across batches, so they converge.
+14. **Per-worker independent TiKV — 10M search scales 1.84x**: At 10M, per-query compute (~29ms) is large enough to amortize dispatch overhead (+4%), yielding 1.84x QPS scaling (271→499).
 
-
-## 8. Benchmark-Level Search Distribution (Float32)
-
-### Background
-
-Previous iterations tested RPC-based distributed search (`BatchRouteSearch`), where the driver partitioned queries and dispatched them to worker nodes via RPC. This section uses **benchmark-level barrier-based distribution**: each node independently searches its contiguous partition of queries, coordinated only by barrier files (the same mechanism already used for insert distribution). No RPCs are needed for search.
-
-**Advantages:**
-- Eliminates RPC overhead
-- Each node does complete head search + posting read locally
-- Simpler architecture — no RPC server needed for search
-- QPS = totalQueries / max(wallTime across all nodes)
-
-### Configuration
-
-- **Vector**: Float32, dim=64, L2 distance
-- **Queries**: 200 queries, TopK=5
-- **Scale**: 10M (9.9M base + 100K insert in 10 batches of 10K)
-- **Threads**: 8 search threads + 8 insert threads per node
-- **Date**: 2026-04-14
-- Recall is the same as 1-node (each node has complete index via shared TiKV)
-- Per-query latency stats are from the driver's partition (representative; all nodes run the same search path)
-
-### 8.1 Query Latency — Pre-insert
-
-| Scale | Topo | Mean (ms) | P50 | P95 | P99 | QPS | Recall@5 |
-|-------|------|-----------|-----|-----|-----|-----|----------|
-| 10M | 1-node | 43.4 | 43.1 | 50.5 | 55.6 | 182 | 0.584 |
-| 10M | 2-node | 45.1 | 45.1 | 53.0 | 55.7 | 343 | — |
-| 10M | 3-node | 49.7 | 50.4 | 55.5 | 73.5 | 447 | — |
-
-Multi-node recall is identical to 1-node (same index, same search path). Multi-node latency is from the driver's query partition only (representative).
-
-### 8.2 Query Latency — Avg B1-B10 (search round 1)
-
-| Scale | Topo | Mean (ms) | P50 | P95 | P99 | QPS |
-|-------|------|-----------|-----|-----|-----|-----|
-| 10M | 1-node | 41.1 | 41.0 | 47.4 | 52.7 | 194 |
-| 10M | 2-node | 36.4 | 36.1 | 45.3 | 52.4 | 404 |
-| 10M | 3-node | 46.5 | 46.7 | 57.1 | 63.6 | 488 |
-
-### 8.3 Query Latency — Per Batch Detail (search round 1)
-
-| Batch | 1-node avg (ms) | 1-node P99 (ms) | 1-node QPS | 2-node avg (ms) | 2-node P99 (ms) | 2-node QPS | 3-node avg (ms) | 3-node P99 (ms) | 3-node QPS | 2n/1n | 3n/1n |
-|-------|-----------------|-----------------|------------|-----------------|-----------------|------------|-----------------|-----------------|------------|-------|-------|
-| 0 | 43.4 | 55.6 | 182 | 45.1 | 55.7 | 343 | 49.7 | 73.5 | 447 | 1.89x | 2.46x |
-| 1 | 41.3 | 53.8 | 193 | 34.2 | 48.7 | 414 | 47.1 | 65.4 | 452 | 2.15x | 2.34x |
-| 2 | 41.2 | 55.3 | 193 | 38.4 | 53.8 | 407 | 49.9 | 70.2 | 454 | 2.11x | 2.35x |
-| 3 | 42.1 | 56.0 | 188 | 36.1 | 49.6 | 378 | 45.6 | 58.6 | 492 | 2.01x | 2.62x |
-| 4 | 40.1 | 53.4 | 198 | 38.5 | 52.3 | 407 | 44.7 | 60.4 | 501 | 2.06x | 2.53x |
-| 5 | 39.6 | 54.4 | 200 | 36.0 | 51.0 | 400 | 47.5 | 64.1 | 478 | 2.00x | 2.39x |
-| 6 | 40.3 | 51.6 | 197 | 35.3 | 52.1 | 418 | 45.6 | 68.3 | 500 | 2.12x | 2.54x |
-| 7 | 41.5 | 50.1 | 191 | 37.0 | 48.7 | 402 | 46.9 | 57.9 | 493 | 2.10x | 2.58x |
-| 8 | 40.7 | 53.6 | 195 | 36.2 | 58.3 | 419 | 44.9 | 59.9 | 510 | 2.15x | 2.62x |
-| 9 | 42.4 | 48.3 | 188 | 35.8 | 48.2 | 390 | 47.2 | 71.2 | 490 | 2.07x | 2.61x |
-| 10 | 41.3 | 50.3 | 192 | 36.1 | 61.5 | 407 | 45.3 | 60.0 | 505 | 2.12x | 2.63x |
-| **Avg** | **41.1** | **52.7** | **194** | **36.4** | **52.4** | **404** | **46.5** | **63.6** | **488** | **2.08x** | **2.52x** |
-
-### 8.4 Insert Throughput (avg vec/s)
-
-| Scale | 1-node | 2-node | 3-node | 2-node vs 1 | 3-node vs 1 |
-|-------|--------|--------|--------|-------------|-------------|
-| 10M | 119 | 211 | 314 | **1.77x** | **2.64x** |
-
-### 8.5 QPS Scaling Summary
-
-| Metric | 1-node | 2-node | 2n/1n | 3-node | 3n/1n |
-|--------|--------|--------|-------|--------|-------|
-| B0 QPS (pre-insert) | 182 | 343 | 1.89x | 447 | 2.46x |
-| B1-B10 avg QPS | 194 | 404 | 2.08x | 488 | 2.52x |
-| Insert VPS | 119 | 211 | 1.77x | 314 | 2.64x |
-
-### 8.6 Scaling Analysis
-
-With benchmark-level distribution, **head search is fully decentralized** — each node searches its queries through the local BKT graph. This eliminates the serial Phase 1 bottleneck from the previous RPC-based approach's Amdahl's analysis.
-
-**Revised model:**
-
-```
-T_multi = ⌈Q/(N×T)⌉ × (t_head + t_posting) × C(N) + t_barrier
-```
-
-Where `C(N)` = TiKV contention factor (all N nodes share one TiKV cluster on one NVMe), `t_barrier` ≈ 1-2ms (negligible).
-
-**Measured efficiency (B1-B10 avg):**
-
-| Nodes | QPS | Ideal QPS | Efficiency | C(N) |
-|-------|-----|-----------|------------|------|
-| 1 | 194 | 194 | 100% | 1.00 |
-| 2 | 404 | 388 | 104%* | 0.96 |
-| 3 | 488 | 582 | 84% | 1.19 |
-
-\* 2-node >100% efficiency because multi-node partitions allow better TiKV cache utilization (each node reads fewer, more localized posting lists). This effect diminishes at 3 nodes where contention on the shared NVMe dominates.
-
-**Serial fraction f:**
-
-| Component | Barrier-Based (This Section) |
-|-----------|------------------------------|
-| Head search | 0% (parallel per node) |
-| TiKV contention | ~3% (shared TiKV) |
-| Barrier coordination | <0.2% |
-| **Total serial fraction** | **~3.2%** |
-
-The remaining bottleneck is purely **shared TiKV contention** — all nodes compete for the same 3 TiKV stores on a single NVMe SSD. To achieve near-ideal scaling, each compute node needs its own TiKV instance(s) on dedicated storage (i.e., multi-machine deployment with local NVMe per node).
-
-### 8.7 Key Observations
-
-1. **QPS scales up to 2.52x at 3 nodes**: B1-B10 avg shows 2-node 2.08x, 3-node 2.52x — better than pre-insert (1.89x/2.46x) because insert workload warms TiKV caches and reduces cold-start effects.
-2. **2-node achieves super-linear scaling (2.08x)**: Each node searches half the queries, reducing per-node TiKV working set and improving cache hit rate.
-3. **No serial head search bottleneck**: Each node does its own head search locally, eliminating the 1.4% serial fraction from the previous RPC-based approach.
-4. **Barrier coordination is negligible**: File-based synchronization adds <2ms, compared to 45-53ms RPC overhead in the previous RPC-based approach.
-5. **Architecture is simpler**: No RPC server needed for search. Workers poll for barrier files, same as insert. The search and insert paths are now symmetric.
-6. **Bottleneck is shared TiKV**: With decentralized head search and no RPC overhead, the only remaining scaling limiter is that all nodes share one TiKV cluster on one NVMe SSD. Multi-machine TiKV deployment (each compute node with its own TiKV store on dedicated NVMe) would drive C(N) → 1 and achieve near-linear scaling.
-7. **Insert throughput scales 2.64x at 3 nodes**: Consistent with previous measurements (Section 5: 1.98x for UInt8). Higher scaling here due to Float32 vectors being larger, making the parallelizable portion bigger.

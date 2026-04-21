@@ -2,32 +2,33 @@
 # Multi-machine distributed benchmark orchestrator for SPTAG.
 #
 # Usage:
-#   ./run_distributed.sh deploy  <cluster.conf>              Deploy binary + data to all nodes
-#   ./run_distributed.sh start-tikv <cluster.conf>           Start TiKV/PD cluster across machines
-#   ./run_distributed.sh stop-tikv  <cluster.conf>           Stop TiKV/PD cluster
-#   ./run_distributed.sh run     <cluster.conf> <scale> ...  Run benchmark (build + distribute + run)
-#   ./run_distributed.sh cleanup <cluster.conf>              Remove deployed files from remote nodes
+#   ./run_distributed.sh deploy     <cluster.conf>                Deploy binary + data to all nodes
+#   ./run_distributed.sh start-tikv <cluster.conf> [node_count]   Start independent TiKV/PD instances
+#   ./run_distributed.sh stop-tikv  <cluster.conf> [node_count]   Stop TiKV/PD instances
+#   ./run_distributed.sh run        <cluster.conf> <scale> <node_count>  Run benchmark
+#   ./run_distributed.sh bench      <cluster.conf> <scale> [scale...]    Run 1-node + N-node for each scale
+#   ./run_distributed.sh cleanup    <cluster.conf>                Remove deployed files from remote nodes
 #
 # Prerequisites:
-#   - Passwordless SSH from driver to all nodes
+#   - Passwordless SSH from driver to all nodes (configure ssh_key in cluster.conf)
 #   - Docker installed on all nodes (for TiKV)
 #   - cluster.conf configured (see cluster.conf.example)
 #
 # The driver (first node in [nodes]) orchestrates everything.
-# Workers receive commands via TCP dispatch protocol.
+# Each machine runs its own independent PD + TiKV (NOT a shared Raft cluster).
 
 set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SPTAG_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-LOGDIR="$SPTAG_DIR/benchmark_logs"
+LOGDIR="$(cd "$SCRIPT_DIR/../.." && pwd)/benchmark_logs"
 mkdir -p "$LOGDIR"
 
 # ─── Config Parsing ───
 
 declare -a NODE_HOSTS NODE_ROUTER_PORTS
 declare -a TIKV_HOSTS TIKV_PD_CLIENT_PORTS TIKV_PD_PEER_PORTS TIKV_PORTS
-declare SSH_USER SPTAG_DIR DATA_DIR TIKV_VERSION PD_VERSION
+declare SSH_USER SPTAG_DIR DATA_DIR TIKV_VERSION PD_VERSION SSH_KEY
+TOTAL_NODES=0
 
 parse_config() {
     local CONF="$1"
@@ -37,8 +38,6 @@ parse_config() {
     fi
 
     local SECTION=""
-    local NODE_IDX=0
-    local TIKV_IDX=0
 
     while IFS= read -r line || [ -n "$line" ]; do
         # Strip comments and whitespace
@@ -62,6 +61,7 @@ parse_config() {
                     data_dir)     DATA_DIR="$val" ;;
                     tikv_version) TIKV_VERSION="$val" ;;
                     pd_version)   PD_VERSION="$val" ;;
+                    ssh_key)      SSH_KEY="$val" ;;
                 esac
                 ;;
             nodes)
@@ -81,10 +81,17 @@ parse_config() {
 
     # Defaults
     SSH_USER="${SSH_USER:-$(whoami)}"
-    TIKV_VERSION="${TIKV_VERSION:-v7.5.1}"
-    PD_VERSION="${PD_VERSION:-v7.5.1}"
+    TIKV_VERSION="${TIKV_VERSION:-v8.5.1}"
+    PD_VERSION="${PD_VERSION:-v8.5.1}"
 
-    if [ ${#NODE_HOSTS[@]} -lt 1 ]; then
+    # Expand ~ in ssh_key path
+    if [ -n "$SSH_KEY" ]; then
+        SSH_KEY="${SSH_KEY/#\~/$HOME}"
+    fi
+
+    TOTAL_NODES=${#NODE_HOSTS[@]}
+
+    if [ "$TOTAL_NODES" -lt 1 ]; then
         echo "ERROR: No compute nodes defined in [nodes]"
         exit 1
     fi
@@ -94,14 +101,24 @@ parse_config() {
     fi
 
     echo "Cluster config loaded:"
-    echo "  Compute nodes: ${#NODE_HOSTS[@]} (driver: ${NODE_HOSTS[0]})"
+    echo "  Compute nodes: $TOTAL_NODES (driver: ${NODE_HOSTS[0]})"
     echo "  TiKV instances: ${#TIKV_HOSTS[@]}"
     echo "  SSH user: $SSH_USER"
+    echo "  SSH key: ${SSH_KEY:-(none)}"
     echo "  SPTAG dir: $SPTAG_DIR"
     echo "  Data dir: $DATA_DIR"
 }
 
 # ─── SSH Helpers ───
+
+# Build SSH options string (key + host checking)
+_ssh_opts() {
+    local opts="-o StrictHostKeyChecking=no -o ConnectTimeout=10"
+    if [ -n "$SSH_KEY" ]; then
+        opts+=" -i $SSH_KEY"
+    fi
+    echo "$opts"
+}
 
 # Run command on remote host (or locally if it's the driver)
 remote_exec() {
@@ -109,7 +126,7 @@ remote_exec() {
     if [ "$host" = "${NODE_HOSTS[0]}" ] || [ "$host" = "localhost" ] || [ "$host" = "127.0.0.1" ]; then
         eval "$@"
     else
-        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$SSH_USER@$host" "$@"
+        ssh $(_ssh_opts) "$SSH_USER@$host" "$@"
     fi
 }
 
@@ -124,50 +141,8 @@ remote_sync() {
             rsync -az --progress "$src" "$dst"
         fi
     else
-        rsync -az --progress -e "ssh -o StrictHostKeyChecking=no" "$src" "$SSH_USER@$host:$dst"
+        rsync -az --progress -e "ssh $(_ssh_opts)" "$src" "$SSH_USER@$host:$dst"
     fi
-}
-
-# ─── Computed Helpers ───
-
-# Build RouterNodeAddrs string: host1:port1,host2:port2,...
-get_router_node_addrs() {
-    local addrs=""
-    for i in "${!NODE_HOSTS[@]}"; do
-        [ -n "$addrs" ] && addrs+=","
-        addrs+="${NODE_HOSTS[$i]}:${NODE_ROUTER_PORTS[$i]}"
-    done
-    echo "$addrs"
-}
-
-# Build TiKVPDAddresses string: host1:port1,host2:port2,...
-get_tikv_pd_addrs() {
-    local addrs=""
-    for i in "${!TIKV_HOSTS[@]}"; do
-        [ -n "$addrs" ] && addrs+=","
-        addrs+="${TIKV_HOSTS[$i]}:${TIKV_PD_CLIENT_PORTS[$i]}"
-    done
-    echo "$addrs"
-}
-
-# Build RouterNodeStores string: host1:port1,host2:port2,...
-get_router_node_stores() {
-    local addrs=""
-    for i in "${!TIKV_HOSTS[@]}"; do
-        [ -n "$addrs" ] && addrs+=","
-        addrs+="${TIKV_HOSTS[$i]}:${TIKV_PORTS[$i]}"
-    done
-    echo "$addrs"
-}
-
-# PD initial cluster string for bootstrap: pd0=http://host:peer_port,...
-get_pd_initial_cluster() {
-    local cluster=""
-    for i in "${!TIKV_HOSTS[@]}"; do
-        [ -n "$cluster" ] && cluster+=","
-        cluster+="pd${i}=http://${TIKV_HOSTS[$i]}:${TIKV_PD_PEER_PORTS[$i]}"
-    done
-    echo "$cluster"
 }
 
 # ─── Deploy ───
@@ -217,10 +192,9 @@ cmd_deploy() {
         if [ "$host" = "${NODE_HOSTS[0]}" ]; then continue; fi
         echo "  → $host:$SPTAG_DIR/ (perftest_* files)"
         remote_exec "$host" "mkdir -p $SPTAG_DIR"
-        # Use rsync with include/exclude to only send perftest_* files
         rsync -az --progress \
             --include='perftest_*' --exclude='*' \
-            -e "ssh -o StrictHostKeyChecking=no" \
+            -e "ssh $(_ssh_opts)" \
             "$SPTAG_DIR/" "$SSH_USER@$host:$SPTAG_DIR/"
     done
 
@@ -228,70 +202,87 @@ cmd_deploy() {
     echo "Deploy complete."
 }
 
-# ─── TiKV Management ───
+# ─── TiKV Management (Independent Mode) ───
 
-cmd_start_tikv() {
+tikv_start() {
+    # Start the first <node_count> independent PD+TiKV pairs.
+    local node_count="${1:-${#TIKV_HOSTS[@]}}"
     echo ""
-    echo "=== Starting TiKV cluster (${#TIKV_HOSTS[@]} instances) ==="
+    echo "=== Starting $node_count independent TiKV instances ==="
 
-    local PD_ENDPOINTS=$(get_tikv_pd_addrs)
-    local INITIAL_CLUSTER=$(get_pd_initial_cluster)
-
-    # Start PD instances
+    # Start PD instances (each standalone — initial-cluster references only itself)
     echo "Starting PD instances..."
-    for i in "${!TIKV_HOSTS[@]}"; do
+    for (( i=0; i<node_count; i++ )); do
         local host="${TIKV_HOSTS[$i]}"
         local client_port="${TIKV_PD_CLIENT_PORTS[$i]}"
         local peer_port="${TIKV_PD_PEER_PORTS[$i]}"
-        echo "  PD $i on $host:$client_port"
+        local pd_name="pd${i}"
+        local initial_cluster="${pd_name}=http://${host}:${peer_port}"
+        echo "  PD $i on $host:$client_port (standalone)"
 
         remote_exec "$host" "docker rm -f sptag-pd-$i 2>/dev/null; \
             docker run -d --name sptag-pd-$i --net host \
             -v $DATA_DIR/tikv-data/pd-$i:/data \
             pingcap/pd:${PD_VERSION} \
-            --name=pd${i} \
+            --name=${pd_name} \
             --data-dir=/data \
             --client-urls=http://0.0.0.0:${client_port} \
             --advertise-client-urls=http://${host}:${client_port} \
             --peer-urls=http://0.0.0.0:${peer_port} \
             --advertise-peer-urls=http://${host}:${peer_port} \
-            --initial-cluster=${INITIAL_CLUSTER}"
+            --initial-cluster=${initial_cluster}"
     done
 
-    echo "Waiting for PD cluster to elect leader..."
+    echo "Waiting for PD instances to start..."
     sleep 5
 
-    # Check PD health
-    local pd_host="${TIKV_HOSTS[0]}"
-    local pd_port="${TIKV_PD_CLIENT_PORTS[0]}"
-    for attempt in $(seq 1 30); do
-        if curl -sf "http://${pd_host}:${pd_port}/pd/api/v1/members" >/dev/null 2>&1; then
-            echo "  PD cluster healthy"
-            break
-        fi
-        if [ "$attempt" -eq 30 ]; then
-            echo "  ERROR: PD cluster not healthy after 30s"
-            return 1
-        fi
-        sleep 1
+    # Check each PD health independently
+    for (( i=0; i<node_count; i++ )); do
+        local host="${TIKV_HOSTS[$i]}"
+        local pd_port="${TIKV_PD_CLIENT_PORTS[$i]}"
+        for attempt in $(seq 1 30); do
+            if curl -sf "http://${host}:${pd_port}/pd/api/v1/members" >/dev/null 2>&1; then
+                echo "  PD $i ($host:$pd_port) healthy"
+                break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+                echo "  ERROR: PD $i ($host:$pd_port) not healthy after 30s"
+                return 1
+            fi
+            sleep 1
+        done
     done
 
-    # Start TiKV instances
+    # Set max-replicas=1 for each independent PD (single-node Raft)
+    echo "Setting max-replicas=1 on each PD..."
+    for (( i=0; i<node_count; i++ )); do
+        local host="${TIKV_HOSTS[$i]}"
+        local pd_port="${TIKV_PD_CLIENT_PORTS[$i]}"
+        if curl -sf "http://${host}:${pd_port}/pd/api/v1/config/replicate" \
+            -X POST -d '{"max-replicas": 1}' >/dev/null 2>&1; then
+            echo "  PD $i: max-replicas=1 set"
+        else
+            echo "  WARNING: Failed to set max-replicas=1 on PD $i"
+        fi
+    done
+
+    # Start TiKV instances (each connects to its own PD only)
     echo "Starting TiKV instances..."
-    for i in "${!TIKV_HOSTS[@]}"; do
+    for (( i=0; i<node_count; i++ )); do
         local host="${TIKV_HOSTS[$i]}"
         local tikv_port="${TIKV_PORTS[$i]}"
-        echo "  TiKV $i on $host:$tikv_port"
+        local pd_port="${TIKV_PD_CLIENT_PORTS[$i]}"
+        echo "  TiKV $i on $host:$tikv_port → PD $host:$pd_port"
 
-        # Deploy tikv.toml to remote host (use docker to create dir since tikv-data is root-owned)
+        # Deploy tikv.toml to remote host
         local TIKV_TOML="$SCRIPT_DIR/configs/tikv.toml"
         if [[ -f "$TIKV_TOML" ]]; then
             remote_exec "$host" "docker run --rm -v $DATA_DIR/tikv-data:/data alpine mkdir -p /data/conf"
-            if [[ "$host" == "$(hostname -I | awk '{print $1}')" || "$host" == "127.0.0.1" ]]; then
-                sg docker -c "docker run --rm -v $DATA_DIR/tikv-data/conf:/conf -v $(realpath $TIKV_TOML):/src/tikv.toml:ro alpine cp /src/tikv.toml /conf/tikv.toml"
+            if [ "$host" = "${NODE_HOSTS[0]}" ] || [ "$host" = "localhost" ] || [ "$host" = "127.0.0.1" ]; then
+                sg docker -c "docker run --rm -v $DATA_DIR/tikv-data/conf:/conf -v $(realpath "$TIKV_TOML"):/src/tikv.toml:ro alpine cp /src/tikv.toml /conf/tikv.toml"
             else
-                scp -i ~/.ssh/rsa -o StrictHostKeyChecking=no "$TIKV_TOML" "${SSH_USER}@${host}:/tmp/tikv.toml"
-                remote_exec "$host" "docker run --rm -v $DATA_DIR/tikv-data/conf:/conf -v /tmp/tikv.toml:/src/tikv.toml:ro alpine cp /src/tikv.toml /conf/tikv.toml"
+                scp $(_ssh_opts) "$TIKV_TOML" "${SSH_USER}@${host}:${SPTAG_DIR}/tikv.toml"
+                remote_exec "$host" "docker run --rm -v $DATA_DIR/tikv-data/conf:/conf -v ${SPTAG_DIR}/tikv.toml:/src/tikv.toml:ro alpine cp /src/tikv.toml /conf/tikv.toml"
             fi
         fi
 
@@ -305,111 +296,108 @@ cmd_start_tikv() {
             --addr=0.0.0.0:${tikv_port} \
             --advertise-addr=${host}:${tikv_port} \
             --data-dir=/data \
-            --pd=${PD_ENDPOINTS}"
+            --pd-endpoints=http://${host}:${pd_port}"
     done
 
     echo "Waiting for TiKV stores to register..."
     sleep 5
 
-    # Check TiKV store count
-    for attempt in $(seq 1 60); do
-        local store_count
-        store_count=$(curl -sf "http://${pd_host}:${pd_port}/pd/api/v1/stores" 2>/dev/null \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('count',0))" 2>/dev/null || echo 0)
-        if [ "$store_count" -ge "${#TIKV_HOSTS[@]}" ]; then
-            echo "  All ${store_count} TiKV stores registered"
-            break
-        fi
-        if [ "$attempt" -eq 60 ]; then
-            echo "  WARNING: Only $store_count/${#TIKV_HOSTS[@]} stores registered after 60s"
-        fi
-        sleep 1
+    # Check each TiKV store registered with its own PD
+    for (( i=0; i<node_count; i++ )); do
+        local host="${TIKV_HOSTS[$i]}"
+        local pd_port="${TIKV_PD_CLIENT_PORTS[$i]}"
+        for attempt in $(seq 1 60); do
+            local store_count
+            store_count=$(curl -sf "http://${host}:${pd_port}/pd/api/v1/stores" 2>/dev/null \
+                | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('count',0))" 2>/dev/null || echo 0)
+            if [ "$store_count" -ge 1 ]; then
+                echo "  TiKV $i registered with PD $i"
+                break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+                echo "  WARNING: TiKV $i not registered after 60s"
+            fi
+            sleep 1
+        done
     done
 
-    echo "TiKV cluster started."
+    echo "TiKV instances started ($node_count)."
 }
 
-cmd_stop_tikv() {
+tikv_stop() {
+    # Stop the first <node_count> TiKV+PD instances.
+    local node_count="${1:-${#TIKV_HOSTS[@]}}"
     echo ""
-    echo "=== Stopping TiKV cluster ==="
+    echo "=== Stopping $node_count TiKV instances ==="
 
-    # Stop containers defined in current config
-    for i in "${!TIKV_HOSTS[@]}"; do
+    for (( i=0; i<node_count; i++ )); do
         local host="${TIKV_HOSTS[$i]}"
         echo "  Stopping TiKV $i and PD $i on $host..."
         remote_exec "$host" "docker rm -f sptag-tikv-$i sptag-pd-$i 2>/dev/null || true"
     done
 
-    # Also stop any stale containers on ALL compute nodes (in case a previous
-    # run with more nodes left containers running)
-    for host in "${NODE_HOSTS[@]}"; do
-        local dominated=false
-        for tikv_host in "${TIKV_HOSTS[@]}"; do
-            [ "$host" = "$tikv_host" ] && dominated=true
-        done
-        if ! $dominated; then
-            echo "  Cleaning stale containers on $host..."
-            remote_exec "$host" "docker ps -a --filter name=sptag- -q | xargs -r docker rm -f 2>/dev/null || true"
-        fi
-    done
-
-    echo "TiKV cluster stopped."
+    echo "TiKV instances stopped."
 }
 
-cmd_clean_tikv_data() {
+tikv_clean() {
+    # Clean TiKV data for the first <node_count> instances.
+    local node_count="${1:-${#TIKV_HOSTS[@]}}"
     echo ""
-    echo "=== Cleaning TiKV data ==="
+    echo "=== Cleaning TiKV data ($node_count instances) ==="
 
-    for i in "${!TIKV_HOSTS[@]}"; do
+    for (( i=0; i<node_count; i++ )); do
         local host="${TIKV_HOSTS[$i]}"
         echo "  Cleaning TiKV data on $host..."
-        # Docker creates root-owned files; use a temporary container to clean them
         remote_exec "$host" "docker run --rm -v $DATA_DIR/tikv-data:/data alpine \
             rm -rf /data/tikv-$i /data/pd-$i 2>/dev/null || true"
     done
 }
 
+# Legacy wrappers for the main case block
+cmd_start_tikv() { tikv_start "${1:-${#TIKV_HOSTS[@]}}"; }
+cmd_stop_tikv()  { tikv_stop  "${1:-${#TIKV_HOSTS[@]}}"; }
+
 # ─── INI Generation ───
 
 generate_ini() {
-    # Generate a benchmark INI file for a specific node and scale.
-    # Usage: generate_ini <scale> <node_index> <extra_overrides...>
+    # Generate a benchmark INI from a template, filling in [Distributed] fields.
+    # Usage: generate_ini <scale> <node_count> [overrides...]
     local SCALE="$1"
-    local NODE_IDX="$2"
+    local NODE_COUNT="$2"
     shift 2
 
-    local ROUTER_ADDRS=$(get_router_node_addrs)
-    local PD_ADDRS=$(get_tikv_pd_addrs)
-    local STORE_ADDRS=$(get_router_node_stores)
-    local NUM_NODES=${#NODE_HOSTS[@]}
-    local HOST="${NODE_HOSTS[$NODE_IDX]}"
-    local IDX_PATH="$DATA_DIR/proidx_${SCALE}_${NUM_NODES}node_n${NODE_IDX}/spann_index"
+    local IDX_PATH="$DATA_DIR/proidx_${SCALE}_${NODE_COUNT}node/spann_index"
+    local KEY_PREFIX="bench${SCALE}_${NODE_COUNT}node"
 
-    # Load the base INI template if it exists
+    # Build comma-separated address lists from the first node_count entries
+    local dispatcher_addr="${NODE_HOSTS[0]}:30001"
+    local worker_addrs="" store_addrs="" pd_addrs=""
+    for (( i=0; i<NODE_COUNT; i++ )); do
+        [ -n "$worker_addrs" ] && worker_addrs+=","
+        worker_addrs+="${NODE_HOSTS[$i]}:${NODE_ROUTER_PORTS[$i]}"
+        [ -n "$store_addrs" ] && store_addrs+=","
+        store_addrs+="${TIKV_HOSTS[$i]}:${TIKV_PORTS[$i]}"
+        [ -n "$pd_addrs" ] && pd_addrs+=","
+        pd_addrs+="${TIKV_HOSTS[$i]}:${TIKV_PD_CLIENT_PORTS[$i]}"
+    done
+
+    # Load the base INI template
     local BASE_INI="$SCRIPT_DIR/configs/benchmark_${SCALE}_template.ini"
     if [ ! -f "$BASE_INI" ]; then
-        echo "ERROR: Template INI not found: $BASE_INI"
-        echo "Create a template or use an existing single-node INI as base."
+        echo "ERROR: Template INI not found: $BASE_INI" >&2
         return 1
     fi
 
-    # Generate node-specific INI
-    local OUT="/tmp/benchmark_${SCALE}_${NUM_NODES}node_n${NODE_IDX}.ini"
+    local OUT="$SCRIPT_DIR/configs/benchmark_${SCALE}_${NODE_COUNT}node.ini"
     cp "$BASE_INI" "$OUT"
 
-    # Rewrite key fields
+    # Fill in placeholder fields
     sed -i "s|^IndexPath=.*|IndexPath=${IDX_PATH}|" "$OUT"
-    sed -i "s|^TiKVPDAddresses=.*|TiKVPDAddresses=${PD_ADDRS}|" "$OUT"
-
-    # Ensure [Router] section exists
-    if ! grep -q '^\[Router\]' "$OUT"; then
-        echo "" >> "$OUT"
-        echo "[Router]" >> "$OUT"
-    fi
-
-    # Set router params (remove old values first, then append)
-    sed -i '/^RouterEnabled=/d; /^RouterLocalNodeIndex=/d; /^RouterNodeAddrs=/d; /^RouterNodeStores=/d' "$OUT"
-    sed -i "/^\[Router\]/a RouterEnabled=true\nRouterLocalNodeIndex=${NODE_IDX}\nRouterNodeAddrs=${ROUTER_ADDRS}\nRouterNodeStores=${STORE_ADDRS}" "$OUT"
+    sed -i "s|^TiKVKeyPrefix=.*|TiKVKeyPrefix=${KEY_PREFIX}|" "$OUT"
+    sed -i "s|^DispatcherAddr=.*|DispatcherAddr=${dispatcher_addr}|" "$OUT"
+    sed -i "s|^WorkerAddrs=.*|WorkerAddrs=${worker_addrs}|" "$OUT"
+    sed -i "s|^StoreAddrs=.*|StoreAddrs=${store_addrs}|" "$OUT"
+    sed -i "s|^PDAddrs=.*|PDAddrs=${pd_addrs}|" "$OUT"
 
     # Apply extra overrides (key=value pairs)
     for override in "$@"; do
@@ -432,20 +420,19 @@ WORKER_SSH_PIDS=()
 
 start_remote_worker() {
     # Start a worker on a remote node. Returns immediately; worker runs in background.
-    # The SSH connection stays open — killing the local SSH PID kills the remote process.
     local NODE_IDX="$1"
     local INI="$2"
     local SCALE="$3"
+    local NODE_COUNT="$4"
     local host="${NODE_HOSTS[$NODE_IDX]}"
-    local NUM_NODES=${#NODE_HOSTS[@]}
-    local LOG="$LOGDIR/benchmark_${SCALE}_${NUM_NODES}node_worker${NODE_IDX}.log"
+    local LOG="$LOGDIR/benchmark_${SCALE}_${NODE_COUNT}node_worker${NODE_IDX}.log"
 
-    # Copy INI to remote
+    # Copy INI + binary to remote
     remote_sync "$host" "$INI" "$SPTAG_DIR/worker_n${NODE_IDX}.ini"
 
     # Start worker via SSH (foreground on remote, background locally)
-    ssh -o StrictHostKeyChecking=no "$SSH_USER@$host" \
-        "cd $SPTAG_DIR && BENCHMARK_CONFIG=worker_n${NODE_IDX}.ini \
+    ssh $(_ssh_opts) "$SSH_USER@$host" \
+        "cd $SPTAG_DIR && WORKER_INDEX=${NODE_IDX} BENCHMARK_CONFIG=worker_n${NODE_IDX}.ini \
          ./Release/SPTAGTest --run_test=SPFreshTest/WorkerNode 2>&1" \
         > "$LOG" 2>&1 &
     local ssh_pid=$!
@@ -455,15 +442,15 @@ start_remote_worker() {
 
 wait_workers_ready() {
     local SCALE="$1"
-    local NUM_NODES=${#NODE_HOSTS[@]}
+    local NODE_COUNT="$2"
     local TIMEOUT=120
 
     echo "Waiting for ${#WORKER_SSH_PIDS[@]} workers to be ready..."
     for attempt in $(seq 1 $TIMEOUT); do
         local all_ready=true
-        for i in $(seq 1 $((NUM_NODES - 1))); do
-            local LOG="$LOGDIR/benchmark_${SCALE}_${NUM_NODES}node_worker${i}.log"
-            if ! grep -q "WorkerNode.*Waiting for dispatch" "$LOG" 2>/dev/null; then
+        for i in $(seq 1 $((NODE_COUNT - 1))); do
+            local LOG="$LOGDIR/benchmark_${SCALE}_${NODE_COUNT}node_worker${i}.log"
+            if ! grep -q "WorkerNode.*[Rr]eady\|Waiting for dispatch" "$LOG" 2>/dev/null; then
                 all_ready=false
             fi
         done
@@ -510,15 +497,15 @@ stop_remote_workers() {
 # ─── Benchmark Run ───
 
 distribute_head_index() {
-    # Copy the head index from driver (n0) to all worker nodes.
+    # Copy the head index from driver to all worker nodes.
     local SCALE="$1"
-    local NUM_NODES=${#NODE_HOSTS[@]}
-    local SRC="$DATA_DIR/proidx_${SCALE}_${NUM_NODES}node_n0/spann_index"
+    local NODE_COUNT="$2"
+    local SRC="$DATA_DIR/proidx_${SCALE}_${NODE_COUNT}node/spann_index"
 
-    echo "Distributing head index to ${NUM_NODES}-1 workers..."
-    for i in $(seq 1 $((NUM_NODES - 1))); do
+    echo "Distributing head index to $((NODE_COUNT - 1)) workers..."
+    for (( i=1; i<NODE_COUNT; i++ )); do
         local host="${NODE_HOSTS[$i]}"
-        local DST="$DATA_DIR/proidx_${SCALE}_${NUM_NODES}node_n${i}/spann_index"
+        local DST="$DATA_DIR/proidx_${SCALE}_${NODE_COUNT}node/spann_index"
         echo "  → n${i} ($host)"
         remote_exec "$host" "mkdir -p $DST"
         remote_sync "$host" "$SRC/" "$DST/"
@@ -526,142 +513,210 @@ distribute_head_index() {
 }
 
 distribute_perftest_files() {
-    # rsync generated perftest_* files from driver to all workers.
-    local host
+    # rsync generated perftest_* files from driver to workers.
+    local NODE_COUNT="$1"
     echo "Distributing perftest_* data files to workers..."
-    for i in $(seq 1 $((${#NODE_HOSTS[@]} - 1))); do
-        host="${NODE_HOSTS[$i]}"
+    for (( i=1; i<NODE_COUNT; i++ )); do
+        local host="${NODE_HOSTS[$i]}"
         echo "  → $host"
         rsync -az --progress \
             --include='perftest_*' --exclude='*' \
-            -e "ssh -o StrictHostKeyChecking=no" \
+            -e "ssh $(_ssh_opts)" \
             "$SPTAG_DIR/" "$SSH_USER@$host:$SPTAG_DIR/"
     done
 }
 
 cmd_run() {
     local SCALE="$1"
-    if [ -z "$SCALE" ]; then
-        echo "Usage: $0 run <cluster.conf> <scale>"
+    local NODE_COUNT="$2"
+    if [ -z "$SCALE" ] || [ -z "$NODE_COUNT" ]; then
+        echo "Usage: $0 run <cluster.conf> <scale> <node_count>"
         exit 1
     fi
 
-    local NUM_NODES=${#NODE_HOSTS[@]}
     local BINARY="$SPTAG_DIR/Release/SPTAGTest"
 
     echo ""
     echo "═══════════════════════════════════════════════════"
-    echo "  ${SCALE}: ${NUM_NODES}-node distributed benchmark"
+    echo "  ${SCALE}: ${NODE_COUNT}-node benchmark"
     echo "  Start: $(date)"
     echo "═══════════════════════════════════════════════════"
 
-    # --- Phase 0: Clean TiKV data for a fresh run ---
-    echo ""
-    echo "--- Phase 0: Clean TiKV data ---"
+    if [ "$NODE_COUNT" -eq 1 ]; then
+        # ─── Single-node flow ───
+        echo ""
+        echo "--- Phase 0: Prepare TiKV (1 instance) ---"
+        tikv_stop 1
+        tikv_clean 1
+        tikv_start 1
 
-    # Stop ALL sptag containers on ALL compute nodes (catches stale containers
-    # from prior runs that used different node counts)
-    local all_hosts=()
-    for h in "${NODE_HOSTS[@]}" "${TIKV_HOSTS[@]}"; do
-        local found=false
-        for ah in "${all_hosts[@]}"; do [ "$ah" = "$h" ] && found=true; done
-        $found || all_hosts+=("$h")
-    done
-    echo "  Stopping all SPTAG containers on ${#all_hosts[@]} hosts..."
-    for host in "${all_hosts[@]}"; do
-        remote_exec "$host" "docker ps -a --filter name=sptag- -q | xargs -r docker rm -f 2>/dev/null || true"
-    done
+        echo ""
+        echo "--- Phase 1: Single-node run ---"
+        local INI
+        INI=$(generate_ini "$SCALE" 1 "Rebuild=true") || exit 1
 
-    cmd_clean_tikv_data
-    cmd_start_tikv
+        # Clean old index dir
+        rm -rf "$DATA_DIR/proidx_${SCALE}_1node"
+        mkdir -p "$DATA_DIR/proidx_${SCALE}_1node"
 
-    # --- Phase 1: Build index on driver (router disabled) ---
-    echo ""
-    echo "--- Phase 1: Build index on driver ---"
+        echo "Starting driver on ${NODE_HOSTS[0]}..."
+        BENCHMARK_CONFIG="$INI" \
+        BENCHMARK_OUTPUT="output_${SCALE}_1node.json" \
+            "$BINARY" --run_test=SPFreshTest/BenchmarkFromConfig \
+            2>&1 | tee "$LOGDIR/benchmark_${SCALE}_1node_driver.log"
 
-    local BUILD_INI
-    BUILD_INI=$(generate_ini "$SCALE" 0 "Rebuild=true" "RouterEnabled=false") || exit 1
-
-    # Clean old index dirs
-    for i in $(seq 0 $((NUM_NODES - 1))); do
-        local host="${NODE_HOSTS[$i]}"
-        remote_exec "$host" "rm -rf $DATA_DIR/proidx_${SCALE}_${NUM_NODES}node_n${i}"
-    done
-    mkdir -p "$DATA_DIR/proidx_${SCALE}_${NUM_NODES}node_n0"
-
-    BENCHMARK_CONFIG="$BUILD_INI" \
-    BENCHMARK_OUTPUT="output_${SCALE}_${NUM_NODES}node_build.json" \
-        "$BINARY" --run_test=SPFreshTest/BenchmarkFromConfig \
-        2>&1 | tee "$LOGDIR/benchmark_${SCALE}_${NUM_NODES}node_build.log"
-
-    echo "Build done: $(date)"
-
-    # --- Phase 2: Distribute data ---
-    echo ""
-    echo "--- Phase 2: Distribute head index + data ---"
-
-    # Clear checkpoint so driver re-runs insert batches with routing
-    rm -f "$DATA_DIR/proidx_${SCALE}_${NUM_NODES}node_n0/spann_index/checkpoint.txt"
-
-    distribute_head_index "$SCALE"
-    distribute_perftest_files
-
-    # --- Phase 3: Start workers, then run driver ---
-    echo ""
-    echo "--- Phase 3: Distributed run ---"
-
-    # Generate per-node INI files
-    WORKER_SSH_PIDS=()
-    for i in $(seq 1 $((NUM_NODES - 1))); do
-        local WORKER_INI
-        WORKER_INI=$(generate_ini "$SCALE" "$i" "Rebuild=false") || exit 1
-        start_remote_worker "$i" "$WORKER_INI" "$SCALE"
-    done
-
-    wait_workers_ready "$SCALE" || {
-        echo "ERROR: Workers not ready, aborting"
-        stop_remote_workers 5
-        return 1
-    }
-
-    # Run driver with routing enabled (if multi-node), rebuild disabled
-    local DRIVER_INI
-    if [ "$NUM_NODES" -eq 1 ]; then
-        DRIVER_INI=$(generate_ini "$SCALE" 0 "Rebuild=false" "RouterEnabled=false") || exit 1
+        echo "Done: $(date)"
+        tikv_stop 1
     else
-        DRIVER_INI=$(generate_ini "$SCALE" 0 "Rebuild=false") || exit 1
+        # ─── Multi-node flow ───
+        echo ""
+        echo "--- Phase 0: Prepare TiKV ($NODE_COUNT instances) ---"
+        tikv_stop "$NODE_COUNT"
+        tikv_clean "$NODE_COUNT"
+        tikv_start "$NODE_COUNT"
+
+        # --- Phase 1: Build index on driver ---
+        echo ""
+        echo "--- Phase 1: Build index on driver ---"
+        local BUILD_INI
+        BUILD_INI=$(generate_ini "$SCALE" "$NODE_COUNT" "Rebuild=true" "BuildOnly=true") || exit 1
+
+        # Clean old index dir
+        for (( i=0; i<NODE_COUNT; i++ )); do
+            local host="${NODE_HOSTS[$i]}"
+            remote_exec "$host" "rm -rf $DATA_DIR/proidx_${SCALE}_${NODE_COUNT}node"
+        done
+        mkdir -p "$DATA_DIR/proidx_${SCALE}_${NODE_COUNT}node"
+
+        BENCHMARK_CONFIG="$BUILD_INI" \
+        BENCHMARK_OUTPUT="output_${SCALE}_${NODE_COUNT}node_build.json" \
+            "$BINARY" --run_test=SPFreshTest/BenchmarkFromConfig \
+            2>&1 | tee "$LOGDIR/benchmark_${SCALE}_${NODE_COUNT}node_build.log"
+
+        echo "Build done: $(date)"
+
+        # --- Phase 2: Distribute data ---
+        echo ""
+        echo "--- Phase 2: Distribute head index + data ---"
+        rm -f "$DATA_DIR/proidx_${SCALE}_${NODE_COUNT}node/spann_index/checkpoint.txt"
+
+        distribute_head_index "$SCALE" "$NODE_COUNT"
+        distribute_perftest_files "$NODE_COUNT"
+
+        # Also distribute binary + INI to workers
+        for (( i=1; i<NODE_COUNT; i++ )); do
+            local host="${NODE_HOSTS[$i]}"
+            remote_exec "$host" "mkdir -p $SPTAG_DIR/Release"
+            remote_sync "$host" "$SPTAG_DIR/Release/SPTAGTest" "$SPTAG_DIR/Release/SPTAGTest"
+        done
+
+        # --- Phase 3: Start workers, then run driver ---
+        echo ""
+        echo "--- Phase 3: Distributed run ---"
+
+        local RUN_INI
+        RUN_INI=$(generate_ini "$SCALE" "$NODE_COUNT" "Rebuild=false") || exit 1
+
+        WORKER_SSH_PIDS=()
+        for (( i=1; i<NODE_COUNT; i++ )); do
+            start_remote_worker "$i" "$RUN_INI" "$SCALE" "$NODE_COUNT"
+        done
+
+        wait_workers_ready "$SCALE" "$NODE_COUNT" || {
+            echo "ERROR: Workers not ready, aborting"
+            stop_remote_workers 5
+            return 1
+        }
+
+        echo ""
+        echo "Starting driver on ${NODE_HOSTS[0]}..."
+        BENCHMARK_CONFIG="$RUN_INI" \
+        BENCHMARK_OUTPUT="output_${SCALE}_${NODE_COUNT}node.json" \
+            "$BINARY" --run_test=SPFreshTest/BenchmarkFromConfig \
+            2>&1 | tee "$LOGDIR/benchmark_${SCALE}_${NODE_COUNT}node_driver.log"
+
+        echo "Driver done: $(date)"
+
+        # Driver sends TCP Stop to workers; wait for graceful exit
+        stop_remote_workers 60
+
+        # Collect remote logs
+        echo "Collecting remote logs..."
+        for (( i=1; i<NODE_COUNT; i++ )); do
+            local host="${NODE_HOSTS[$i]}"
+            local REMOTE_LOG="$SPTAG_DIR/worker_n${i}.log"
+            scp $(_ssh_opts) "$SSH_USER@$host:$REMOTE_LOG" \
+                "$LOGDIR/benchmark_${SCALE}_${NODE_COUNT}node_worker${i}_remote.log" 2>/dev/null || true
+        done
+
+        tikv_stop "$NODE_COUNT"
     fi
 
     echo ""
-    echo "Starting driver on ${NODE_HOSTS[0]}..."
-    BENCHMARK_CONFIG="$DRIVER_INI" \
-    BENCHMARK_OUTPUT="output_${SCALE}_${NUM_NODES}node.json" \
-        "$BINARY" --run_test=SPFreshTest/BenchmarkFromConfig \
-        2>&1 | tee "$LOGDIR/benchmark_${SCALE}_${NUM_NODES}node_driver.log"
+    echo "═══════════════════════════════════════════════════"
+    echo "  ${SCALE} ${NODE_COUNT}-node done: $(date)"
+    echo "  Results: output_${SCALE}_${NODE_COUNT}node.json"
+    echo "  Logs:    $LOGDIR/benchmark_${SCALE}_${NODE_COUNT}node_*.log"
+    echo "═══════════════════════════════════════════════════"
+}
 
-    echo "Driver done: $(date)"
+cmd_bench() {
+    # Run 1-node baseline + N-node distributed for each specified scale.
+    # Usage: cmd_bench <scale> [scale...]
+    # Special scale "all" expands to all scales with templates in configs/.
+    local scales=()
+    for arg in "$@"; do
+        if [ "$arg" = "all" ]; then
+            for tmpl in "$SCRIPT_DIR"/configs/benchmark_*_template.ini; do
+                local name
+                name="$(basename "$tmpl")"
+                name="${name#benchmark_}"
+                name="${name%_template.ini}"
+                scales+=("$name")
+            done
+        else
+            scales+=("$arg")
+        fi
+    done
 
-    # Driver sends TCP Stop to workers; wait for graceful exit
-    stop_remote_workers 60
+    if [ ${#scales[@]} -eq 0 ]; then
+        echo "Usage: $0 bench <cluster.conf> <scale> [scale...] | all"
+        echo "Available scales:"
+        for tmpl in "$SCRIPT_DIR"/configs/benchmark_*_template.ini; do
+            local name
+            name="$(basename "$tmpl")"
+            name="${name#benchmark_}"
+            name="${name%_template.ini}"
+            echo "  $name"
+        done
+        exit 1
+    fi
 
-    # Collect remote logs
-    echo "Collecting remote logs..."
-    for i in $(seq 1 $((NUM_NODES - 1))); do
-        local host="${NODE_HOSTS[$i]}"
-        local REMOTE_LOG="$SPTAG_DIR/worker_n${i}.log"
-        scp -o StrictHostKeyChecking=no "$SSH_USER@$host:$REMOTE_LOG" \
-            "$LOGDIR/benchmark_${SCALE}_${NUM_NODES}node_worker${i}_remote.log" 2>/dev/null || true
+    echo ""
+    echo "═══════════════════════════════════════════════════"
+    echo "  Benchmark suite: ${scales[*]}"
+    echo "  Cluster: $TOTAL_NODES nodes"
+    echo "  Start: $(date)"
+    echo "═══════════════════════════════════════════════════"
+
+    for scale in "${scales[@]}"; do
+        echo ""
+        echo "▶▶▶ Scale: $scale — 1-node baseline"
+        cmd_run "$scale" 1
+
+        if [ "$TOTAL_NODES" -gt 1 ]; then
+            echo ""
+            echo "▶▶▶ Scale: $scale — ${TOTAL_NODES}-node distributed"
+            cmd_run "$scale" "$TOTAL_NODES"
+        else
+            echo "  (Skipping multi-node: cluster has only 1 node)"
+        fi
     done
 
     echo ""
     echo "═══════════════════════════════════════════════════"
-    echo "  ${SCALE} ${NUM_NODES}-node done: $(date)"
-    echo "  Results: output_${SCALE}_${NUM_NODES}node.json"
-    echo "  Logs:    $LOGDIR/benchmark_${SCALE}_${NUM_NODES}node_*.log"
+    echo "  Benchmark suite complete: $(date)"
     echo "═══════════════════════════════════════════════════"
-
-    # Stop TiKV/PD containers after run completes
-    cmd_stop_tikv
 }
 
 # ─── Cleanup ───
@@ -690,9 +745,10 @@ if [ -z "$CMD" ] || [ -z "$CONF" ]; then
     echo ""
     echo "Commands:"
     echo "  deploy      Deploy binary and data to all nodes"
-    echo "  start-tikv  Start TiKV/PD cluster"
-    echo "  stop-tikv   Stop TiKV/PD cluster"
-    echo "  run         Run benchmark: $0 run cluster.conf <scale>"
+    echo "  start-tikv  Start independent TiKV/PD instances"
+    echo "  stop-tikv   Stop TiKV/PD instances"
+    echo "  run         Run benchmark: $0 run cluster.conf <scale> <node_count>"
+    echo "  bench       Run full benchmark suite: $0 bench cluster.conf <scale> [scale...] | all"
     echo "  cleanup     Remove deployed files from remote nodes"
     exit 1
 fi
@@ -707,23 +763,24 @@ case "$CMD" in
         cmd_deploy
         ;;
     start-tikv)
-        cmd_start_tikv
+        cmd_start_tikv "${3:-}"
         ;;
     stop-tikv)
-        cmd_stop_tikv
+        cmd_stop_tikv "${3:-}"
         ;;
     run)
+        cmd_run "$3" "$4"
+        ;;
+    bench)
         shift 2  # skip cmd and conf
-        for scale in "$@"; do
-            cmd_run "$scale"
-        done
+        cmd_bench "$@"
         ;;
     cleanup)
         cmd_cleanup
         ;;
     *)
         echo "Unknown command: $CMD"
-        echo "Valid commands: deploy, start-tikv, stop-tikv, run, cleanup"
+        echo "Valid commands: deploy, start-tikv, stop-tikv, run, bench, cleanup"
         exit 1
         ;;
 esac

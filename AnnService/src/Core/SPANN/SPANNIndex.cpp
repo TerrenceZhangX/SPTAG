@@ -1781,6 +1781,7 @@ ErrorCode Index<T>::AddIndex(const void *p_data, SizeType p_vectorNum, Dimension
         int numThreads = std::min((int)p_vectorNum, m_options.m_iSSDNumberOfThreads);
         std::atomic_int nextVec{0};
         std::atomic<ErrorCode> globalError{ErrorCode::Success};
+        int printStep = std::max(1, p_vectorNum / 50);
 
         auto worker = [&](bool isFirst) {
             std::unique_ptr<ExtraWorkSpace> ws;
@@ -1803,6 +1804,12 @@ ErrorCode Index<T>::AddIndex(const void *p_data, SizeType p_vectorNum, Dimension
             while (globalError.load(std::memory_order_relaxed) == ErrorCode::Success) {
                 int v = nextVec.fetch_add(1);
                 if (v >= p_vectorNum) break;
+
+                if (v % printStep == 0) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "AddIndex bulk: %d/%d (%.1f%%)\n",
+                                 v, p_vectorNum, v * 100.0 / p_vectorNum);
+                    GetDBStat();
+                }
 
                 // Create a single-vector VectorSet view
                 std::shared_ptr<VectorSet> singleVec = std::make_shared<BasicVectorSet>(

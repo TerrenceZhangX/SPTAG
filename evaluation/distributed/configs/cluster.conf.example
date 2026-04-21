@@ -1,0 +1,42 @@
+# SPTAG Distributed Benchmark Cluster Configuration
+#
+# This file defines the machines, roles, and TiKV topology for
+# multi-machine distributed benchmarks.
+#
+# Architecture: Each machine runs its own independent PD + TiKV
+# (NOT a shared Raft cluster). max-replicas is set to 1 automatically.
+#
+# Usage:
+#   cp cluster.conf.example cluster.conf
+#   # Edit with your actual IPs and paths
+#   ./run_distributed.sh deploy cluster.conf
+#   ./run_distributed.sh bench cluster.conf 10m
+#
+# All machines must be reachable via passwordless SSH from the driver.
+
+[cluster]
+ssh_user=superbench
+sptag_dir=/home/superbench/zhangt/SPTAG
+data_dir=/mnt_ssd/data
+tikv_version=v8.5.1
+pd_version=v8.5.1
+ssh_key=~/.ssh/rsa
+
+[nodes]
+# Compute nodes for SPTAG benchmark.
+# First node is always the driver (node 0); rest are workers.
+# Dispatcher always uses port 30001 on the driver node.
+# Fields: host  router_port
+#
+# host          router_port
+10.11.0.9       30002
+10.11.0.7       30002
+
+[tikv]
+# Independent TiKV + PD instances. One PD and one TiKV per machine.
+# Each PD runs standalone (not a shared Raft cluster).
+# Fields: host  pd_client_port  pd_peer_port  tikv_port
+#
+# host          pd_client  pd_peer  tikv_port
+10.11.0.9       2379       2380     20161
+10.11.0.7       2379       2380     20161
