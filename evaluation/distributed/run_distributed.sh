@@ -610,32 +610,57 @@ cmd_run() {
             remote_sync "$host" "$SPTAG_DIR/Release/SPTAGTest" "$SPTAG_DIR/Release/SPTAGTest"
         done
 
-        # --- Phase 3: Start workers, then run driver ---
+        # --- Phase 3: Start driver first (contains dispatcher), then workers ---
         echo ""
         echo "--- Phase 3: Distributed run ---"
 
         local RUN_INI
         RUN_INI=$(generate_ini "$SCALE" "$NODE_COUNT" "Rebuild=false") || exit 1
 
+        # Start driver in background first — it contains the dispatcher that
+        # workers need to connect to for ring registration.
+        local DRIVER_LOG="$LOGDIR/benchmark_${SCALE}_${NODE_COUNT}node_driver.log"
+        echo "Starting driver (dispatcher+worker0) on ${NODE_HOSTS[0]}..."
+        BENCHMARK_CONFIG="$RUN_INI" \
+        BENCHMARK_OUTPUT="output_${SCALE}_${NODE_COUNT}node.json" \
+            "$BINARY" --run_test=SPFreshTest/BenchmarkFromConfig \
+            > "$DRIVER_LOG" 2>&1 &
+        local DRIVER_PID=$!
+        echo "  Driver PID: $DRIVER_PID"
+
+        # Wait for dispatcher to start listening before launching workers
+        local DISP_PORT=30001
+        echo "  Waiting for dispatcher to listen on port $DISP_PORT..."
+        for attempt in $(seq 1 60); do
+            if ss -tlnp 2>/dev/null | grep -q ":${DISP_PORT} " || \
+               netstat -tlnp 2>/dev/null | grep -q ":${DISP_PORT} "; then
+                echo "  Dispatcher listening (${attempt}s)"
+                break
+            fi
+            if ! kill -0 "$DRIVER_PID" 2>/dev/null; then
+                echo "  ERROR: Driver exited prematurely"
+                cat "$DRIVER_LOG"
+                return 1
+            fi
+            if [ "$attempt" -eq 60 ]; then
+                echo "  WARNING: Dispatcher not detected on port $DISP_PORT after 60s, proceeding anyway"
+            fi
+            sleep 1
+        done
+
+        # Now start remote workers — they can connect to the dispatcher
         WORKER_SSH_PIDS=()
         for (( i=1; i<NODE_COUNT; i++ )); do
             start_remote_worker "$i" "$RUN_INI" "$SCALE" "$NODE_COUNT"
         done
 
-        wait_workers_ready "$SCALE" "$NODE_COUNT" || {
-            echo "ERROR: Workers not ready, aborting"
-            stop_remote_workers 5
-            return 1
-        }
-
-        echo ""
-        echo "Starting driver on ${NODE_HOSTS[0]}..."
-        BENCHMARK_CONFIG="$RUN_INI" \
-        BENCHMARK_OUTPUT="output_${SCALE}_${NODE_COUNT}node.json" \
-            "$BINARY" --run_test=SPFreshTest/BenchmarkFromConfig \
-            2>&1 | tee "$LOGDIR/benchmark_${SCALE}_${NODE_COUNT}node_driver.log"
-
-        echo "Driver done: $(date)"
+        # Wait for driver to complete (it runs the full benchmark)
+        echo "  Waiting for driver to complete..."
+        wait "$DRIVER_PID"
+        local DRIVER_EXIT=$?
+        echo "Driver done (exit=$DRIVER_EXIT): $(date)"
+        # Show driver output
+        tail -20 "$DRIVER_LOG"
 
         # Driver sends TCP Stop to workers; wait for graceful exit
         stop_remote_workers 60
