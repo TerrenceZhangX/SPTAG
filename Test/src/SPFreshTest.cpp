@@ -775,13 +775,10 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
     benchmarkData << prefix << "      \"qps\": " << qps << ",\n";
     
 
-    // Recall evaluation (skip for distributed — truth indexing requires full query set)
-    if (distributed || !truth || truthPath.empty() || truthPath == "none")
+    // Recall evaluation
+    if (!truth || truthPath.empty() || truthPath == "none")
     {
-        if (distributed) {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Recall skipped in distributed mode (same as single-node)\n");
-        }
-        BOOST_TEST_MESSAGE("  Recall evaluation skipped" << (distributed ? " (distributed mode)" : " (no truth data)"));
+        BOOST_TEST_MESSAGE("  Recall evaluation skipped (no truth data)");
         benchmarkData << prefix << "      \"recall\": null\n";
         benchmarkData << prefix << "    }";
         return;
