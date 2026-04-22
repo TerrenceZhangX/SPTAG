@@ -806,6 +806,8 @@ namespace SPTAG::SPANN {
                 SizeType newHeadVID = -1;
                 int first = 0;                
                 newPostingLists.resize(2);
+                newHeadsID.resize(2);
+                newHeadsVec.resize(2);
                 for (int k : ks) {
                     if (args.counts[k] == 0)	continue;
                     first = (k == 0) ? 0 : args.counts[0];
