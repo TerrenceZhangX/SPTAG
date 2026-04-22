@@ -40,8 +40,8 @@
 
 #ifdef ROCKSDB
 #include "ExtraRocksDBController.h"
-// enable rocksdb io_uring
-extern "C" bool RocksDbIOUringEnable() { return true; }
+// enable rocksdb io_uring (weak to avoid multiple definition at link time)
+extern "C" __attribute__((weak)) bool RocksDbIOUringEnable() { return true; }
 #endif
 
 #ifdef TIKV

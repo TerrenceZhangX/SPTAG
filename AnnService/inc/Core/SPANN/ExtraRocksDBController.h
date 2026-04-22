@@ -69,61 +69,69 @@ namespace SPTAG::SPANN
         };
 
     public:
-        RocksDBIO(const char* filePath, bool usdDirectIO, bool wal = false, bool recovery = false) {
+        RocksDBIO(const char* filePath, bool usdDirectIO, bool wal = false, bool recovery = false,
+                  int blockCacheMB = 4096, int blobCacheMB = 26624, int maxSubCompactions = 4,
+                  bool asyncIO = true, bool lowPriorityCompaction = true) {
             dbPath = std::string(filePath);
-            //dbOptions.statistics = rocksdb::CreateDBStatistics();
             dbOptions.create_if_missing = true;
             if (!wal) {
                 dbOptions.IncreaseParallelism();
                 dbOptions.OptimizeLevelStyleCompaction();
                 dbOptions.merge_operator.reset(new AnnMergeOperator);
-                // dbOptions.statistics = rocksdb::CreateDBStatistics();
 
                 // SST file size options
                 dbOptions.target_file_size_base = 128UL * 1024 * 1024;
                 dbOptions.target_file_size_multiplier = 2;
                 dbOptions.max_bytes_for_level_base = 16 * 1024UL * 1024 * 1024;
                 dbOptions.max_bytes_for_level_multiplier = 4;
-                dbOptions.max_subcompactions = 16;
+                dbOptions.max_subcompactions = static_cast<uint32_t>(maxSubCompactions);
                 dbOptions.num_levels = 4;
                 dbOptions.level0_file_num_compaction_trigger = 1;
                 dbOptions.level_compaction_dynamic_level_bytes = false;
                 dbOptions.write_buffer_size = 16UL * 1024 * 1024;
+                dbOptions.bytes_per_sync = 1UL * 1024 * 1024;
 
-                // rate limiter options
-                // dbOptions.rate_limiter.reset(rocksdb::NewGenericRateLimiter(100UL << 20));
+                // Compaction tuning
+                dbOptions.compaction_pri = rocksdb::CompactionPri::kMinOverlappingRatio;
+                auto env = rocksdb::Env::Default();
+                env->SetBackgroundThreads(4, rocksdb::Env::LOW);
+                if (lowPriorityCompaction) {
+                    env->LowerThreadPoolCPUPriority(rocksdb::Env::LOW);
+                    env->LowerThreadPoolIOPriority(rocksdb::Env::LOW);
+                }
+                dbOptions.env = env;
 
-                // blob options
+                // Compression: LZ4 for intermediate levels, ZSTD for bottommost
+                dbOptions.compression = rocksdb::CompressionType::kLZ4Compression;
+                dbOptions.bottommost_compression = rocksdb::CompressionType::kZSTD;
+
+                // Blob options (postings stored as blobs)
                 dbOptions.enable_blob_files = true;
                 dbOptions.min_blob_size = 64;
                 dbOptions.blob_file_size = 8UL << 30;
                 dbOptions.blob_compression_type = rocksdb::CompressionType::kNoCompression;
                 dbOptions.enable_blob_garbage_collection = true;
-                dbOptions.compaction_pri = rocksdb::CompactionPri::kRoundRobin;
                 dbOptions.blob_garbage_collection_age_cutoff = 0.4;
-                // dbOptions.blob_garbage_collection_force_threshold = 0.5;
-                // dbOptions.blob_cache = rocksdb::NewLRUCache(5UL << 30);
-                // dbOptions.prepopulate_blob_cache = rocksdb::PrepopulateBlobCache::kFlushOnly;
+                if (blobCacheMB > 0) {
+                    dbOptions.blob_cache = rocksdb::NewLRUCache(static_cast<size_t>(blobCacheMB) << 20, 8);
+                }
 
-                // dbOptions.env;
-                // dbOptions.sst_file_manager = std::shared_ptr<rocksdb::SstFileManager>(rocksdb::NewSstFileManager(dbOptions.env));
-                // dbOptions.sst_file_manager->SetStatisticsPtr(dbOptions.statistics);
-
-                // compression options
-                // dbOptions.compression = rocksdb::CompressionType::kLZ4Compression;
-                // dbOptions.bottommost_compression = rocksdb::CompressionType::kZSTD;
-
-                // block cache options
+                // Block cache for SST index/filter/data blocks
                 rocksdb::BlockBasedTableOptions table_options;
-                // table_options.block_cache = rocksdb::NewSimCache(rocksdb::NewLRUCache(1UL << 30), (8UL << 30), -1);
-                table_options.block_cache = rocksdb::NewLRUCache(3UL << 30);
-                // table_options.no_block_cache = true;
+                table_options.block_cache = rocksdb::NewLRUCache(static_cast<size_t>(blockCacheMB) << 20, 8);
 
-                // filter options
-                table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, true));
+                // Partitioned index and filters
+                table_options.index_type = rocksdb::BlockBasedTableOptions::kTwoLevelIndexSearch;
+                table_options.partition_filters = true;
+                table_options.metadata_block_size = 4096;
+
+                // Filter options
+                table_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
                 table_options.optimize_filters_for_memory = true;
 
                 dbOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(table_options));
+
+                m_asyncIO = asyncIO;
             }
 
             if (usdDirectIO) {
@@ -199,7 +207,10 @@ namespace SPTAG::SPANN
                 slice_keys[i] = rocksdb::Slice(str_keys[i]);
             }
 
-            db->MultiGet(rocksdb::ReadOptions(), db->DefaultColumnFamily(),
+            rocksdb::ReadOptions readOpts;
+            readOpts.async_io = m_asyncIO;
+            readOpts.adaptive_readahead = m_asyncIO;
+            db->MultiGet(readOpts, db->DefaultColumnFamily(),
                 num_keys, slice_keys, slice_values, statuses);
 
             for (int i = 0; i < num_keys; i++) {
@@ -232,7 +243,10 @@ namespace SPTAG::SPANN
                 slice_keys[i] = rocksdb::Slice(keys[i]);
             }
 
-            db->MultiGet(rocksdb::ReadOptions(), db->DefaultColumnFamily(),
+            rocksdb::ReadOptions readOpts;
+            readOpts.async_io = m_asyncIO;
+            readOpts.adaptive_readahead = m_asyncIO;
+            db->MultiGet(readOpts, db->DefaultColumnFamily(),
                 num_keys, slice_keys, slice_values, statuses);
 
             for (int i = 0; i < num_keys; i++) {
@@ -387,6 +401,7 @@ namespace SPTAG::SPANN
         rocksdb::DB* db{};
         rocksdb::Options dbOptions;
         rocksdb::Iterator* it;
+        bool m_asyncIO = true;
     };
 }
 #endif // _SPTAG_SPANN_EXTRAROCKSDBCONTROLLER_H_

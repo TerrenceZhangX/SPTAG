@@ -110,6 +110,13 @@ namespace SPTAG {
             bool m_enableWAL;
             bool m_disableCheckpoint;
 
+            // RocksDB tuning parameters
+            int m_rocksDBBlockCacheMB;
+            int m_rocksDBBlobCacheMB;
+            int m_rocksDBMaxSubCompactions;
+            bool m_rocksDBAsyncIO;
+            bool m_rocksDBLowPriorityCompaction;
+
             // Coprocessor search (push computation to TiKV)
             bool m_useCoprocessorSearch;
             int m_coprocessorTopN;

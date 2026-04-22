@@ -108,6 +108,13 @@ DefineSSDParameter(m_bufferLength, int, 3, "BufferLength")
 DefineSSDParameter(m_enableWAL, bool, false, "EnableWAL")
 DefineSSDParameter(m_disableCheckpoint, bool, false, "DisableCheckpoint")
 
+// RocksDB tuning parameters (high-impact)
+DefineSSDParameter(m_rocksDBBlockCacheMB, int, 4096, "RocksDBBlockCacheMB")
+DefineSSDParameter(m_rocksDBBlobCacheMB, int, 26624, "RocksDBBlobCacheMB")
+DefineSSDParameter(m_rocksDBMaxSubCompactions, int, 4, "RocksDBMaxSubCompactions")
+DefineSSDParameter(m_rocksDBAsyncIO, bool, true, "RocksDBAsyncIO")
+DefineSSDParameter(m_rocksDBLowPriorityCompaction, bool, true, "RocksDBLowPriorityCompaction")
+
 // Coprocessor search
 DefineSSDParameter(m_useCoprocessorSearch, bool, false, "UseCoprocessorSearch")
 DefineSSDParameter(m_coprocessorTopN, int, 100, "CoprocessorTopN")

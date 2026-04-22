@@ -18,9 +18,7 @@
 #endif
 
 #ifdef ROCKSDB
-#include "ExtraRocksDBController.h"
-// enable rocksdb io_uring
-extern "C" bool RocksDbIOUringEnable() { return true; }
+#include "inc/Core/SPANN/ExtraRocksDBController.h"
 #endif
 
 #ifdef TIKV
@@ -1978,7 +1976,11 @@ template <typename T> void Index<T>::PrepareDB(std::shared_ptr<Helper::KeyValueI
         std::string indexDir = (m_options.m_recovery)? m_options.m_persistentBufferPath + FolderSep: m_options.m_indexDirectory + FolderSep;
         SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPANNIndex:UseKV\n");
         SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "SPANNIndex:dbPath:%s\n", (indexDir + m_options.m_KVFile + "_" + std::to_string(layer)).c_str());
-        db.reset(new RocksDBIO((indexDir + m_options.m_KVFile + "_" + std::to_string(layer)).c_str(), m_options.m_useDirectIO, m_options.m_enableWAL, m_options.m_recovery));
+        db.reset(new RocksDBIO((indexDir + m_options.m_KVFile + "_" + std::to_string(layer)).c_str(),
+            m_options.m_useDirectIO, m_options.m_enableWAL, m_options.m_recovery,
+            m_options.m_rocksDBBlockCacheMB, m_options.m_rocksDBBlobCacheMB,
+            m_options.m_rocksDBMaxSubCompactions, m_options.m_rocksDBAsyncIO,
+            m_options.m_rocksDBLowPriorityCompaction));
 #else
         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "SPANNIndex:RocksDB unsupport! Use -DROCKSDB to enable RocksDB when doing cmake.\n");
         return;

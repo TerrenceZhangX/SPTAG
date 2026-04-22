@@ -31,6 +31,8 @@ ssh_key=~/.ssh/rsa
 # host          router_port
 10.11.0.9       30002
 10.11.0.7       30002
+10.11.0.5       30002
+10.11.0.4       30002
 
 [tikv]
 # Independent TiKV + PD instances. One PD and one TiKV per machine.
@@ -40,3 +42,5 @@ ssh_key=~/.ssh/rsa
 # host          pd_client  pd_peer  tikv_port
 10.11.0.9       2379       2380     20161
 10.11.0.7       2379       2380     20161
+10.11.0.5       2379       2380     20161
+10.11.0.4       2379       2380     20161
