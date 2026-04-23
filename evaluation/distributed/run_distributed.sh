@@ -124,7 +124,11 @@ _ssh_opts() {
 remote_exec() {
     local host="$1"; shift
     if [ "$host" = "${NODE_HOSTS[0]}" ] || [ "$host" = "localhost" ] || [ "$host" = "127.0.0.1" ]; then
-        eval "$@"
+        if [[ "$*" == *docker* ]]; then
+            sg docker -c "$*"
+        else
+            eval "$@"
+        fi
     else
         ssh $(_ssh_opts) "$SSH_USER@$host" "$@"
     fi
@@ -240,13 +244,13 @@ tikv_start() {
     for (( i=0; i<node_count; i++ )); do
         local host="${TIKV_HOSTS[$i]}"
         local pd_port="${TIKV_PD_CLIENT_PORTS[$i]}"
-        for attempt in $(seq 1 30); do
+        for attempt in $(seq 1 60); do
             if curl -sf "http://${host}:${pd_port}/pd/api/v1/members" >/dev/null 2>&1; then
                 echo "  PD $i ($host:$pd_port) healthy"
                 break
             fi
-            if [ "$attempt" -eq 30 ]; then
-                echo "  ERROR: PD $i ($host:$pd_port) not healthy after 30s"
+            if [ "$attempt" -eq 60 ]; then
+                echo "  ERROR: PD $i ($host:$pd_port) not healthy after 60s"
                 return 1
             fi
             sleep 1
@@ -274,8 +278,12 @@ tikv_start() {
         local pd_port="${TIKV_PD_CLIENT_PORTS[$i]}"
         echo "  TiKV $i on $host:$tikv_port → PD $host:$pd_port"
 
-        # Deploy tikv.toml to remote host
+        # Deploy tikv.toml to remote host (use nocache variant if NOCACHE=1)
         local TIKV_TOML="$SCRIPT_DIR/configs/tikv.toml"
+        if [[ "${NOCACHE:-0}" == "1" && -f "$SCRIPT_DIR/configs/tikv_nocache.toml" ]]; then
+            TIKV_TOML="$SCRIPT_DIR/configs/tikv_nocache.toml"
+            echo "  [NOCACHE] Using tikv_nocache.toml (block cache = 1MB)"
+        fi
         if [[ -f "$TIKV_TOML" ]]; then
             remote_exec "$host" "docker run --rm -v $DATA_DIR/tikv-data:/data alpine mkdir -p /data/conf"
             if [ "$host" = "${NODE_HOSTS[0]}" ] || [ "$host" = "localhost" ] || [ "$host" = "127.0.0.1" ]; then
@@ -356,6 +364,21 @@ tikv_clean() {
 # Legacy wrappers for the main case block
 cmd_start_tikv() { tikv_start "${1:-${#TIKV_HOSTS[@]}}"; }
 cmd_stop_tikv()  { tikv_stop  "${1:-${#TIKV_HOSTS[@]}}"; }
+
+# ─── Cache Management ───
+
+drop_all_caches() {
+    # Drop OS page cache + dentries/inodes on the first <node_count> nodes.
+    # This may take 30-60s per node if there are many dirty pages.
+    local node_count="${1:-1}"
+    echo "Dropping OS page cache on $node_count node(s) (may take ~60s per node)..."
+    for (( i=0; i<node_count; i++ )); do
+        local host="${NODE_HOSTS[$i]}"
+        echo -n "  $host: "
+        remote_exec "$host" "timeout 120 sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'" && echo "done" || echo "timeout/failed (non-fatal)"
+    done
+    echo "Cache drop complete."
+}
 
 # ─── INI Generation ───
 
@@ -538,7 +561,7 @@ cmd_run() {
 
     echo ""
     echo "═══════════════════════════════════════════════════"
-    echo "  ${SCALE}: ${NODE_COUNT}-node benchmark"
+    echo "  ${SCALE}: ${NODE_COUNT}-node benchmark${NOCACHE:+ [NOCACHE]}"
     echo "  Start: $(date)"
     echo "═══════════════════════════════════════════════════"
 
@@ -550,20 +573,49 @@ cmd_run() {
         tikv_clean 1
         tikv_start 1
 
-        echo ""
-        echo "--- Phase 1: Single-node run ---"
-        local INI
-        INI=$(generate_ini "$SCALE" 1 "Rebuild=true") || exit 1
-
         # Clean old index dir
         rm -rf "$DATA_DIR/proidx_${SCALE}_1node"
         mkdir -p "$DATA_DIR/proidx_${SCALE}_1node"
 
-        echo "Starting driver on ${NODE_HOSTS[0]}..."
-        BENCHMARK_CONFIG="$INI" \
-        BENCHMARK_OUTPUT="output_${SCALE}_1node.json" \
-            "$BINARY" --run_test=SPFreshTest/BenchmarkFromConfig \
-            2>&1 | tee "$LOGDIR/benchmark_${SCALE}_1node_driver.log"
+        if [[ "${NOCACHE:-0}" == "1" ]]; then
+            # NOCACHE: Split into build + cache-drop + search
+            echo ""
+            echo "--- Phase 1: Build only (NOCACHE) ---"
+            local BUILD_INI
+            BUILD_INI=$(generate_ini "$SCALE" 1 "Rebuild=true" "BuildOnly=true" "VersionCacheTTLMs=0" "VersionCacheMaxChunks=0") || exit 1
+
+            BENCHMARK_CONFIG="$BUILD_INI" \
+            BENCHMARK_OUTPUT="output_${SCALE}_1node_build.json" \
+                "$BINARY" --run_test=SPFreshTest/BenchmarkFromConfig \
+                2>&1 | tee "$LOGDIR/benchmark_${SCALE}_1node_build.log"
+
+            echo "Build done: $(date)"
+
+            echo ""
+            echo "--- Phase 1.5: Drop all caches (NOCACHE) ---"
+            drop_all_caches 1
+
+            echo ""
+            echo "--- Phase 2: Search+Insert (cold cache) ---"
+            local RUN_INI
+            RUN_INI=$(generate_ini "$SCALE" 1 "Rebuild=false" "VersionCacheTTLMs=0" "VersionCacheMaxChunks=0") || exit 1
+
+            BENCHMARK_CONFIG="$RUN_INI" \
+            BENCHMARK_OUTPUT="output_${SCALE}_1node.json" \
+                "$BINARY" --run_test=SPFreshTest/BenchmarkFromConfig \
+                2>&1 | tee "$LOGDIR/benchmark_${SCALE}_1node_driver.log"
+        else
+            echo ""
+            echo "--- Phase 1: Single-node run ---"
+            local INI
+            INI=$(generate_ini "$SCALE" 1 "Rebuild=true") || exit 1
+
+            echo "Starting driver on ${NODE_HOSTS[0]}..."
+            BENCHMARK_CONFIG="$INI" \
+            BENCHMARK_OUTPUT="output_${SCALE}_1node.json" \
+                "$BINARY" --run_test=SPFreshTest/BenchmarkFromConfig \
+                2>&1 | tee "$LOGDIR/benchmark_${SCALE}_1node_driver.log"
+        fi
 
         echo "Done: $(date)"
         tikv_stop 1
@@ -579,7 +631,11 @@ cmd_run() {
         echo ""
         echo "--- Phase 1: Build index on driver ---"
         local BUILD_INI
-        BUILD_INI=$(generate_ini "$SCALE" "$NODE_COUNT" "Rebuild=true" "BuildOnly=true") || exit 1
+        local NOCACHE_OVERRIDES=()
+        if [[ "${NOCACHE:-0}" == "1" ]]; then
+            NOCACHE_OVERRIDES=("VersionCacheTTLMs=0" "VersionCacheMaxChunks=0")
+        fi
+        BUILD_INI=$(generate_ini "$SCALE" "$NODE_COUNT" "Rebuild=true" "BuildOnly=true" "${NOCACHE_OVERRIDES[@]}") || exit 1
 
         # Clean old index dir
         for (( i=0; i<NODE_COUNT; i++ )); do
@@ -612,10 +668,17 @@ cmd_run() {
 
         # --- Phase 3: Start driver first (contains dispatcher), then workers ---
         echo ""
+
+        # Drop caches if NOCACHE mode
+        if [[ "${NOCACHE:-0}" == "1" ]]; then
+            echo "--- Phase 2.5: Drop all caches (NOCACHE) ---"
+            drop_all_caches "$NODE_COUNT"
+        fi
+
         echo "--- Phase 3: Distributed run ---"
 
         local RUN_INI
-        RUN_INI=$(generate_ini "$SCALE" "$NODE_COUNT" "Rebuild=false") || exit 1
+        RUN_INI=$(generate_ini "$SCALE" "$NODE_COUNT" "Rebuild=false" "${NOCACHE_OVERRIDES[@]}") || exit 1
 
         # Start driver in background first — it contains the dispatcher that
         # workers need to connect to for ring registration.

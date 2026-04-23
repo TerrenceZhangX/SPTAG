@@ -10,13 +10,14 @@
 - **Storage (indep)**: Per-worker independent TiKV (1 PD + 1 TiKV per node, Docker v8.5.1, host network)
 - **Data**: `/mnt/data_disk/sift1b/base.1B.u8bin`, `query.public.10K.u8bin`
 - **TiKV Config**: region-max-size=512MB, block-cache=40GB, grpc-concurrency=8
-- **Date**: 2026-04-10 (shared TiKV); 2026-04-21 (independent TiKV)
+- **Date**: 2026-04-10 (shared TiKV); 2026-04-21 (independent TiKV); 2026-04-22 (100M)
 
 | Scale | Base Vectors | Insert Vectors | Batch Size |
 |-------|-------------|---------------|------------|
 | 100K | 99,000 | 1,000 | 100 × 10 |
 | 1M | 990,000 | 10,000 | 1,000 × 10 |
 | 10M | 9,900,000 | 100,000 | 10,000 × 10 |
+| 100M | 99,000,000 | 1,000,000 | 100,000 × 10 |
 
 | Topology | Nodes | Router | TiKV | Description |
 |----------|-------|--------|------|-------------|
@@ -37,6 +38,7 @@
 | 100K | 12.8s | 12.7s | 12.7s |
 | 1M | 77.0s | 78.6s | 76.6s |
 | 10M | 1548s (25.8min) | 1546s (25.8min) | 1544s (25.7min) |
+| 100M | 23298s (6.47h) | — | — |
 
 ### Per-Layer Build Time (SelectHead + BuildHead + BuildSSD)
 
@@ -65,6 +67,8 @@
 | 1M | 2-node-indep | 11.51 | 11.58 | 13.82 | 16.56 | 899 | — |
 | 10M | 1-node-indep | 29.26 | 29.78 | 36.23 | 37.59 | 271 | — |
 | 10M | 2-node-indep | 28.37 | 27.37 | 38.70 | 40.34 | 480 | — |
+| 100M | 1-node-indep | 58.30 | 57.77 | 68.29 | 73.33 | 136 | — |
+| 100M | 2-node-indep | 57.29 | 58.01 | 64.01 | 66.68 | 272 | — |
 
 ---
 
@@ -85,6 +89,8 @@
 | 1M | 2-node-indep | 11.53 | 11.29 | 14.58 | 23.17 | 898 | — |
 | 10M | 1-node-indep | 29.32 | 29.41 | 36.84 | 39.53 | 271 | — |
 | 10M | 2-node-indep | 30.61 | 30.18 | 41.65 | 44.13 | 499 | — |
+| 100M | 1-node-indep | 56.76 | 56.39 | 66.87 | 74.19 | 140 | — |
+| 100M | 2-node-indep | 58.51 | 58.70 | 69.21 | 75.89 | 267 | — |
 
 ### Avg Search QPS Scaling
 
@@ -95,6 +101,7 @@
 | 10M | 513 | 776 | 988 | +51% | +93% |
 | 1M (indep) | 880 | 898 | — | +2% | — |
 | 10M (indep) | 271 | 499 | — | +84% | — |
+| 100M (indep) | 140 | 267 | — | +91% | — |
 
 ---
 
@@ -179,6 +186,7 @@
 | 10M | 459 | 757 | 907 | +65% | +98% |
 | 1M (indep) | 359 | 624 | — | +74% | — |
 | 10M (indep) | 299 | 595 | — | +99% | — |
+| 100M (indep) | 198 | 399 | — | +101% | — |
 
 ### Per-Batch Detail
 
@@ -248,6 +256,44 @@
 | B10 | 299 | 613 | 2.05x |
 | **Avg** | **299** | **595** | **1.99x** |
 
+#### 100M (indep-tikv)
+
+| Batch | 1-node | 2-node | 2n/1n |
+|-------|--------|--------|-------|
+| B1 | 195 | 399 | 2.05x |
+| B2 | 200 | 400 | 2.00x |
+| B3 | 197 | 398 | 2.02x |
+| B4 | 200 | 401 | 2.01x |
+| B5 | 197 | 400 | 2.03x |
+| B6 | 199 | 400 | 2.01x |
+| B7 | 199 | 401 | 2.02x |
+| B8 | 200 | 399 | 2.00x |
+| B9 | 199 | 394 | 1.98x |
+| B10 | 200 | 395 | 1.97x |
+| **Avg** | **198** | **399** | **2.01x** |
+
+---
+
+## 5b. Query Latency — Per Batch Detail, 100M (search round 1)
+
+#### 100M (indep-tikv)
+
+| Batch | 1-node avg (ms) | 1-node P99 (ms) | 1-node QPS | 2-node avg (ms) | 2-node P99 (ms) | 2-node QPS |
+|-------|-----------------|-----------------|------------|-----------------|-----------------|------------|
+| 0 | 58.30 | 73.33 | 136 | 57.29 | 66.68 | 272 |
+| 1 | 57.07 | 70.34 | 139 | 58.71 | 75.36 | 267 |
+| 2 | 57.47 | 82.10 | 138 | 56.70 | 73.45 | 262 |
+| 3 | 55.39 | 70.43 | 143 | 57.43 | 70.80 | 271 |
+| 4 | 58.56 | 73.45 | 136 | 60.48 | 76.81 | 259 |
+| 5 | 56.49 | 74.47 | 140 | 60.17 | 76.26 | 260 |
+| 6 | 56.33 | 81.51 | 141 | 59.16 | 85.09 | 265 |
+| 7 | 56.59 | 76.11 | 140 | 57.49 | 74.56 | 272 |
+| 8 | 56.72 | 73.02 | 140 | 58.89 | 72.94 | 267 |
+| 9 | 56.74 | 67.67 | 140 | 58.10 | 74.63 | 272 |
+| 10 | 56.26 | 72.79 | 141 | 57.97 | 79.05 | 272 |
+| **Avg** | **56.76** | **74.19** | **140** | **58.51** | **75.89** | **267** |
+| **2n/1n QPS** | | | | | | **1.91x** |
+
 ---
 
 ## 6. Recall@5
@@ -285,6 +331,7 @@
 | 10M | 15.47 | 10.07 | -5.40 (-35%) | 7.74 | -7.73 (-50%) |
 | 1M (indep) | 9.56 | 11.53 | +1.97 (+21%) | — | — |
 | 10M (indep) | 29.32 | 30.61 | +1.29 (+4%) | — | — |
+| 100M (indep) | 56.76 | 58.51 | +1.75 (+3%) | — | — |
 
 ---
 
@@ -304,4 +351,9 @@
 12. **Per-worker independent TiKV — 10M insert scales ~2x**: With each worker using its own local TiKV (no shared cluster), 10M insert throughput reaches 1.99x (299→595 vec/s), up from 1.65x in the shared-TiKV configuration. Eliminates cross-network TiKV access entirely.
 13. **Per-worker independent TiKV — 1M search limited by dispatch overhead**: At 1M scale, 2-node search QPS (898) barely exceeds 1-node (880) because per-query compute (~9ms) is small relative to the ~2ms dispatch round-trip. The 2-node QPS stays flat while 1-node degrades across batches, so they converge.
 14. **Per-worker independent TiKV — 10M search scales 1.84x**: At 10M, per-query compute (~29ms) is large enough to amortize dispatch overhead (+4%), yielding 1.84x QPS scaling (271→499).
+15. **100M — Build time 6.47 hours**: Scales ~15x per 10x data (10M→100M), super-linear due to BKT graph construction complexity.
+16. **100M — Insert throughput scales 2.01x**: Near-perfect linear scaling (198→399 vec/s), the best scaling ratio across all scales. Larger batches (100K vs 10K) better amortize TiKV overhead.
+17. **100M — Search QPS scales 1.91x**: (140→267 QPS), consistent with 10M (1.84x). Search latency ~57ms P50, ~2x of 10M (~29ms), proportional to index size.
+18. **100M — Router overhead minimal (+3%)**: 56.76ms (1-node) → 58.51ms (2-node), lowest relative overhead across all scales. At 100M, per-query compute dominates dispatch cost.
+19. **100M — Insert throughput remarkably stable**: ~198 vec/s (1-node) and ~399 vec/s (2-node) across all 10 batches with <2% variance, no degradation over time.
 

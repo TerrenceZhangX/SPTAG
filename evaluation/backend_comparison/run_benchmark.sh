@@ -41,6 +41,10 @@ fi
 # Output file: default to results/<ini_basename>.json
 INI_BASENAME="$(basename "$INI_FILE" .ini)"
 OUTPUT_FILE="${2:-$SCRIPT_DIR/results/${INI_BASENAME}.json}"
+# Resolve to absolute path (needed because we cd to WORK_DIR later)
+if [[ "$OUTPUT_FILE" != /* ]]; then
+    OUTPUT_FILE="$(pwd)/$OUTPUT_FILE"
+fi
 LOG_FILE="${OUTPUT_FILE%.json}.log"
 
 # ─── Binary ───
@@ -126,16 +130,17 @@ if [[ "$STORAGE" == "TIKVIO" ]]; then
             sleep 1
         done
 
-        # Start TiKV
+        # Start TiKV (with tuning config if available)
         echo "  Starting TiKV ..."
-        docker run -d --name tikv-standalone --net=host \
-            -v "${TIKV_DATA_DIR}/tikv:/data" \
-            "pingcap/tikv:${TIKV_VERSION}" \
-            --addr="0.0.0.0:20160" \
-            --advertise-addr="127.0.0.1:20160" \
-            --status-addr="0.0.0.0:20180" \
-            --pd-endpoints="http://127.0.0.1:${PD_PORT}" \
-            --data-dir=/data
+        TIKV_DOCKER_ARGS=(-d --name tikv-standalone --net=host -v "${TIKV_DATA_DIR}/tikv:/data")
+        TIKV_CMD_ARGS=(--addr="0.0.0.0:20160" --advertise-addr="127.0.0.1:20160" --status-addr="0.0.0.0:20180" --pd-endpoints="http://127.0.0.1:${PD_PORT}" --data-dir=/data)
+        TIKV_TOML="${SCRIPT_DIR}/tikv.toml"
+        if [[ -f "$TIKV_TOML" ]]; then
+            echo "  Using TiKV config: $TIKV_TOML"
+            TIKV_DOCKER_ARGS+=(-v "${TIKV_TOML}:/tikv.toml:ro")
+            TIKV_CMD_ARGS+=(--config=/tikv.toml)
+        fi
+        docker run "${TIKV_DOCKER_ARGS[@]}" "pingcap/tikv:${TIKV_VERSION}" "${TIKV_CMD_ARGS[@]}"
 
         # Wait for TiKV store to register
         echo -n "  Waiting for TiKV store "

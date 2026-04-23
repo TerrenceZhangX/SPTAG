@@ -60,6 +60,8 @@ namespace SPTAG
             // Insert or update a chunk in the LRU cache. Caller must hold exclusive m_cacheMutex.
             void CachePut(SizeType chunkId, const std::string& data, std::chrono::steady_clock::time_point now) const
             {
+                if (m_cacheMaxChunks <= 0) return; // cache disabled
+
                 auto it = m_cacheMap.find(chunkId);
                 if (it != m_cacheMap.end()) {
                     // Update existing: move to front
@@ -120,6 +122,8 @@ namespace SPTAG
             // Only takes exclusive lock on cache miss for insertion.
             std::string ReadChunkCached(SizeType chunkId) const
             {
+                if (m_cacheMaxChunks <= 0) return ReadChunk(chunkId); // cache disabled
+
                 // Try cache with shared lock — concurrent reads OK
                 {
                     std::shared_lock<std::shared_mutex> lock(m_cacheMutex);
