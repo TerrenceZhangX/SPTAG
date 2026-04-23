@@ -9,6 +9,11 @@
 #   ./run_distributed.sh bench      <cluster.conf> <scale> [scale...]    Run 1-node + N-node for each scale
 #   ./run_distributed.sh cleanup    <cluster.conf>                Remove deployed files from remote nodes
 #
+# Environment variables:
+#   NOCACHE=1          Disable all caches (TiKV block cache, OS page cache, VersionCache)
+#   SKIP_HEAD_BUILD=1  Reuse existing HeadIndex if present (RebuildSSDOnly). Falls back to
+#                      full build if HeadIndex is missing.
+#
 # Prerequisites:
 #   - Passwordless SSH from driver to all nodes (configure ssh_key in cluster.conf)
 #   - Docker installed on all nodes (for TiKV)
@@ -549,6 +554,26 @@ distribute_perftest_files() {
     done
 }
 
+# Determine build mode: full rebuild or SSD-only (reuse HeadIndex).
+# Sets BUILD_MODE_OVERRIDES array for generate_ini.
+# Usage: resolve_build_mode <scale> <node_count>
+resolve_build_mode() {
+    local SCALE="$1" NODE_COUNT="$2"
+    local IDX_DIR="$DATA_DIR/proidx_${SCALE}_${NODE_COUNT}node/spann_index"
+    local HEAD_DIR="$IDX_DIR/HeadIndex"
+
+    BUILD_MODE_OVERRIDES=()
+    if [[ "${SKIP_HEAD_BUILD:-0}" == "1" ]] && [ -d "$HEAD_DIR" ] && [ -n "$(ls -A "$HEAD_DIR" 2>/dev/null)" ]; then
+        echo "HeadIndex found at $HEAD_DIR — using RebuildSSDOnly (skip SelectHead+BuildHead)"
+        BUILD_MODE_OVERRIDES=("RebuildSSDOnly=true")
+    else
+        if [[ "${SKIP_HEAD_BUILD:-0}" == "1" ]]; then
+            echo "SKIP_HEAD_BUILD=1 but HeadIndex not found at $HEAD_DIR — falling back to full build"
+        fi
+        BUILD_MODE_OVERRIDES=("Rebuild=true")
+    fi
+}
+
 cmd_run() {
     local SCALE="$1"
     local NODE_COUNT="$2"
@@ -573,8 +598,13 @@ cmd_run() {
         tikv_clean 1
         tikv_start 1
 
-        # Clean old index dir
-        rm -rf "$DATA_DIR/proidx_${SCALE}_1node"
+        # Resolve build mode before cleaning (SKIP_HEAD_BUILD needs existing dir)
+        resolve_build_mode "$SCALE" "$NODE_COUNT"
+
+        if [[ " ${BUILD_MODE_OVERRIDES[*]} " != *"RebuildSSDOnly=true"* ]]; then
+            # Full build: clean old index dir
+            rm -rf "$DATA_DIR/proidx_${SCALE}_1node"
+        fi
         mkdir -p "$DATA_DIR/proidx_${SCALE}_1node"
 
         if [[ "${NOCACHE:-0}" == "1" ]]; then
@@ -582,7 +612,7 @@ cmd_run() {
             echo ""
             echo "--- Phase 1: Build only (NOCACHE) ---"
             local BUILD_INI
-            BUILD_INI=$(generate_ini "$SCALE" 1 "Rebuild=true" "BuildOnly=true" "VersionCacheTTLMs=0" "VersionCacheMaxChunks=0") || exit 1
+            BUILD_INI=$(generate_ini "$SCALE" 1 "${BUILD_MODE_OVERRIDES[@]}" "BuildOnly=true" "VersionCacheTTLMs=0" "VersionCacheMaxChunks=0") || exit 1
 
             BENCHMARK_CONFIG="$BUILD_INI" \
             BENCHMARK_OUTPUT="output_${SCALE}_1node_build.json" \
@@ -608,7 +638,7 @@ cmd_run() {
             echo ""
             echo "--- Phase 1: Single-node run ---"
             local INI
-            INI=$(generate_ini "$SCALE" 1 "Rebuild=true") || exit 1
+            INI=$(generate_ini "$SCALE" 1 "${BUILD_MODE_OVERRIDES[@]}") || exit 1
 
             echo "Starting driver on ${NODE_HOSTS[0]}..."
             BENCHMARK_CONFIG="$INI" \
@@ -635,14 +665,20 @@ cmd_run() {
         if [[ "${NOCACHE:-0}" == "1" ]]; then
             NOCACHE_OVERRIDES=("VersionCacheTTLMs=0" "VersionCacheMaxChunks=0")
         fi
-        BUILD_INI=$(generate_ini "$SCALE" "$NODE_COUNT" "Rebuild=true" "BuildOnly=true" "${NOCACHE_OVERRIDES[@]}") || exit 1
 
-        # Clean old index dir
-        for (( i=0; i<NODE_COUNT; i++ )); do
-            local host="${NODE_HOSTS[$i]}"
-            remote_exec "$host" "rm -rf $DATA_DIR/proidx_${SCALE}_${NODE_COUNT}node"
-        done
+        # Resolve build mode before cleaning (SKIP_HEAD_BUILD needs existing dir)
+        resolve_build_mode "$SCALE" "$NODE_COUNT"
+
+        if [[ " ${BUILD_MODE_OVERRIDES[*]} " != *"RebuildSSDOnly=true"* ]]; then
+            # Full build: clean old index dirs on all nodes
+            for (( i=0; i<NODE_COUNT; i++ )); do
+                local host="${NODE_HOSTS[$i]}"
+                remote_exec "$host" "rm -rf $DATA_DIR/proidx_${SCALE}_${NODE_COUNT}node"
+            done
+        fi
         mkdir -p "$DATA_DIR/proidx_${SCALE}_${NODE_COUNT}node"
+
+        BUILD_INI=$(generate_ini "$SCALE" "$NODE_COUNT" "${BUILD_MODE_OVERRIDES[@]}" "BuildOnly=true" "${NOCACHE_OVERRIDES[@]}") || exit 1
 
         BENCHMARK_CONFIG="$BUILD_INI" \
         BENCHMARK_OUTPUT="output_${SCALE}_${NODE_COUNT}node_build.json" \
