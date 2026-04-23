@@ -1522,7 +1522,12 @@ namespace SPTAG::SPANN {
                     uint8_t version = *(reinterpret_cast<uint8_t*>(vectorId + sizeof(SizeType)));
                     ValueType* vector = reinterpret_cast<ValueType*>(vectorId + m_metaDataSize);
                     const SizeType maxVid = m_versionMap->Count();
-                    if (vid < 0 || vid >= maxVid) continue;
+                    if (vid < 0 || vid >= maxVid) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                     "CollectReAssign: skip invalid VID %d (max %d) in posting headID=%d\n",
+                                     vid, maxVid, newHeadsID[i]);
+                        continue;
+                    }
                     if (reAssignVectorsTopK.find(vid) == reAssignVectorsTopK.end() && !m_versionMap->Deleted(vid) && m_versionMap->GetVersion(vid) == version) {
                         m_stat.m_reAssignScanNum++;
                         float dist = m_headIndex->ComputeDistance(newHeadsVec[i]->data(), vector);
@@ -1595,7 +1600,12 @@ namespace SPTAG::SPANN {
                         uint8_t version = *(reinterpret_cast<uint8_t*>(vectorId + sizeof(SizeType)));
                         ValueType* vector = reinterpret_cast<ValueType*>(vectorId + m_metaDataSize);
                         const SizeType maxVid = m_versionMap->Count();
-                        if (vid < 0 || vid >= maxVid) continue;
+                        if (vid < 0 || vid >= maxVid) {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                         "CollectReAssign(nearby): skip invalid VID %d (max %d) in posting headID=%d\n",
+                                         vid, maxVid, HeadPrevTopK[i]);
+                            continue;
+                        }
                         if (reAssignVectorsTopK.find(vid) == reAssignVectorsTopK.end() && !m_versionMap->Deleted(vid) && m_versionMap->GetVersion(vid) == version) {
                             m_stat.m_reAssignScanNum++;
                             float dist = m_headIndex->ComputeDistance(HeadPrevTopKVec[i]->data(), vector);
