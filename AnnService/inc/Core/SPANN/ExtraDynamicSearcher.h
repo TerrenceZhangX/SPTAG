@@ -712,7 +712,16 @@ namespace SPTAG::SPANN {
             double elapsedMSeconds;
             {
                 std::unique_lock<std::shared_timed_mutex> lock(m_rwLocks[headID], std::defer_lock);
-                if (requirelock) lock.lock();
+                if (requirelock) {
+                    // [DIAG] measure split lock wait (suspect A: lock contention)
+                    auto _lockBegin = std::chrono::high_resolution_clock::now();
+                    lock.lock();
+                    auto _lockAcq = std::chrono::high_resolution_clock::now();
+                    uint64_t _lockWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(_lockAcq - _lockBegin).count();
+                    IndexStats::HistAdd(m_stat.m_splitLockWaitUs, _lockWaitUs);
+                    m_stat.m_splitLockWaitTotalUs.fetch_add(_lockWaitUs, std::memory_order_relaxed);
+                    m_stat.m_splitLockSampleCount.fetch_add(1, std::memory_order_relaxed);
+                }
 
                 int retry = 0;
              Retry:
@@ -1233,6 +1242,8 @@ namespace SPTAG::SPANN {
                             if (!target.isLocal) {
                                 if (!m_worker->SendRemoteLock(target.nodeIndex, queryResult->VID, true)) {
                                     auto* curJob = new MergeAsyncJob(this, headID, nullptr);
+                                    m_mergeJobsInFlight++;
+                                    m_totalMergeSubmitted++;
                                     m_splitThreadPool->add(curJob);
                                     return ErrorCode::Success;
                                 }
@@ -1243,6 +1254,8 @@ namespace SPTAG::SPANN {
                             } else {
                                 if (!anotherLock.try_lock()) {
                                     auto* curJob = new MergeAsyncJob(this, headID, nullptr);
+                                    m_mergeJobsInFlight++;
+                                    m_totalMergeSubmitted++;
                                     m_splitThreadPool->add(curJob);
                                     return ErrorCode::Success;
                                 }
@@ -1250,6 +1263,13 @@ namespace SPTAG::SPANN {
                         } else {
                             if (!anotherLock.try_lock()) {
                                 auto* curJob = new MergeAsyncJob(this, headID, nullptr);
+                                // Re-queue counts as a new submission; matched by the
+                                // m_mergeJobsInFlight-- / m_totalMergeCompleted++ in
+                                // MergeAsyncJob::exec(). Without these increments
+                                // m_mergeJobsInFlight underflows to a huge uint64
+                                // and m_totalMergeCompleted exceeds m_totalMergeSubmitted.
+                                m_mergeJobsInFlight++;
+                                m_totalMergeSubmitted++;
                                 m_splitThreadPool->add(curJob);
                                 return ErrorCode::Success;
                             }
@@ -1786,7 +1806,11 @@ namespace SPTAG::SPANN {
             bool splitPending = false;
             {
                 //std::shared_lock<std::shared_timed_mutex> lock(m_rwLocks[headID]); //ROCKSDB
+                // [DIAG] measure lock wait time (suspect A: lock contention)
+                auto _lockBegin = std::chrono::high_resolution_clock::now();
                 std::unique_lock<std::shared_timed_mutex> lock(m_rwLocks[headID]); //SPDK
+                auto _lockAcq = std::chrono::high_resolution_clock::now();
+                uint64_t _lockWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(_lockAcq - _lockBegin).count();
                 ErrorCode ret;
                 if (!m_headIndex->ContainSample(headID, m_layer + 1)) {
                     lock.unlock();
@@ -1836,7 +1860,11 @@ namespace SPTAG::SPANN {
                 } else {
                     { static std::atomic<int> _logOnce{0}; if (_logOnce.fetch_add(1) == 0) SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "[PATH] Append using SINGLE-KEY Get+Put path (no multi-chunk)\n"); }
                     std::string fullPosting;
+                    // [DIAG] measure Get latency (suspect B/C: RMW read amplification + grpc)
+                    auto _getBegin = std::chrono::high_resolution_clock::now();
                     auto getRet = db->Get(DBKey(headID), &fullPosting, MaxTimeout, &(p_exWorkSpace->m_diskRequests));
+                    auto _getEnd = std::chrono::high_resolution_clock::now();
+                    uint64_t _getUs = std::chrono::duration_cast<std::chrono::microseconds>(_getEnd - _getBegin).count();
                     if (getRet != ErrorCode::Success) fullPosting.clear();
                     // Diagnostic: detect stale/misaligned bytes in TiKV (e.g. residue
                     // from a previous run with different m_vectorInfoSize, or a prior
@@ -1851,11 +1879,25 @@ namespace SPTAG::SPANN {
                     }
                     fullPosting.append(appendPosting);
                     postingSize = static_cast<int>(fullPosting.size());
+                    // [DIAG] measure Put latency + posting size
+                    auto _putBegin = std::chrono::high_resolution_clock::now();
                     if ((ret = db->Put(DBKey(headID), fullPosting, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Merge failed for %lld! Posting Size:%d, limit: %d\n", (std::int64_t)headID, postingSize, m_postingSizeLimit);
                         GetDBStats();
                         return ret;
                     }
+                    auto _putEnd = std::chrono::high_resolution_clock::now();
+                    uint64_t _putUs = std::chrono::duration_cast<std::chrono::microseconds>(_putEnd - _putBegin).count();
+                    // [DIAG] record into stat histograms
+                    IndexStats::HistAdd(m_stat.m_appendLockWaitUs, _lockWaitUs);
+                    IndexStats::HistAdd(m_stat.m_appendGetUs,      _getUs);
+                    IndexStats::HistAdd(m_stat.m_appendPutUs,      _putUs);
+                    IndexStats::HistAdd(m_stat.m_appendPostingBytes, (uint64_t)fullPosting.size());
+                    m_stat.m_appendLockWaitTotalUs.fetch_add(_lockWaitUs, std::memory_order_relaxed);
+                    m_stat.m_appendGetTotalUs.fetch_add(_getUs, std::memory_order_relaxed);
+                    m_stat.m_appendPutTotalUs.fetch_add(_putUs, std::memory_order_relaxed);
+                    m_stat.m_appendPostingBytesTotal.fetch_add((uint64_t)fullPosting.size(), std::memory_order_relaxed);
+                    m_stat.m_appendRmwSampleCount.fetch_add(1, std::memory_order_relaxed);
                 }
                 auto appendIOEnd = std::chrono::high_resolution_clock::now();
                 appendIOSeconds = std::chrono::duration_cast<std::chrono::microseconds>(appendIOEnd - appendIOBegin).count();
@@ -3038,6 +3080,21 @@ namespace SPTAG::SPANN {
                                      m_layer, totalSplit, totalMerge, m_totalReassignSubmitted.load(), totalAppend,
                                      m_totalSplitCompleted.load(), m_totalMergeCompleted.load(), m_totalReassignCompleted.load(),
                                      avgSplitMs, maxSplitMs);
+                        // [DIAG] dump diagnostic histograms (lock/RMW/grpc/byte) at every ALL DONE boundary
+                        {
+                            uint64_t rmwN = m_stat.m_appendRmwSampleCount.load();
+                            uint64_t splN = m_stat.m_splitLockSampleCount.load();
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "[DIAG] layer %d %s\n", m_layer,
+                                IndexStats::FormatHist("AppendLockWait", m_stat.m_appendLockWaitUs, m_stat.m_appendLockWaitTotalUs.load(), rmwN, "us").c_str());
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "[DIAG] layer %d %s\n", m_layer,
+                                IndexStats::FormatHist("AppendGetUs",    m_stat.m_appendGetUs,      m_stat.m_appendGetTotalUs.load(),     rmwN, "us").c_str());
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "[DIAG] layer %d %s\n", m_layer,
+                                IndexStats::FormatHist("AppendPutUs",    m_stat.m_appendPutUs,      m_stat.m_appendPutTotalUs.load(),     rmwN, "us").c_str());
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "[DIAG] layer %d %s\n", m_layer,
+                                IndexStats::FormatHist("AppendPostBytes",m_stat.m_appendPostingBytes,m_stat.m_appendPostingBytesTotal.load(), rmwN, "B").c_str());
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "[DIAG] layer %d %s\n", m_layer,
+                                IndexStats::FormatHist("SplitLockWait",  m_stat.m_splitLockWaitUs,  m_stat.m_splitLockWaitTotalUs.load(),  splN, "us").c_str());
+                        }
                     }
                     m_allDonePrinted = true;
                 }
