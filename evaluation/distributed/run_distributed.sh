@@ -11,6 +11,10 @@
 #
 # Environment variables:
 #   NOCACHE=1          Disable all caches (TiKV block cache, OS page cache, VersionCache)
+#   BUILD_WITH_CACHE=1 (only with NOCACHE=1) Use cached TiKV+VersionCache during the
+#                      build phase, then restart TiKV with nocache config and drop all
+#                      OS caches before the search/insert phase. Useful for large scales
+#                      (e.g. 100M) where building under nocache is impractical.
 #   SKIP_HEAD_BUILD=1  Reuse existing HeadIndex if present (RebuildSSDOnly). Falls back to
 #                      full build if HeadIndex is missing.
 #
@@ -283,11 +287,16 @@ tikv_start() {
         local pd_port="${TIKV_PD_CLIENT_PORTS[$i]}"
         echo "  TiKV $i on $host:$tikv_port → PD $host:$pd_port"
 
-        # Deploy tikv.toml to remote host (use nocache variant if NOCACHE=1)
+        # Deploy tikv.toml to remote host.
+        # When BUILD_WITH_CACHE=1 we always start with the cached config; the search
+        # phase will swap to tikv_nocache.toml via tikv_switch_to_nocache().
         local TIKV_TOML="$SCRIPT_DIR/configs/tikv.toml"
-        if [[ "${NOCACHE:-0}" == "1" && -f "$SCRIPT_DIR/configs/tikv_nocache.toml" ]]; then
+        if [[ "${NOCACHE:-0}" == "1" && "${BUILD_WITH_CACHE:-0}" != "1" \
+              && -f "$SCRIPT_DIR/configs/tikv_nocache.toml" ]]; then
             TIKV_TOML="$SCRIPT_DIR/configs/tikv_nocache.toml"
             echo "  [NOCACHE] Using tikv_nocache.toml (block cache = 1MB)"
+        elif [[ "${NOCACHE:-0}" == "1" && "${BUILD_WITH_CACHE:-0}" == "1" ]]; then
+            echo "  [NOCACHE+BUILD_WITH_CACHE] Starting with cached tikv.toml (will swap before run phase)"
         fi
         if [[ -f "$TIKV_TOML" ]]; then
             remote_exec "$host" "docker run --rm -v $DATA_DIR/tikv-data:/data alpine mkdir -p /data/conf"
@@ -350,6 +359,68 @@ tikv_stop() {
     done
 
     echo "TiKV instances stopped."
+}
+
+tikv_switch_to_nocache() {
+    # Restart TiKV containers (NOT PD) with the nocache config, so that the search
+    # and insert phases use cold block cache. Data on disk is preserved because we
+    # reuse the same data-dir; PD keeps the cluster metadata.
+    local node_count="${1:-${#TIKV_HOSTS[@]}}"
+    if [[ ! -f "$SCRIPT_DIR/configs/tikv_nocache.toml" ]]; then
+        echo "  ERROR: configs/tikv_nocache.toml not found; cannot switch to nocache"
+        return 1
+    fi
+    echo ""
+    echo "=== Restarting $node_count TiKV instances with tikv_nocache.toml ==="
+
+    for (( i=0; i<node_count; i++ )); do
+        local host="${TIKV_HOSTS[$i]}"
+        local tikv_port="${TIKV_PORTS[$i]}"
+        local pd_port="${TIKV_PD_CLIENT_PORTS[$i]}"
+        local TIKV_TOML="$SCRIPT_DIR/configs/tikv_nocache.toml"
+        echo "  TiKV $i on $host:$tikv_port → swapping config"
+
+        remote_exec "$host" "docker run --rm -v $DATA_DIR/tikv-data:/data alpine mkdir -p /data/conf"
+        if [ "$host" = "${NODE_HOSTS[0]}" ] || [ "$host" = "localhost" ] || [ "$host" = "127.0.0.1" ]; then
+            sg docker -c "docker run --rm -v $DATA_DIR/tikv-data/conf:/conf -v $(realpath "$TIKV_TOML"):/src/tikv.toml:ro alpine cp /src/tikv.toml /conf/tikv.toml"
+        else
+            scp $(_ssh_opts) "$TIKV_TOML" "${SSH_USER}@${host}:${SPTAG_DIR}/tikv.toml"
+            remote_exec "$host" "docker run --rm -v $DATA_DIR/tikv-data/conf:/conf -v ${SPTAG_DIR}/tikv.toml:/src/tikv.toml:ro alpine cp /src/tikv.toml /conf/tikv.toml"
+        fi
+
+        remote_exec "$host" "docker rm -f sptag-tikv-$i 2>/dev/null; \
+            docker run -d --name sptag-tikv-$i --net host \
+            --ulimit nofile=1048576:1048576 \
+            -v $DATA_DIR/tikv-data/tikv-$i:/data \
+            -v $DATA_DIR/tikv-data/conf:/conf \
+            pingcap/tikv:${TIKV_VERSION} \
+            --config=/conf/tikv.toml \
+            --addr=0.0.0.0:${tikv_port} \
+            --advertise-addr=${host}:${tikv_port} \
+            --data-dir=/data \
+            --pd-endpoints=http://${host}:${pd_port}"
+    done
+
+    echo "Waiting for TiKV stores to re-register..."
+    sleep 5
+    for (( i=0; i<node_count; i++ )); do
+        local host="${TIKV_HOSTS[$i]}"
+        local pd_port="${TIKV_PD_CLIENT_PORTS[$i]}"
+        for attempt in $(seq 1 60); do
+            local store_count
+            store_count=$(curl -sf "http://${host}:${pd_port}/pd/api/v1/stores" 2>/dev/null \
+                | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('count',0))" 2>/dev/null || echo 0)
+            if [ "$store_count" -ge 1 ]; then
+                echo "  TiKV $i re-registered with PD $i"
+                break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+                echo "  WARNING: TiKV $i not re-registered after 60s"
+            fi
+            sleep 1
+        done
+    done
+    echo "TiKV switched to nocache mode."
 }
 
 tikv_clean() {
@@ -609,10 +680,18 @@ cmd_run() {
 
         if [[ "${NOCACHE:-0}" == "1" ]]; then
             # NOCACHE: Split into build + cache-drop + search
-            echo ""
-            echo "--- Phase 1: Build only (NOCACHE) ---"
+            local BUILD_VERSIONCACHE_OVERRIDES=("VersionCacheTTLMs=0" "VersionCacheMaxChunks=0")
+            if [[ "${BUILD_WITH_CACHE:-0}" == "1" ]]; then
+                # Build phase keeps caches enabled; the run phase below switches to nocache
+                BUILD_VERSIONCACHE_OVERRIDES=()
+                echo ""
+                echo "--- Phase 1: Build only (BUILD_WITH_CACHE=1, caches enabled) ---"
+            else
+                echo ""
+                echo "--- Phase 1: Build only (NOCACHE) ---"
+            fi
             local BUILD_INI
-            BUILD_INI=$(generate_ini "$SCALE" 1 "${BUILD_MODE_OVERRIDES[@]}" "BuildOnly=true" "VersionCacheTTLMs=0" "VersionCacheMaxChunks=0") || exit 1
+            BUILD_INI=$(generate_ini "$SCALE" 1 "${BUILD_MODE_OVERRIDES[@]}" "BuildOnly=true" "${BUILD_VERSIONCACHE_OVERRIDES[@]}") || exit 1
 
             BENCHMARK_CONFIG="$BUILD_INI" \
             BENCHMARK_OUTPUT="output_${SCALE}_1node_build.json" \
@@ -620,6 +699,12 @@ cmd_run() {
                 2>&1 | tee "$LOGDIR/benchmark_${SCALE}_1node_build.log"
 
             echo "Build done: $(date)"
+
+            if [[ "${BUILD_WITH_CACHE:-0}" == "1" ]]; then
+                echo ""
+                echo "--- Phase 1.4: Switch TiKV to nocache config ---"
+                tikv_switch_to_nocache 1
+            fi
 
             echo ""
             echo "--- Phase 1.5: Drop all caches (NOCACHE) ---"
@@ -662,8 +747,16 @@ cmd_run() {
         echo "--- Phase 1: Build index on driver ---"
         local BUILD_INI
         local NOCACHE_OVERRIDES=()
+        local BUILD_NOCACHE_OVERRIDES=()
         if [[ "${NOCACHE:-0}" == "1" ]]; then
-            NOCACHE_OVERRIDES=("VersionCacheTTLMs=0" "VersionCacheMaxChunks=0")
+            NOCACHE_OVERRIDES=("VersionCacheTTLMs=0" "VersionCacheMaxChunks=0" "WorkerTimeout=14400")
+            if [[ "${BUILD_WITH_CACHE:-0}" == "1" ]]; then
+                # Build with cache, only run phase is nocache
+                BUILD_NOCACHE_OVERRIDES=()
+                echo "[BUILD_WITH_CACHE=1] build phase keeps caches; will switch before run phase"
+            else
+                BUILD_NOCACHE_OVERRIDES=("${NOCACHE_OVERRIDES[@]}")
+            fi
         fi
 
         # Resolve build mode before cleaning (SKIP_HEAD_BUILD needs existing dir)
@@ -678,7 +771,7 @@ cmd_run() {
         fi
         mkdir -p "$DATA_DIR/proidx_${SCALE}_${NODE_COUNT}node"
 
-        BUILD_INI=$(generate_ini "$SCALE" "$NODE_COUNT" "${BUILD_MODE_OVERRIDES[@]}" "BuildOnly=true" "${NOCACHE_OVERRIDES[@]}") || exit 1
+        BUILD_INI=$(generate_ini "$SCALE" "$NODE_COUNT" "${BUILD_MODE_OVERRIDES[@]}" "BuildOnly=true" "${BUILD_NOCACHE_OVERRIDES[@]}") || exit 1
 
         BENCHMARK_CONFIG="$BUILD_INI" \
         BENCHMARK_OUTPUT="output_${SCALE}_${NODE_COUNT}node_build.json" \
@@ -707,6 +800,10 @@ cmd_run() {
 
         # Drop caches if NOCACHE mode
         if [[ "${NOCACHE:-0}" == "1" ]]; then
+            if [[ "${BUILD_WITH_CACHE:-0}" == "1" ]]; then
+                echo "--- Phase 2.4: Switch TiKV to nocache config ---"
+                tikv_switch_to_nocache "$NODE_COUNT"
+            fi
             echo "--- Phase 2.5: Drop all caches (NOCACHE) ---"
             drop_all_caches "$NODE_COUNT"
         fi
