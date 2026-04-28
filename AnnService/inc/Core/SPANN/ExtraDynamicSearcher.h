@@ -358,6 +358,8 @@ namespace SPTAG::SPANN {
             m_mergeThreshold = p_opt.m_mergeThreshold;          
 
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Posting size limit: %d, search limit: %f, merge threshold: %d\n", m_postingSizeLimit, p_opt.m_latencyLimit, m_mergeThreshold);
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "[CONFIG] layer=%d DistributedVersionMap=%s UseMultiChunkPosting=%s PostingPageLimit=%d\n",
+                layer, p_opt.m_distributedVersionMap ? "true" : "false", p_opt.m_useMultiChunkPosting ? "true" : "false", p_opt.m_postingPageLimit);
 
             // Initialize posting count cache for multi-chunk mode
             if (p_opt.m_useMultiChunkPosting && p_opt.m_storage == Storage::TIKVIO) {
@@ -651,8 +653,8 @@ namespace SPTAG::SPANN {
         ErrorCode Split(ExtraWorkSpace* p_exWorkSpace, const SizeType headID, bool requirelock = true)
         {
             auto splitBegin = std::chrono::high_resolution_clock::now();
-            std::vector<SizeType> newHeadsID;
-            std::vector<std::shared_ptr<std::string>> newHeadsVec;
+            std::vector<SizeType> newHeadsID(2, -1);
+            std::vector<std::shared_ptr<std::string>> newHeadsVec(2);
             std::vector<std::string> newPostingLists;
             std::shared_ptr<std::string> headVec;
             ErrorCode ret;
@@ -773,7 +775,6 @@ namespace SPTAG::SPANN {
                 if (numClusters <= 1)
                 {
                     int cut = (m_opt->m_oneClusterCutMax)? m_postingSizeLimit: 1;
-
                     std::string newpostingList(cut * m_vectorInfoSize, '\0');
                     char* ptr = (char*)(newpostingList.data());
                     hasHead = false;
@@ -816,8 +817,8 @@ namespace SPTAG::SPANN {
                         //Serialize(ptr, localIndicesInsert[localIndices[first + j]], localIndicesInsertVersion[localIndices[first + j]], smallSample[localIndices[first + j]]);
                     }
                     if (!theSameHead && headVec && m_headIndex->ComputeDistance(args.centers + k * args._D, headVec->c_str()) < Epsilon) {
-                        newHeadsID.push_back(headID);
-                        newHeadsVec.push_back(headVec);
+                        newHeadsID[k] = headID;
+                        newHeadsVec[k] = headVec;
                         newHeadVID = headID;
                         theSameHead = true;
                         if (!hasHead && headj != -1) newPostingLists[k] += postingList.substr(headj * m_vectorInfoSize, m_vectorInfoSize);
@@ -835,8 +836,8 @@ namespace SPTAG::SPANN {
                         newHeadVID = *((SizeType*)(postingP + args.clusterIdx[k] * m_vectorInfoSize));
                         uint8_t version = *((uint8_t*)(postingP + args.clusterIdx[k] * m_vectorInfoSize + sizeof(SizeType)));
 
-                        newHeadsID.push_back(newHeadVID);
-                        newHeadsVec.push_back(std::make_shared<std::string>((char *)(args.centers + k * args._D), m_vectorDataSize));
+                        newHeadsID[k] = newHeadVID;
+                        newHeadsVec[k] = std::make_shared<std::string>((char *)(args.centers + k * args._D), m_vectorDataSize);
 
                         std::unique_lock<std::shared_timed_mutex> anotherLock(m_rwLocks[newHeadVID], std::defer_lock);
                         if (m_rwLocks.hash_func(newHeadVID) != m_rwLocks.hash_func(headID))
@@ -907,10 +908,6 @@ namespace SPTAG::SPANN {
                             for (int j = 0; j < newPostVectorNum; j++, postingK += m_vectorInfoSize)
                             {
                                 SizeType VID = *((SizeType *)(postingK));
-                                uint8_t version = *(postingK + sizeof(SizeType));
-
-                                if (m_versionMap->Deleted(VID) || m_versionMap->GetVersion(VID) != version)
-                                    continue;
 
                                 if (vectorIdSet.find(VID) != vectorIdSet.end())
                                     continue;
@@ -1455,11 +1452,12 @@ namespace SPTAG::SPANN {
                     tryBatchReassign(reinterpret_cast<uint8_t*>(vectorinfo->data()), -1);
                 }
             }
-            std::vector<float> newHeadsDist;
+            std::vector<float> newHeadsDist(2, 0.0f);
             std::set<SizeType> reAssignVectorsTopK;
-            newHeadsDist.push_back(m_headIndex->ComputeDistance(headVec->data(), newHeadsVec[0]->data()));
-            newHeadsDist.push_back(m_headIndex->ComputeDistance(headVec->data(), newHeadsVec[1]->data()));
+            if (newHeadsVec[0]) newHeadsDist[0] = m_headIndex->ComputeDistance(headVec->data(), newHeadsVec[0]->data());
+            if (newHeadsVec[1]) newHeadsDist[1] = m_headIndex->ComputeDistance(headVec->data(), newHeadsVec[1]->data());
             for (int i = 0; i < postingLists.size(); i++) {
+                if (!newHeadsVec[i]) continue;
                 auto& postingList = postingLists[i];
                 size_t postVectorNum = postingList.size() / m_vectorInfoSize;
                 auto* postingP = reinterpret_cast<uint8_t*>(postingList.data());
@@ -1616,7 +1614,10 @@ namespace SPTAG::SPANN {
                     p_exWorkSpace->m_diskRequests[0].m_status = -1;
                     return;
                 }
-                p_exWorkSpace->m_diskRequests[0].m_status = wid;
+                for (auto & req : p_exWorkSpace->m_diskRequests)
+                {
+                    req.m_status = wid;
+                }
                 p_exWorkSpace->m_callback = [m_freeWorkSpaceIds = m_freeWorkSpaceIds, wid] () {
                     if (m_freeWorkSpaceIds) m_freeWorkSpaceIds->push(wid);
                 };
@@ -1716,6 +1717,7 @@ namespace SPTAG::SPANN {
 
                 auto appendIOBegin = std::chrono::high_resolution_clock::now();
                 if (IsMultiChunk()) {
+                    { static std::atomic<int> _logOnce{0}; if (_logOnce.fetch_add(1) == 0) SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "[PATH] Append using MULTI-CHUNK AppendChunk path\n"); }
                     // Multi-chunk path: write chunk + update count in one BatchPut RPC.
                     ret = AppendChunkAndUpdateCount(headID, appendPosting, appendNum,
                                                     postingSize, MaxTimeout,
@@ -1726,19 +1728,13 @@ namespace SPTAG::SPANN {
                     }
                     postingSize = (postingSize + appendNum) * m_vectorInfoSize;
                 } else {
-                    if ((ret = db->Merge(
-                             DBKey(headID), appendPosting, MaxTimeout, &(p_exWorkSpace->m_diskRequests), postingSize)) != ErrorCode::Success)
-                    {
-                        if (ret == ErrorCode::Posting_OverFlow) {
-                            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "Merge failed:Posting overflow when appending to %lld! Do split and then retry...\n", (std::int64_t)headID);
-                            ret = Split(p_exWorkSpace, headID, false);
-                            if (ret != ErrorCode::Success) {
-                                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Split %lld failed!\n", (std::int64_t)headID);
-                                return ret;
-                            }
-                            lock.unlock();
-                            goto checkDeleted;
-                        }
+                    { static std::atomic<int> _logOnce{0}; if (_logOnce.fetch_add(1) == 0) SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "[PATH] Append using SINGLE-KEY Get+Put path (no multi-chunk)\n"); }
+                    std::string fullPosting;
+                    auto getRet = db->Get(DBKey(headID), &fullPosting, MaxTimeout, &(p_exWorkSpace->m_diskRequests));
+                    if (getRet != ErrorCode::Success) fullPosting.clear();
+                    fullPosting.append(appendPosting);
+                    postingSize = static_cast<int>(fullPosting.size());
+                    if ((ret = db->Put(DBKey(headID), fullPosting, MaxTimeout, &(p_exWorkSpace->m_diskRequests))) != ErrorCode::Success) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Merge failed for %lld! Posting Size:%d, limit: %d\n", (std::int64_t)headID, postingSize, m_postingSizeLimit);
                         GetDBStats();
                         return ret;
@@ -2024,6 +2020,7 @@ namespace SPTAG::SPANN {
             // --- Local posting search ---
             auto readStart = std::chrono::high_resolution_clock::now();
             if (m_opt->m_useMultiChunkPosting && m_opt->m_storage == Storage::TIKVIO) {
+                { static std::atomic<int> _logOnce{0}; if (_logOnce.fetch_add(1) == 0) SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "[PATH] SearchIndex using MULTI-CHUNK scan path\n"); }
                 // Multi-chunk: scan all chunks per posting and concatenate
                 auto* tikvDB = dynamic_cast<TiKVIO*>(db.get());
                 if (!tikvDB) {
@@ -2036,6 +2033,7 @@ namespace SPTAG::SPANN {
                     return ErrorCode::DiskIOFail;
                 }
             } else {
+                { static std::atomic<int> _logOnce{0}; if (_logOnce.fetch_add(1) == 0) SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "[PATH] SearchIndex using SINGLE-KEY Get path (no multi-chunk)\n"); }
                 auto keys = DBKeys(p_exWorkSpace->m_postingIDs);
                 if (db->MultiGet(*keys, p_exWorkSpace->m_pageBuffers, remainLimit, &(p_exWorkSpace->m_diskRequests)) != ErrorCode::Success)
                 {
@@ -2611,7 +2609,7 @@ namespace SPTAG::SPANN {
                 {
                     zeroReplicaWorkers.emplace_back([&, workerId]() {
                         ExtraWorkSpace workSpace;
-                        InitWorkSpace(&workSpace);
+                        m_headIndex->InitWorkSpace(&workSpace);
                         while (true)
                         {
                             std::vector<SizeType> batch;
@@ -3070,14 +3068,23 @@ namespace SPTAG::SPANN {
                                  std::vector<Helper::AsyncReadRequest>* reqs) {
             if (IsMultiChunk()) {
                 auto* tikv = GetTiKVDB();
-                tikv->DeletePosting(DBKey(headID));
-                auto ret = tikv->PutBaseChunk(DBKey(headID), posting, timeout, reqs);
-                if (ret == ErrorCode::Success) {
-                    int count = static_cast<int>(posting.size() / m_vectorInfoSize);
-                    tikv->SetPostingCount(DBKey(headID), count, timeout);
-                    if (m_postingCountCache) m_postingCountCache->Put(DBKey(headID), count);
+                auto delRet = tikv->DeletePosting(DBKey(headID));
+                if (delRet != ErrorCode::Success) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "PutPostingToDB: DeletePosting failed for headID %d\n", headID);
+                    return delRet;
                 }
-                return ret;
+                auto ret = tikv->PutBaseChunk(DBKey(headID), posting, timeout, reqs);
+                if (ret != ErrorCode::Success) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "PutPostingToDB: PutBaseChunk failed for headID %d\n", headID);
+                    return ret;
+                }
+                int count = static_cast<int>(posting.size() / m_vectorInfoSize);
+                auto countRet = tikv->SetPostingCount(DBKey(headID), count, timeout);
+                if (countRet != ErrorCode::Success) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "PutPostingToDB: SetPostingCount failed for headID %d (data written OK)\n", headID);
+                }
+                if (m_postingCountCache) m_postingCountCache->Put(DBKey(headID), count);
+                return ErrorCode::Success;
             }
             return db->Put(DBKey(headID), posting, timeout, reqs);
         }
@@ -3087,7 +3094,10 @@ namespace SPTAG::SPANN {
         ErrorCode DeletePostingFromDB(SizeType headID) {
             if (IsMultiChunk()) {
                 auto* tikv = GetTiKVDB();
-                tikv->DeletePostingCount(DBKey(headID));
+                auto countRet = tikv->DeletePostingCount(DBKey(headID));
+                if (countRet != ErrorCode::Success) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "DeletePostingFromDB: DeletePostingCount failed for headID %d\n", headID);
+                }
                 if (m_postingCountCache) m_postingCountCache->Remove(DBKey(headID));
                 return tikv->DeletePosting(DBKey(headID));
             }
@@ -3095,7 +3105,7 @@ namespace SPTAG::SPANN {
         }
 
         // Get the posting vector count, using local cache with TiKV fallback.
-        // Returns 0 if unknown (cache miss + TiKV miss).
+        // Returns 0 if unknown (cache miss + TiKV error/miss).
         int GetCachedPostingCount(SizeType headID) {
             if (!m_postingCountCache) return 0;
             SizeType dbKey = DBKey(headID);
@@ -3105,6 +3115,10 @@ namespace SPTAG::SPANN {
             auto* tikv = GetTiKVDB();
             if (!tikv) return 0;
             count = tikv->GetPostingCount(dbKey, std::chrono::microseconds(5000000));
+            if (count < 0) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "GetCachedPostingCount: TiKV error for headID %d, returning 0\n", headID);
+                return 0;
+            }
             m_postingCountCache->Put(dbKey, count);
             return count;
         }

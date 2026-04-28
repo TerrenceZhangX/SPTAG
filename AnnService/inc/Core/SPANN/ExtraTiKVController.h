@@ -153,9 +153,9 @@ namespace SPTAG::SPANN
         {
             std::string prefixedKey = MakePrefixedKey(key);
 
-            for (int attempt = 0; attempt < 10; attempt++) {
+            for (int attempt = 0; ; attempt++) {
                 auto stub = GetStubForKey(prefixedKey);
-                if (!stub) return ErrorCode::Fail;
+                if (!stub) { RetryBackoff(attempt); continue; }
 
                 kvrpcpb::RawGetRequest request;
                 request.set_key(prefixedKey);
@@ -167,15 +167,21 @@ namespace SPTAG::SPANN
 
                 auto status = stub->RawGet(&ctx, request, &response);
                 if (!status.ok()) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::Get gRPC error (attempt %d): %s\n",
-                                 attempt, status.error_message().c_str());
+                    if (ShouldLogRetry(attempt))
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::Get gRPC error (attempt %d): %s\n",
+                                     attempt + 1, status.error_message().c_str());
                     InvalidateRegionCache(prefixedKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    RetryBackoff(attempt);
                     continue;
                 }
                 if (response.has_region_error()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::Get region_error (attempt %d)\n", attempt + 1);
                     InvalidateRegionCache(prefixedKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (attempt >= 10) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::Get region_error failed after %d attempts, giving up\n", attempt + 1);
+                        return ErrorCode::Fail;
+                    }
+                    RetryBackoff(attempt);
                     continue;
                 }
                 if (!response.error().empty()) {
@@ -189,7 +195,6 @@ namespace SPTAG::SPANN
                 *value = response.value();
                 return ErrorCode::Success;
             }
-            return ErrorCode::Fail;
         }
 
         ErrorCode Get(const SizeType key, std::string* value,
@@ -208,9 +213,9 @@ namespace SPTAG::SPANN
         {
             std::string prefixedKey = MakePrefixedKey(key);
 
-            for (int attempt = 0; attempt < 10; attempt++) {
+            for (int attempt = 0; ; attempt++) {
                 auto stub = GetStubForKey(prefixedKey);
-                if (!stub) return ErrorCode::Fail;
+                if (!stub) { RetryBackoff(attempt); continue; }
 
                 kvrpcpb::RawPutRequest request;
                 request.set_key(prefixedKey);
@@ -223,15 +228,21 @@ namespace SPTAG::SPANN
 
                 auto status = stub->RawPut(&ctx, request, &response);
                 if (!status.ok()) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::Put gRPC error (attempt %d): %s\n",
-                                 attempt, status.error_message().c_str());
+                    if (ShouldLogRetry(attempt))
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::Put gRPC error (attempt %d): %s\n",
+                                     attempt + 1, status.error_message().c_str());
                     InvalidateRegionCache(prefixedKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    RetryBackoff(attempt);
                     continue;
                 }
                 if (response.has_region_error()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::Put region_error (attempt %d)\n", attempt + 1);
                     InvalidateRegionCache(prefixedKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (attempt >= 10) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::Put region_error failed after %d attempts, giving up\n", attempt + 1);
+                        return ErrorCode::Fail;
+                    }
+                    RetryBackoff(attempt);
                     continue;
                 }
                 if (!response.error().empty()) {
@@ -240,7 +251,6 @@ namespace SPTAG::SPANN
                 }
                 return ErrorCode::Success;
             }
-            return ErrorCode::Fail;
         }
 
         ErrorCode Put(const SizeType key, const std::string& value,
@@ -257,28 +267,43 @@ namespace SPTAG::SPANN
             std::string k(reinterpret_cast<const char*>(&key), sizeof(SizeType));
             std::string prefixedKey = MakePrefixedKey(k);
 
-            auto stub = GetStubForKey(prefixedKey);
-            if (!stub) return ErrorCode::Fail;
-
-            kvrpcpb::RawDeleteRequest request;
-            request.set_key(prefixedKey);
-            SetContext(request.mutable_context(), prefixedKey);
-
-            kvrpcpb::RawDeleteResponse response;
-            grpc::ClientContext ctx;
             auto timeout = std::chrono::microseconds(5000000); // 5s default
-            SetDeadline(ctx, timeout);
+            for (int attempt = 0; ; attempt++) {
+                auto stub = GetStubForKey(prefixedKey);
+                if (!stub) { RetryBackoff(attempt); continue; }
 
-            auto status = stub->RawDelete(&ctx, request, &response);
-            if (!status.ok()) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::Delete gRPC error: %s\n", status.error_message().c_str());
-                return ErrorCode::Fail;
+                kvrpcpb::RawDeleteRequest request;
+                request.set_key(prefixedKey);
+                SetContext(request.mutable_context(), prefixedKey);
+
+                kvrpcpb::RawDeleteResponse response;
+                grpc::ClientContext ctx;
+                SetDeadline(ctx, timeout);
+
+                auto status = stub->RawDelete(&ctx, request, &response);
+                if (!status.ok()) {
+                    if (ShouldLogRetry(attempt))
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::Delete gRPC error (attempt %d): %s\n", attempt + 1, status.error_message().c_str());
+                    InvalidateRegionCache(prefixedKey);
+                    RetryBackoff(attempt);
+                    continue;
+                }
+                if (response.has_region_error()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::Delete region_error (attempt %d)\n", attempt + 1);
+                    InvalidateRegionCache(prefixedKey);
+                    if (attempt >= 10) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::Delete region_error failed after %d attempts, giving up\n", attempt + 1);
+                        return ErrorCode::Fail;
+                    }
+                    RetryBackoff(attempt);
+                    continue;
+                }
+                if (!response.error().empty()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::Delete error: %s\n", response.error().c_str());
+                    return ErrorCode::Fail;
+                }
+                return ErrorCode::Success;
             }
-            if (!response.error().empty()) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::Delete error: %s\n", response.error().c_str());
-                return ErrorCode::Fail;
-            }
-            return ErrorCode::Success;
         }
 
         ErrorCode DeleteRange(SizeType start, SizeType end) override {
@@ -287,29 +312,44 @@ namespace SPTAG::SPANN
             std::string prefixedStart = MakePrefixedKey(startKey);
             std::string prefixedEnd = MakePrefixedKey(endKey);
 
-            auto stub = GetStubForKey(prefixedStart);
-            if (!stub) return ErrorCode::Fail;
-
-            kvrpcpb::RawDeleteRangeRequest request;
-            request.set_start_key(prefixedStart);
-            request.set_end_key(prefixedEnd);
-            SetContext(request.mutable_context(), prefixedStart);
-
-            kvrpcpb::RawDeleteRangeResponse response;
-            grpc::ClientContext ctx;
             auto timeout = std::chrono::microseconds(10000000); // 10s default
-            SetDeadline(ctx, timeout);
+            for (int attempt = 0; ; attempt++) {
+                auto stub = GetStubForKey(prefixedStart);
+                if (!stub) { RetryBackoff(attempt); continue; }
 
-            auto status = stub->RawDeleteRange(&ctx, request, &response);
-            if (!status.ok()) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::DeleteRange gRPC error: %s\n", status.error_message().c_str());
-                return ErrorCode::Fail;
+                kvrpcpb::RawDeleteRangeRequest request;
+                request.set_start_key(prefixedStart);
+                request.set_end_key(prefixedEnd);
+                SetContext(request.mutable_context(), prefixedStart);
+
+                kvrpcpb::RawDeleteRangeResponse response;
+                grpc::ClientContext ctx;
+                SetDeadline(ctx, timeout);
+
+                auto status = stub->RawDeleteRange(&ctx, request, &response);
+                if (!status.ok()) {
+                    if (ShouldLogRetry(attempt))
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::DeleteRange gRPC error (attempt %d): %s\n", attempt + 1, status.error_message().c_str());
+                    InvalidateRegionCache(prefixedStart);
+                    RetryBackoff(attempt);
+                    continue;
+                }
+                if (response.has_region_error()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::DeleteRange region_error (attempt %d)\n", attempt + 1);
+                    InvalidateRegionCache(prefixedStart);
+                    if (attempt >= 10) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::DeleteRange region_error failed after %d attempts, giving up\n", attempt + 1);
+                        return ErrorCode::Fail;
+                    }
+                    RetryBackoff(attempt);
+                    continue;
+                }
+                if (!response.error().empty()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::DeleteRange error: %s\n", response.error().c_str());
+                    return ErrorCode::Fail;
+                }
+                return ErrorCode::Success;
             }
-            if (!response.error().empty()) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::DeleteRange error: %s\n", response.error().c_str());
-                return ErrorCode::Fail;
-            }
-            return ErrorCode::Success;
         }
 
         // ---- Merge (append) operation ----
@@ -452,6 +492,8 @@ namespace SPTAG::SPANN
                 f.get();
             }
 
+            // Check if any keys that should have values came back empty due to errors
+            // (not-found is tolerable, but gRPC/region errors are not)
             return ErrorCode::Success;
         }
 
@@ -713,9 +755,9 @@ namespace SPTAG::SPANN
             std::string suffix(reinterpret_cast<const char*>(&ts), sizeof(ts));
             std::string key = MakeChunkKey(headID, suffix);
 
-            for (int attempt = 0; attempt < 10; attempt++) {
+            for (int attempt = 0; ; attempt++) {
                 auto stub = GetStubForKey(key);
-                if (!stub) return ErrorCode::Fail;
+                if (!stub) { RetryBackoff(attempt); continue; }
 
                 kvrpcpb::RawPutRequest request;
                 request.set_key(key);
@@ -728,13 +770,20 @@ namespace SPTAG::SPANN
 
                 auto status = stub->RawPut(&ctx, request, &response);
                 if (!status.ok()) {
+                    if (ShouldLogRetry(attempt))
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::PutChunk gRPC error (attempt %d): %s headID=%d\n", attempt + 1, status.error_message().c_str(), headID);
                     InvalidateRegionCache(key);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    RetryBackoff(attempt);
                     continue;
                 }
                 if (response.has_region_error()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::PutChunk region_error (attempt %d) headID=%d\n", attempt + 1, headID);
                     InvalidateRegionCache(key);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (attempt >= 10) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::PutChunk region_error failed after %d attempts headID=%d, giving up\n", attempt + 1, headID);
+                        return ErrorCode::Fail;
+                    }
+                    RetryBackoff(attempt);
                     continue;
                 }
                 if (!response.error().empty()) {
@@ -743,7 +792,6 @@ namespace SPTAG::SPANN
                 }
                 return ErrorCode::Success;
             }
-            return ErrorCode::Fail;
         }
 
         // Write the base (sole) chunk for a posting — used by Build and Split compaction.
@@ -753,9 +801,9 @@ namespace SPTAG::SPANN
                                std::vector<Helper::AsyncReadRequest>* reqs)
         {
             std::string key = MakeChunkKey(headID); // no suffix → base key
-            for (int attempt = 0; attempt < 10; attempt++) {
+            for (int attempt = 0; ; attempt++) {
                 auto stub = GetStubForKey(key);
-                if (!stub) return ErrorCode::Fail;
+                if (!stub) { RetryBackoff(attempt); continue; }
 
                 kvrpcpb::RawPutRequest request;
                 request.set_key(key);
@@ -768,13 +816,20 @@ namespace SPTAG::SPANN
 
                 auto status = stub->RawPut(&ctx, request, &response);
                 if (!status.ok()) {
+                    if (ShouldLogRetry(attempt))
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::PutBaseChunk gRPC error (attempt %d): %s headID=%d\n", attempt + 1, status.error_message().c_str(), headID);
                     InvalidateRegionCache(key);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    RetryBackoff(attempt);
                     continue;
                 }
                 if (response.has_region_error()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::PutBaseChunk region_error (attempt %d) headID=%d\n", attempt + 1, headID);
                     InvalidateRegionCache(key);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (attempt >= 10) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::PutBaseChunk region_error failed after %d attempts headID=%d, giving up\n", attempt + 1, headID);
+                        return ErrorCode::Fail;
+                    }
+                    RetryBackoff(attempt);
                     continue;
                 }
                 if (!response.error().empty()) {
@@ -783,7 +838,6 @@ namespace SPTAG::SPANN
                 }
                 return ErrorCode::Success;
             }
-            return ErrorCode::Fail;
         }
 
         // Read all chunks belonging to a posting (Scan), concatenate into one string.
@@ -808,46 +862,65 @@ namespace SPTAG::SPANN
             fullPosting->clear();
             int chunks = 0;
 
-            // Paginated scan in case of many chunks
+            // Paginated scan with region_error retry support
             std::string scanCursor = startKey;
-            for (;;) {
-                auto stub = GetStubForKey(scanCursor);
-                if (!stub) return ErrorCode::Fail;
+            bool morePages = true;
+            while (morePages) {
+                morePages = false;
+                for (int attempt = 0; ; attempt++) {
+                    auto stub = GetStubForKey(scanCursor);
+                    if (!stub) { RetryBackoff(attempt); continue; }
 
-                kvrpcpb::RawScanRequest request;
-                request.set_start_key(scanCursor);
-                request.set_end_key(endKey);
-                request.set_limit(1024);
-                SetContext(request.mutable_context(), scanCursor);
+                    kvrpcpb::RawScanRequest request;
+                    request.set_start_key(scanCursor);
+                    request.set_end_key(endKey);
+                    request.set_limit(1024);
+                    SetContext(request.mutable_context(), scanCursor);
 
-                kvrpcpb::RawScanResponse response;
-                grpc::ClientContext ctx;
-                SetDeadline(ctx, timeout);
+                    kvrpcpb::RawScanResponse response;
+                    grpc::ClientContext ctx;
+                    SetDeadline(ctx, timeout);
 
-                auto status = stub->RawScan(&ctx, request, &response);
-                if (!status.ok()) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                        "TiKVIO::ScanPosting gRPC error: %s\n", status.error_message().c_str());
-                    return ErrorCode::Fail;
+                    auto status = stub->RawScan(&ctx, request, &response);
+                    if (!status.ok()) {
+                        if (ShouldLogRetry(attempt))
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                "TiKVIO::ScanPosting gRPC error (attempt %d): %s headID=%d\n",
+                                attempt + 1, status.error_message().c_str(), headID);
+                        InvalidateRegionCache(scanCursor);
+                        RetryBackoff(attempt);
+                        continue;
+                    }
+                    if (response.has_region_error()) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                                "TiKVIO::ScanPosting region_error (attempt %d) headID=%d\n",
+                                attempt + 1, headID);
+                        InvalidateRegionCache(scanCursor);
+                        if (attempt >= 10) {
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::ScanPosting region_error failed after %d attempts headID=%d, giving up\n", attempt + 1, headID);
+                            return ErrorCode::Fail;
+                        }
+                        RetryBackoff(attempt);
+                        continue;
+                    }
+
+                    int count = response.kvs_size();
+                    for (int i = 0; i < count; i++) {
+                        fullPosting->append(response.kvs(i).value());
+                        chunks++;
+                    }
+                    if (count >= 1024) {
+                        scanCursor = response.kvs(count - 1).key();
+                        scanCursor.push_back('\x00');
+                        morePages = true;
+                    }
+                    break; // success, break retry loop
                 }
-
-                int count = response.kvs_size();
-                if (count == 0) break;
-
-                for (int i = 0; i < count; i++) {
-                    fullPosting->append(response.kvs(i).value());
-                    chunks++;
-                }
-
-                if (count < 1024) break; // no more pages
-
-                // Next page starts after the last key returned
-                scanCursor = response.kvs(count - 1).key();
-                scanCursor.push_back('\x00'); // next key after last
             }
 
             if (chunkCount) *chunkCount = chunks;
-            return (chunks > 0) ? ErrorCode::Success : ErrorCode::Fail;
+            if (chunks > 0) return ErrorCode::Success;
+            return ErrorCode::VectorNotFound;
         }
 
         // Delete all chunks of a posting (DeleteRange over the chunk key span).
@@ -864,31 +937,46 @@ namespace SPTAG::SPANN
                 endKey.push_back('\x01');
             }
 
-            auto stub = GetStubForKey(startKey);
-            if (!stub) return ErrorCode::Fail;
-
-            kvrpcpb::RawDeleteRangeRequest request;
-            request.set_start_key(startKey);
-            request.set_end_key(endKey);
-            SetContext(request.mutable_context(), startKey);
-
-            kvrpcpb::RawDeleteRangeResponse response;
-            grpc::ClientContext ctx;
             auto timeout = std::chrono::microseconds(10000000); // 10s
-            SetDeadline(ctx, timeout);
+            for (int attempt = 0; ; attempt++) {
+                auto stub = GetStubForKey(startKey);
+                if (!stub) { RetryBackoff(attempt); continue; }
 
-            auto status = stub->RawDeleteRange(&ctx, request, &response);
-            if (!status.ok()) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::DeletePosting gRPC error: %s\n",
-                    status.error_message().c_str());
-                return ErrorCode::Fail;
+                kvrpcpb::RawDeleteRangeRequest request;
+                request.set_start_key(startKey);
+                request.set_end_key(endKey);
+                SetContext(request.mutable_context(), startKey);
+
+                kvrpcpb::RawDeleteRangeResponse response;
+                grpc::ClientContext ctx;
+                SetDeadline(ctx, timeout);
+
+                auto status = stub->RawDeleteRange(&ctx, request, &response);
+                if (!status.ok()) {
+                    if (ShouldLogRetry(attempt))
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::DeletePosting gRPC error (attempt %d): %s headID=%d\n",
+                            attempt + 1, status.error_message().c_str(), headID);
+                    InvalidateRegionCache(startKey);
+                    RetryBackoff(attempt);
+                    continue;
+                }
+                if (response.has_region_error()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::DeletePosting region_error (attempt %d) headID=%d\n", attempt + 1, headID);
+                    InvalidateRegionCache(startKey);
+                    if (attempt >= 10) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::DeletePosting region_error failed after %d attempts headID=%d, giving up\n", attempt + 1, headID);
+                        return ErrorCode::Fail;
+                    }
+                    RetryBackoff(attempt);
+                    continue;
+                }
+                if (!response.error().empty()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::DeletePosting error: %s\n",
+                        response.error().c_str());
+                    return ErrorCode::Fail;
+                }
+                return ErrorCode::Success;
             }
-            if (!response.error().empty()) {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::DeletePosting error: %s\n",
-                    response.error().c_str());
-                return ErrorCode::Fail;
-            }
-            return ErrorCode::Success;
         }
 
         // ---- Posting count key operations ----
@@ -907,27 +995,46 @@ namespace SPTAG::SPANN
             return result;
         }
 
-        // Read posting count from TiKV. Returns 0 if key doesn't exist.
+        // Read posting count from TiKV. Returns count >= 0 on success, -1 on error.
         int GetPostingCount(SizeType headID, const std::chrono::microseconds& timeout) {
             std::string key = MakeCountKey(headID);
-            auto stub = GetStubForKey(key);
-            if (!stub) return 0;
+            for (int attempt = 0; ; attempt++) {
+                auto stub = GetStubForKey(key);
+                if (!stub) { RetryBackoff(attempt); continue; }
 
-            kvrpcpb::RawGetRequest request;
-            request.set_key(key);
-            SetContext(request.mutable_context(), key);
+                kvrpcpb::RawGetRequest request;
+                request.set_key(key);
+                SetContext(request.mutable_context(), key);
 
-            kvrpcpb::RawGetResponse response;
-            grpc::ClientContext ctx;
-            SetDeadline(ctx, timeout);
+                kvrpcpb::RawGetResponse response;
+                grpc::ClientContext ctx;
+                SetDeadline(ctx, timeout);
 
-            auto status = stub->RawGet(&ctx, request, &response);
-            if (!status.ok() || response.not_found() || response.value().size() < sizeof(int32_t)) {
-                return 0;
+                auto status = stub->RawGet(&ctx, request, &response);
+                if (!status.ok()) {
+                    if (ShouldLogRetry(attempt))
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::GetPostingCount gRPC error (attempt %d): %s headID=%d\n", attempt + 1, status.error_message().c_str(), headID);
+                    InvalidateRegionCache(key);
+                    RetryBackoff(attempt);
+                    continue;
+                }
+                if (response.has_region_error()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::GetPostingCount region_error (attempt %d) headID=%d\n", attempt + 1, headID);
+                    InvalidateRegionCache(key);
+                    if (attempt >= 10) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::GetPostingCount region_error failed after %d attempts headID=%d, giving up\n", attempt + 1, headID);
+                        return -1;
+                    }
+                    RetryBackoff(attempt);
+                    continue;
+                }
+                if (response.not_found() || response.value().size() < sizeof(int32_t)) {
+                    return 0;
+                }
+                int32_t count;
+                memcpy(&count, response.value().data(), sizeof(int32_t));
+                return count;
             }
-            int32_t count;
-            memcpy(&count, response.value().data(), sizeof(int32_t));
-            return count;
         }
 
         // Write posting count to TiKV.
@@ -936,41 +1043,81 @@ namespace SPTAG::SPANN
             std::string key = MakeCountKey(headID);
             std::string value(reinterpret_cast<const char*>(&count), sizeof(int32_t));
 
-            auto stub = GetStubForKey(key);
-            if (!stub) return ErrorCode::Fail;
+            for (int attempt = 0; ; attempt++) {
+                auto stub = GetStubForKey(key);
+                if (!stub) { RetryBackoff(attempt); continue; }
 
-            kvrpcpb::RawPutRequest request;
-            request.set_key(key);
-            request.set_value(value);
-            SetContext(request.mutable_context(), key);
+                kvrpcpb::RawPutRequest request;
+                request.set_key(key);
+                request.set_value(value);
+                SetContext(request.mutable_context(), key);
 
-            kvrpcpb::RawPutResponse response;
-            grpc::ClientContext ctx;
-            SetDeadline(ctx, timeout);
+                kvrpcpb::RawPutResponse response;
+                grpc::ClientContext ctx;
+                SetDeadline(ctx, timeout);
 
-            auto status = stub->RawPut(&ctx, request, &response);
-            if (!status.ok()) return ErrorCode::Fail;
-            if (!response.error().empty()) return ErrorCode::Fail;
-            return ErrorCode::Success;
+                auto status = stub->RawPut(&ctx, request, &response);
+                if (!status.ok()) {
+                    if (ShouldLogRetry(attempt))
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::SetPostingCount gRPC error (attempt %d): %s headID=%d\n", attempt + 1, status.error_message().c_str(), headID);
+                    InvalidateRegionCache(key);
+                    RetryBackoff(attempt);
+                    continue;
+                }
+                if (response.has_region_error()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::SetPostingCount region_error (attempt %d) headID=%d\n", attempt + 1, headID);
+                    InvalidateRegionCache(key);
+                    if (attempt >= 10) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::SetPostingCount region_error failed after %d attempts headID=%d, giving up\n", attempt + 1, headID);
+                        return ErrorCode::Fail;
+                    }
+                    RetryBackoff(attempt);
+                    continue;
+                }
+                if (!response.error().empty()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::SetPostingCount error: %s\n", response.error().c_str());
+                    return ErrorCode::Fail;
+                }
+                return ErrorCode::Success;
+            }
         }
 
         // Delete posting count key.
         ErrorCode DeletePostingCount(SizeType headID) {
             std::string key = MakeCountKey(headID);
-            auto stub = GetStubForKey(key);
-            if (!stub) return ErrorCode::Fail;
+            auto timeout = std::chrono::microseconds(10000000);
+            for (int attempt = 0; ; attempt++) {
+                auto stub = GetStubForKey(key);
+                if (!stub) { RetryBackoff(attempt); continue; }
 
-            kvrpcpb::RawDeleteRequest request;
-            request.set_key(key);
-            SetContext(request.mutable_context(), key);
+                kvrpcpb::RawDeleteRequest request;
+                request.set_key(key);
+                SetContext(request.mutable_context(), key);
 
-            kvrpcpb::RawDeleteResponse response;
-            grpc::ClientContext ctx;
-            SetDeadline(ctx, std::chrono::microseconds(10000000));
+                kvrpcpb::RawDeleteResponse response;
+                grpc::ClientContext ctx;
+                SetDeadline(ctx, timeout);
 
-            auto status = stub->RawDelete(&ctx, request, &response);
-            if (!status.ok()) return ErrorCode::Fail;
-            return ErrorCode::Success;
+                auto status = stub->RawDelete(&ctx, request, &response);
+                if (!status.ok()) {
+                    if (ShouldLogRetry(attempt))
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::DeletePostingCount gRPC error (attempt %d): %s headID=%d\n", attempt + 1, status.error_message().c_str(), headID);
+                    InvalidateRegionCache(key);
+                    RetryBackoff(attempt);
+                    continue;
+                }
+                if (response.has_region_error()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::DeletePostingCount region_error (attempt %d) headID=%d\n", attempt + 1, headID);
+                    InvalidateRegionCache(key);
+                    if (attempt >= 10) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::DeletePostingCount region_error failed after %d attempts headID=%d, giving up\n", attempt + 1, headID);
+                        return ErrorCode::Fail;
+                    }
+                    RetryBackoff(attempt);
+                    continue;
+                }
+                return ErrorCode::Success;
+            }
         }
 
         // Atomically write a chunk and update count via RawBatchPut.
@@ -992,46 +1139,41 @@ namespace SPTAG::SPANN
             std::string countValue(reinterpret_cast<const char*>(&newCount), sizeof(int32_t));
 
             // Try RawBatchPut first (single round trip).
-            // If region error (e.g. after split, chunkKey and countKey may be
-            // in different regions), fall back to individual Put calls which
-            // each have their own region-aware retry logic.
-            for (int attempt = 0; attempt < 3; attempt++) {
+            // If region error (chunkKey and countKey in different regions after split),
+            // fall back immediately to individual Put calls.
+            {
                 auto stub = GetStubForKey(chunkKey);
-                if (!stub) break;
+                if (stub) {
+                    kvrpcpb::RawBatchPutRequest request;
+                    SetContext(request.mutable_context(), chunkKey);
 
-                kvrpcpb::RawBatchPutRequest request;
-                SetContext(request.mutable_context(), chunkKey);
+                    auto* pair1 = request.add_pairs();
+                    pair1->set_key(chunkKey);
+                    pair1->set_value(chunkValue);
 
-                auto* pair1 = request.add_pairs();
-                pair1->set_key(chunkKey);
-                pair1->set_value(chunkValue);
+                    auto* pair2 = request.add_pairs();
+                    pair2->set_key(countKey);
+                    pair2->set_value(countValue);
 
-                auto* pair2 = request.add_pairs();
-                pair2->set_key(countKey);
-                pair2->set_value(countValue);
+                    kvrpcpb::RawBatchPutResponse response;
+                    grpc::ClientContext ctx;
+                    SetDeadline(ctx, timeout);
 
-                kvrpcpb::RawBatchPutResponse response;
-                grpc::ClientContext ctx;
-                SetDeadline(ctx, timeout);
-
-                auto status = stub->RawBatchPut(&ctx, request, &response);
-                if (!status.ok()) {
-                    InvalidateRegionCache(chunkKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
-                    continue;
-                }
-                if (response.has_region_error()) {
+                    auto status = stub->RawBatchPut(&ctx, request, &response);
+                    if (status.ok() && !response.has_region_error() && response.error().empty()) {
+                        return ErrorCode::Success;
+                    }
+                    // Any failure: invalidate cache and fall through to individual puts
+                    if (!status.ok()) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::PutChunkAndCount BatchPut gRPC error headID=%d: %s, falling back\n", headID, status.error_message().c_str());
+                    } else if (response.has_region_error()) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "TiKVIO::PutChunkAndCount BatchPut region_error headID=%d, falling back to individual puts\n", headID);
+                    } else {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::PutChunkAndCount error: %s\n", response.error().c_str());
+                    }
                     InvalidateRegionCache(chunkKey);
                     InvalidateRegionCache(countKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
-                    continue;
                 }
-                if (!response.error().empty()) {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::PutChunkAndCount error: %s\n",
-                                 response.error().c_str());
-                    return ErrorCode::Fail;
-                }
-                return ErrorCode::Success;
             }
 
             // Fallback: write chunk and count separately.
@@ -1061,11 +1203,17 @@ namespace SPTAG::SPANN
         {
             if (headIDs.empty()) return ErrorCode::Success;
 
+            std::atomic<int> failCount(0);
             std::vector<std::future<void>> futures;
             for (size_t i = 0; i < headIDs.size(); i++) {
                 futures.push_back(std::async(std::launch::async, [&, i]() {
                     std::string posting;
                     auto ret = ScanPosting(headIDs[i], &posting, timeout);
+                    // On actual gRPC error (not VectorNotFound), retry with generous timeout
+                    if (ret == ErrorCode::Fail) {
+                        auto retryTimeout = std::chrono::microseconds(10000000); // 10s
+                        ret = ScanPosting(headIDs[i], &posting, retryTimeout);
+                    }
                     if (ret == ErrorCode::Success && !posting.empty()) {
                         if (posting.size() > values[i].GetPageSize()) {
                             values[i].ReservePageBuffer(posting.size());
@@ -1074,10 +1222,17 @@ namespace SPTAG::SPANN
                         values[i].SetAvailableSize(static_cast<int>(posting.size()));
                     } else {
                         values[i].SetAvailableSize(0);
+                        if (ret == ErrorCode::Fail) {
+                            failCount.fetch_add(1);
+                            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "MultiScanPostings: ScanPosting failed for headID %d after retry\n", headIDs[i]);
+                        }
                     }
                 }));
             }
             for (auto& f : futures) f.get();
+            if (failCount.load() > 0) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "MultiScanPostings: %d/%d postings had gRPC errors\n", failCount.load(), (int)headIDs.size());
+            }
             return ErrorCode::Success;
         }
 
@@ -1215,9 +1370,9 @@ namespace SPTAG::SPANN
         // ---- Helper: RawPut with retry for an already-prefixed key ----
         ErrorCode RawPutWithRetry(const std::string& prefixedKey, const std::string& value,
                                   const std::chrono::microseconds& timeout) {
-            for (int attempt = 0; attempt < 10; attempt++) {
+            for (int attempt = 0; ; attempt++) {
                 auto stub = GetStubForKey(prefixedKey);
-                if (!stub) return ErrorCode::Fail;
+                if (!stub) { RetryBackoff(attempt); continue; }
 
                 kvrpcpb::RawPutRequest request;
                 request.set_key(prefixedKey);
@@ -1230,19 +1385,28 @@ namespace SPTAG::SPANN
 
                 auto status = stub->RawPut(&ctx, request, &response);
                 if (!status.ok()) {
+                    if (ShouldLogRetry(attempt))
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::RawPutWithRetry gRPC error (attempt %d): %s\n", attempt + 1, status.error_message().c_str());
                     InvalidateRegionCache(prefixedKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    RetryBackoff(attempt);
                     continue;
                 }
                 if (response.has_region_error()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::RawPutWithRetry region_error (attempt %d)\n", attempt + 1);
                     InvalidateRegionCache(prefixedKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (attempt >= 10) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::RawPutWithRetry region_error failed after %d attempts, giving up\n", attempt + 1);
+                        return ErrorCode::Fail;
+                    }
+                    RetryBackoff(attempt);
                     continue;
                 }
-                if (!response.error().empty()) return ErrorCode::Fail;
+                if (!response.error().empty()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO::RawPutWithRetry error: %s\n", response.error().c_str());
+                    return ErrorCode::Fail;
+                }
                 return ErrorCode::Success;
             }
-            return ErrorCode::Fail;
         }
 
         std::string StripPrefix(const std::string& prefixedKey) const {
@@ -1260,6 +1424,17 @@ namespace SPTAG::SPANN
                 auto cappedTimeout = std::min(timeout, std::chrono::microseconds(60000000));
                 ctx.set_deadline(std::chrono::system_clock::now() + cappedTimeout);
             }
+        }
+
+        // ---- Helper: retry backoff with cap at 5 seconds ----
+        static void RetryBackoff(int attempt) {
+            int ms = std::min(100 * (attempt + 1), 5000);
+            std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        }
+
+        // Should we log this retry attempt? First 3 always, then every 10th.
+        static bool ShouldLogRetry(int attempt) {
+            return attempt < 3 || attempt % 10 == 0;
         }
 
         // ---- Helper: set request context with region info ----
