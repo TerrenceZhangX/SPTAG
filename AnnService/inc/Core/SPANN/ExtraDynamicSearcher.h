@@ -258,7 +258,6 @@ namespace SPTAG::SPANN {
         };
 
     private:
-        std::shared_ptr<Helper::Concurrent::ConcurrentQueue<int>> m_freeWorkSpaceIds;
         std::atomic<int> m_workspaceCount = 0;
 
         std::mutex m_asyncAppendLock;
@@ -450,7 +449,7 @@ namespace SPTAG::SPANN {
                 [this](SizeType headID, std::shared_ptr<std::string> headVec,
                        int appendNum, std::string& appendPosting) -> ErrorCode {
                     ExtraWorkSpace workSpace;
-                    InitWorkSpace(&workSpace);
+                    m_headIndex->InitWorkSpace(&workSpace);
                     return Append(&workSpace, headID, appendNum, appendPosting);
                 });
 
@@ -1714,30 +1713,6 @@ namespace SPTAG::SPANN {
                 ++replicaCount;
             }
             return true;
-        }
-
-        void InitWorkSpace(ExtraWorkSpace* p_exWorkSpace, bool clear = false)
-        {
-            if (clear) {
-                p_exWorkSpace->Clear(m_opt->m_searchInternalResultNum, (max(m_opt->m_postingPageLimit, m_opt->m_searchPostingPageLimit) + m_opt->m_bufferLength) << PageSizeEx, true, m_opt->m_enableDataCompression);
-            }
-            else {
-                p_exWorkSpace->Initialize(m_opt->m_maxCheck, m_opt->m_hashExp, max(m_opt->m_searchInternalResultNum, m_opt->m_reassignK), (max(m_opt->m_postingPageLimit, m_opt->m_searchPostingPageLimit) + m_opt->m_bufferLength) << PageSizeEx, true, m_opt->m_enableDataCompression);
-                int wid = 0;
-                if (m_freeWorkSpaceIds == nullptr || !m_freeWorkSpaceIds->try_pop(wid))
-                {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "FreeWorkSpaceIds is not initalized or the workspace number is not enough! Please increase iothread number.\n");
-                    p_exWorkSpace->m_diskRequests[0].m_status = -1;
-                    return;
-                }
-                for (auto & req : p_exWorkSpace->m_diskRequests)
-                {
-                    req.m_status = wid;
-                }
-                p_exWorkSpace->m_callback = [m_freeWorkSpaceIds = m_freeWorkSpaceIds, wid] () {
-                    if (m_freeWorkSpaceIds) m_freeWorkSpaceIds->push(wid);
-                };
-            }
         }
 
         ErrorCode AsyncAppend(ExtraWorkSpace* p_exWorkSpace, SizeType headID, int appendNum, std::string& appendPosting, int reassignThreshold = 0)

@@ -39,8 +39,9 @@ max-write-buffer-number = 5
 reserve-space = "1GB"
 
 [storage.block-cache]
-# Minimal cache — forces all reads through OS page cache / disk
-capacity = "1MB"
+# Small cache — at 100M+ scale 1MB causes TiKV crashes; 512MB is small enough
+# vs the dataset (~100GB+) but lets internal metadata fit safely.
+capacity = "512MB"
 
 [coprocessor]
 region-max-size = "512MB"

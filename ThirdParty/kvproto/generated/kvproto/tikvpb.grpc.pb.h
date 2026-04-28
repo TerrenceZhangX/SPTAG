@@ -11,23 +11,24 @@
 #include "tikvpb.pb.h"
 
 #include <functional>
-#include <grpcpp/generic/async_generic_service.h>
-#include <grpcpp/support/async_stream.h>
-#include <grpcpp/support/async_unary_call.h>
-#include <grpcpp/support/client_callback.h>
-#include <grpcpp/client_context.h>
-#include <grpcpp/completion_queue.h>
-#include <grpcpp/support/message_allocator.h>
-#include <grpcpp/support/method_handler.h>
+#include <grpc/impl/codegen/port_platform.h>
+#include <grpcpp/impl/codegen/async_generic_service.h>
+#include <grpcpp/impl/codegen/async_stream.h>
+#include <grpcpp/impl/codegen/async_unary_call.h>
+#include <grpcpp/impl/codegen/client_callback.h>
+#include <grpcpp/impl/codegen/client_context.h>
+#include <grpcpp/impl/codegen/completion_queue.h>
+#include <grpcpp/impl/codegen/message_allocator.h>
+#include <grpcpp/impl/codegen/method_handler.h>
 #include <grpcpp/impl/codegen/proto_utils.h>
-#include <grpcpp/impl/rpc_method.h>
-#include <grpcpp/support/server_callback.h>
+#include <grpcpp/impl/codegen/rpc_method.h>
+#include <grpcpp/impl/codegen/server_callback.h>
 #include <grpcpp/impl/codegen/server_callback_handlers.h>
-#include <grpcpp/server_context.h>
-#include <grpcpp/impl/service_type.h>
+#include <grpcpp/impl/codegen/server_context.h>
+#include <grpcpp/impl/codegen/service_type.h>
 #include <grpcpp/impl/codegen/status.h>
-#include <grpcpp/support/stub_options.h>
-#include <grpcpp/support/sync_stream.h>
+#include <grpcpp/impl/codegen/stub_options.h>
+#include <grpcpp/impl/codegen/sync_stream.h>
 
 namespace tikvpb {
 
@@ -104,33 +105,127 @@ class Tikv final {
     std::unique_ptr< ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawCoprocessorResponse>> PrepareAsyncRawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) {
       return std::unique_ptr< ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawCoprocessorResponse>>(PrepareAsyncRawCoprocessorRaw(context, request, cq));
     }
-    class async_interface {
+    class experimental_async_interface {
      public:
-      virtual ~async_interface() {}
+      virtual ~experimental_async_interface() {}
       // RawKV commands
       virtual void RawGet(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest* request, ::kvrpcpb::RawGetResponse* response, std::function<void(::grpc::Status)>) = 0;
+      virtual void RawGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawGetResponse* response, std::function<void(::grpc::Status)>) = 0;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       virtual void RawGet(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest* request, ::kvrpcpb::RawGetResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawGet(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest* request, ::kvrpcpb::RawGetResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      virtual void RawGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawGetResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawGetResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
       virtual void RawBatchGet(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest* request, ::kvrpcpb::RawBatchGetResponse* response, std::function<void(::grpc::Status)>) = 0;
+      virtual void RawBatchGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchGetResponse* response, std::function<void(::grpc::Status)>) = 0;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       virtual void RawBatchGet(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest* request, ::kvrpcpb::RawBatchGetResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawBatchGet(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest* request, ::kvrpcpb::RawBatchGetResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      virtual void RawBatchGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchGetResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawBatchGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchGetResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
       virtual void RawPut(::grpc::ClientContext* context, const ::kvrpcpb::RawPutRequest* request, ::kvrpcpb::RawPutResponse* response, std::function<void(::grpc::Status)>) = 0;
+      virtual void RawPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawPutResponse* response, std::function<void(::grpc::Status)>) = 0;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       virtual void RawPut(::grpc::ClientContext* context, const ::kvrpcpb::RawPutRequest* request, ::kvrpcpb::RawPutResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawPut(::grpc::ClientContext* context, const ::kvrpcpb::RawPutRequest* request, ::kvrpcpb::RawPutResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      virtual void RawPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawPutResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawPutResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
       virtual void RawBatchPut(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchPutRequest* request, ::kvrpcpb::RawBatchPutResponse* response, std::function<void(::grpc::Status)>) = 0;
+      virtual void RawBatchPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchPutResponse* response, std::function<void(::grpc::Status)>) = 0;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       virtual void RawBatchPut(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchPutRequest* request, ::kvrpcpb::RawBatchPutResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawBatchPut(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchPutRequest* request, ::kvrpcpb::RawBatchPutResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      virtual void RawBatchPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchPutResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawBatchPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchPutResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
       virtual void RawDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRequest* request, ::kvrpcpb::RawDeleteResponse* response, std::function<void(::grpc::Status)>) = 0;
+      virtual void RawDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteResponse* response, std::function<void(::grpc::Status)>) = 0;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       virtual void RawDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRequest* request, ::kvrpcpb::RawDeleteResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRequest* request, ::kvrpcpb::RawDeleteResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      virtual void RawDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
       virtual void RawBatchDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchDeleteRequest* request, ::kvrpcpb::RawBatchDeleteResponse* response, std::function<void(::grpc::Status)>) = 0;
+      virtual void RawBatchDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchDeleteResponse* response, std::function<void(::grpc::Status)>) = 0;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       virtual void RawBatchDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchDeleteRequest* request, ::kvrpcpb::RawBatchDeleteResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawBatchDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchDeleteRequest* request, ::kvrpcpb::RawBatchDeleteResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      virtual void RawBatchDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchDeleteResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawBatchDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchDeleteResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
       virtual void RawDeleteRange(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response, std::function<void(::grpc::Status)>) = 0;
+      virtual void RawDeleteRange(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteRangeResponse* response, std::function<void(::grpc::Status)>) = 0;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       virtual void RawDeleteRange(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawDeleteRange(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      virtual void RawDeleteRange(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteRangeResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawDeleteRange(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteRangeResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
       virtual void RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response, std::function<void(::grpc::Status)>) = 0;
+      virtual void RawScan(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawScanResponse* response, std::function<void(::grpc::Status)>) = 0;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       virtual void RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      virtual void RawScan(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawScanResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawScan(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawScanResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
       virtual void RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, std::function<void(::grpc::Status)>) = 0;
+      virtual void RawCoprocessor(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawCoprocessorResponse* response, std::function<void(::grpc::Status)>) = 0;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       virtual void RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      virtual void RawCoprocessor(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawCoprocessorResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void RawCoprocessor(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawCoprocessorResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
     };
-    typedef class async_interface experimental_async_interface;
-    virtual class async_interface* async() { return nullptr; }
-    class async_interface* experimental_async() { return async(); }
-   private:
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+    typedef class experimental_async_interface async_interface;
+    #endif
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+    async_interface* async() { return experimental_async(); }
+    #endif
+    virtual class experimental_async_interface* experimental_async() { return nullptr; }
+  private:
     virtual ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawGetResponse>* AsyncRawGetRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest& request, ::grpc::CompletionQueue* cq) = 0;
     virtual ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawGetResponse>* PrepareAsyncRawGetRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest& request, ::grpc::CompletionQueue* cq) = 0;
     virtual ::grpc::ClientAsyncResponseReaderInterface< ::kvrpcpb::RawBatchGetResponse>* AsyncRawBatchGetRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest& request, ::grpc::CompletionQueue* cq) = 0;
@@ -152,7 +247,7 @@ class Tikv final {
   };
   class Stub final : public StubInterface {
    public:
-    Stub(const std::shared_ptr< ::grpc::ChannelInterface>& channel, const ::grpc::StubOptions& options = ::grpc::StubOptions());
+    Stub(const std::shared_ptr< ::grpc::ChannelInterface>& channel);
     ::grpc::Status RawGet(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest& request, ::kvrpcpb::RawGetResponse* response) override;
     std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawGetResponse>> AsyncRawGet(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest& request, ::grpc::CompletionQueue* cq) {
       return std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawGetResponse>>(AsyncRawGetRaw(context, request, cq));
@@ -216,38 +311,128 @@ class Tikv final {
     std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawCoprocessorResponse>> PrepareAsyncRawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) {
       return std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawCoprocessorResponse>>(PrepareAsyncRawCoprocessorRaw(context, request, cq));
     }
-    class async final :
-      public StubInterface::async_interface {
+    class experimental_async final :
+      public StubInterface::experimental_async_interface {
      public:
       void RawGet(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest* request, ::kvrpcpb::RawGetResponse* response, std::function<void(::grpc::Status)>) override;
+      void RawGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawGetResponse* response, std::function<void(::grpc::Status)>) override;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       void RawGet(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest* request, ::kvrpcpb::RawGetResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawGet(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest* request, ::kvrpcpb::RawGetResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      void RawGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawGetResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawGetResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
       void RawBatchGet(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest* request, ::kvrpcpb::RawBatchGetResponse* response, std::function<void(::grpc::Status)>) override;
+      void RawBatchGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchGetResponse* response, std::function<void(::grpc::Status)>) override;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       void RawBatchGet(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest* request, ::kvrpcpb::RawBatchGetResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawBatchGet(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest* request, ::kvrpcpb::RawBatchGetResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      void RawBatchGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchGetResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawBatchGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchGetResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
       void RawPut(::grpc::ClientContext* context, const ::kvrpcpb::RawPutRequest* request, ::kvrpcpb::RawPutResponse* response, std::function<void(::grpc::Status)>) override;
+      void RawPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawPutResponse* response, std::function<void(::grpc::Status)>) override;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       void RawPut(::grpc::ClientContext* context, const ::kvrpcpb::RawPutRequest* request, ::kvrpcpb::RawPutResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawPut(::grpc::ClientContext* context, const ::kvrpcpb::RawPutRequest* request, ::kvrpcpb::RawPutResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      void RawPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawPutResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawPutResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
       void RawBatchPut(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchPutRequest* request, ::kvrpcpb::RawBatchPutResponse* response, std::function<void(::grpc::Status)>) override;
+      void RawBatchPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchPutResponse* response, std::function<void(::grpc::Status)>) override;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       void RawBatchPut(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchPutRequest* request, ::kvrpcpb::RawBatchPutResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawBatchPut(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchPutRequest* request, ::kvrpcpb::RawBatchPutResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      void RawBatchPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchPutResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawBatchPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchPutResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
       void RawDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRequest* request, ::kvrpcpb::RawDeleteResponse* response, std::function<void(::grpc::Status)>) override;
+      void RawDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteResponse* response, std::function<void(::grpc::Status)>) override;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       void RawDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRequest* request, ::kvrpcpb::RawDeleteResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRequest* request, ::kvrpcpb::RawDeleteResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      void RawDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
       void RawBatchDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchDeleteRequest* request, ::kvrpcpb::RawBatchDeleteResponse* response, std::function<void(::grpc::Status)>) override;
+      void RawBatchDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchDeleteResponse* response, std::function<void(::grpc::Status)>) override;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       void RawBatchDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchDeleteRequest* request, ::kvrpcpb::RawBatchDeleteResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawBatchDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchDeleteRequest* request, ::kvrpcpb::RawBatchDeleteResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      void RawBatchDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchDeleteResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawBatchDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchDeleteResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
       void RawDeleteRange(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response, std::function<void(::grpc::Status)>) override;
+      void RawDeleteRange(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteRangeResponse* response, std::function<void(::grpc::Status)>) override;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       void RawDeleteRange(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawDeleteRange(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      void RawDeleteRange(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteRangeResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawDeleteRange(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteRangeResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
       void RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response, std::function<void(::grpc::Status)>) override;
+      void RawScan(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawScanResponse* response, std::function<void(::grpc::Status)>) override;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       void RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      void RawScan(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawScanResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawScan(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawScanResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
       void RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, std::function<void(::grpc::Status)>) override;
+      void RawCoprocessor(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawCoprocessorResponse* response, std::function<void(::grpc::Status)>) override;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       void RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      void RawCoprocessor(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawCoprocessorResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void RawCoprocessor(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawCoprocessorResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
      private:
       friend class Stub;
-      explicit async(Stub* stub): stub_(stub) { }
+      explicit experimental_async(Stub* stub): stub_(stub) { }
       Stub* stub() { return stub_; }
       Stub* stub_;
     };
-    class async* async() override { return &async_stub_; }
+    class experimental_async_interface* experimental_async() override { return &async_stub_; }
 
    private:
     std::shared_ptr< ::grpc::ChannelInterface> channel_;
-    class async async_stub_{this};
+    class experimental_async async_stub_{this};
     ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawGetResponse>* AsyncRawGetRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest& request, ::grpc::CompletionQueue* cq) override;
     ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawGetResponse>* PrepareAsyncRawGetRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest& request, ::grpc::CompletionQueue* cq) override;
     ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawBatchGetResponse>* AsyncRawBatchGetRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest& request, ::grpc::CompletionQueue* cq) override;
@@ -475,22 +660,36 @@ class Tikv final {
   };
   typedef WithAsyncMethod_RawGet<WithAsyncMethod_RawBatchGet<WithAsyncMethod_RawPut<WithAsyncMethod_RawBatchPut<WithAsyncMethod_RawDelete<WithAsyncMethod_RawBatchDelete<WithAsyncMethod_RawDeleteRange<WithAsyncMethod_RawScan<WithAsyncMethod_RawCoprocessor<Service > > > > > > > > > AsyncService;
   template <class BaseClass>
-  class WithCallbackMethod_RawGet : public BaseClass {
+  class ExperimentalWithCallbackMethod_RawGet : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithCallbackMethod_RawGet() {
-      ::grpc::Service::MarkMethodCallback(0,
-          new ::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawGetRequest, ::kvrpcpb::RawGetResponse>(
+    ExperimentalWithCallbackMethod_RawGet() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodCallback(0,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawGetRequest, ::kvrpcpb::RawGetResponse>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::kvrpcpb::RawGetRequest* request, ::kvrpcpb::RawGetResponse* response) { return this->RawGet(context, request, response); }));}
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::kvrpcpb::RawGetRequest* request, ::kvrpcpb::RawGetResponse* response) { return this->RawGet(context, request, response); }));}
     void SetMessageAllocatorFor_RawGet(
-        ::grpc::MessageAllocator< ::kvrpcpb::RawGetRequest, ::kvrpcpb::RawGetResponse>* allocator) {
+        ::grpc::experimental::MessageAllocator< ::kvrpcpb::RawGetRequest, ::kvrpcpb::RawGetResponse>* allocator) {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(0);
-      static_cast<::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawGetRequest, ::kvrpcpb::RawGetResponse>*>(handler)
+    #else
+      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::experimental().GetHandler(0);
+    #endif
+      static_cast<::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawGetRequest, ::kvrpcpb::RawGetResponse>*>(handler)
               ->SetMessageAllocator(allocator);
     }
-    ~WithCallbackMethod_RawGet() override {
+    ~ExperimentalWithCallbackMethod_RawGet() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -498,26 +697,46 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawGet(
-      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawGetRequest* /*request*/, ::kvrpcpb::RawGetResponse* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawGetRequest* /*request*/, ::kvrpcpb::RawGetResponse* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawGet(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::kvrpcpb::RawGetRequest* /*request*/, ::kvrpcpb::RawGetResponse* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithCallbackMethod_RawBatchGet : public BaseClass {
+  class ExperimentalWithCallbackMethod_RawBatchGet : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithCallbackMethod_RawBatchGet() {
-      ::grpc::Service::MarkMethodCallback(1,
-          new ::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawBatchGetRequest, ::kvrpcpb::RawBatchGetResponse>(
+    ExperimentalWithCallbackMethod_RawBatchGet() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodCallback(1,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawBatchGetRequest, ::kvrpcpb::RawBatchGetResponse>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::kvrpcpb::RawBatchGetRequest* request, ::kvrpcpb::RawBatchGetResponse* response) { return this->RawBatchGet(context, request, response); }));}
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::kvrpcpb::RawBatchGetRequest* request, ::kvrpcpb::RawBatchGetResponse* response) { return this->RawBatchGet(context, request, response); }));}
     void SetMessageAllocatorFor_RawBatchGet(
-        ::grpc::MessageAllocator< ::kvrpcpb::RawBatchGetRequest, ::kvrpcpb::RawBatchGetResponse>* allocator) {
+        ::grpc::experimental::MessageAllocator< ::kvrpcpb::RawBatchGetRequest, ::kvrpcpb::RawBatchGetResponse>* allocator) {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(1);
-      static_cast<::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawBatchGetRequest, ::kvrpcpb::RawBatchGetResponse>*>(handler)
+    #else
+      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::experimental().GetHandler(1);
+    #endif
+      static_cast<::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawBatchGetRequest, ::kvrpcpb::RawBatchGetResponse>*>(handler)
               ->SetMessageAllocator(allocator);
     }
-    ~WithCallbackMethod_RawBatchGet() override {
+    ~ExperimentalWithCallbackMethod_RawBatchGet() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -525,26 +744,46 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawBatchGet(
-      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawBatchGetRequest* /*request*/, ::kvrpcpb::RawBatchGetResponse* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawBatchGetRequest* /*request*/, ::kvrpcpb::RawBatchGetResponse* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawBatchGet(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::kvrpcpb::RawBatchGetRequest* /*request*/, ::kvrpcpb::RawBatchGetResponse* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithCallbackMethod_RawPut : public BaseClass {
+  class ExperimentalWithCallbackMethod_RawPut : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithCallbackMethod_RawPut() {
-      ::grpc::Service::MarkMethodCallback(2,
-          new ::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawPutRequest, ::kvrpcpb::RawPutResponse>(
+    ExperimentalWithCallbackMethod_RawPut() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodCallback(2,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawPutRequest, ::kvrpcpb::RawPutResponse>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::kvrpcpb::RawPutRequest* request, ::kvrpcpb::RawPutResponse* response) { return this->RawPut(context, request, response); }));}
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::kvrpcpb::RawPutRequest* request, ::kvrpcpb::RawPutResponse* response) { return this->RawPut(context, request, response); }));}
     void SetMessageAllocatorFor_RawPut(
-        ::grpc::MessageAllocator< ::kvrpcpb::RawPutRequest, ::kvrpcpb::RawPutResponse>* allocator) {
+        ::grpc::experimental::MessageAllocator< ::kvrpcpb::RawPutRequest, ::kvrpcpb::RawPutResponse>* allocator) {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(2);
-      static_cast<::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawPutRequest, ::kvrpcpb::RawPutResponse>*>(handler)
+    #else
+      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::experimental().GetHandler(2);
+    #endif
+      static_cast<::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawPutRequest, ::kvrpcpb::RawPutResponse>*>(handler)
               ->SetMessageAllocator(allocator);
     }
-    ~WithCallbackMethod_RawPut() override {
+    ~ExperimentalWithCallbackMethod_RawPut() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -552,26 +791,46 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawPut(
-      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawPutRequest* /*request*/, ::kvrpcpb::RawPutResponse* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawPutRequest* /*request*/, ::kvrpcpb::RawPutResponse* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawPut(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::kvrpcpb::RawPutRequest* /*request*/, ::kvrpcpb::RawPutResponse* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithCallbackMethod_RawBatchPut : public BaseClass {
+  class ExperimentalWithCallbackMethod_RawBatchPut : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithCallbackMethod_RawBatchPut() {
-      ::grpc::Service::MarkMethodCallback(3,
-          new ::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawBatchPutRequest, ::kvrpcpb::RawBatchPutResponse>(
+    ExperimentalWithCallbackMethod_RawBatchPut() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodCallback(3,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawBatchPutRequest, ::kvrpcpb::RawBatchPutResponse>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::kvrpcpb::RawBatchPutRequest* request, ::kvrpcpb::RawBatchPutResponse* response) { return this->RawBatchPut(context, request, response); }));}
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::kvrpcpb::RawBatchPutRequest* request, ::kvrpcpb::RawBatchPutResponse* response) { return this->RawBatchPut(context, request, response); }));}
     void SetMessageAllocatorFor_RawBatchPut(
-        ::grpc::MessageAllocator< ::kvrpcpb::RawBatchPutRequest, ::kvrpcpb::RawBatchPutResponse>* allocator) {
+        ::grpc::experimental::MessageAllocator< ::kvrpcpb::RawBatchPutRequest, ::kvrpcpb::RawBatchPutResponse>* allocator) {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(3);
-      static_cast<::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawBatchPutRequest, ::kvrpcpb::RawBatchPutResponse>*>(handler)
+    #else
+      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::experimental().GetHandler(3);
+    #endif
+      static_cast<::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawBatchPutRequest, ::kvrpcpb::RawBatchPutResponse>*>(handler)
               ->SetMessageAllocator(allocator);
     }
-    ~WithCallbackMethod_RawBatchPut() override {
+    ~ExperimentalWithCallbackMethod_RawBatchPut() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -579,26 +838,46 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawBatchPut(
-      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawBatchPutRequest* /*request*/, ::kvrpcpb::RawBatchPutResponse* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawBatchPutRequest* /*request*/, ::kvrpcpb::RawBatchPutResponse* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawBatchPut(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::kvrpcpb::RawBatchPutRequest* /*request*/, ::kvrpcpb::RawBatchPutResponse* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithCallbackMethod_RawDelete : public BaseClass {
+  class ExperimentalWithCallbackMethod_RawDelete : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithCallbackMethod_RawDelete() {
-      ::grpc::Service::MarkMethodCallback(4,
-          new ::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawDeleteRequest, ::kvrpcpb::RawDeleteResponse>(
+    ExperimentalWithCallbackMethod_RawDelete() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodCallback(4,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawDeleteRequest, ::kvrpcpb::RawDeleteResponse>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::kvrpcpb::RawDeleteRequest* request, ::kvrpcpb::RawDeleteResponse* response) { return this->RawDelete(context, request, response); }));}
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::kvrpcpb::RawDeleteRequest* request, ::kvrpcpb::RawDeleteResponse* response) { return this->RawDelete(context, request, response); }));}
     void SetMessageAllocatorFor_RawDelete(
-        ::grpc::MessageAllocator< ::kvrpcpb::RawDeleteRequest, ::kvrpcpb::RawDeleteResponse>* allocator) {
+        ::grpc::experimental::MessageAllocator< ::kvrpcpb::RawDeleteRequest, ::kvrpcpb::RawDeleteResponse>* allocator) {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(4);
-      static_cast<::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawDeleteRequest, ::kvrpcpb::RawDeleteResponse>*>(handler)
+    #else
+      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::experimental().GetHandler(4);
+    #endif
+      static_cast<::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawDeleteRequest, ::kvrpcpb::RawDeleteResponse>*>(handler)
               ->SetMessageAllocator(allocator);
     }
-    ~WithCallbackMethod_RawDelete() override {
+    ~ExperimentalWithCallbackMethod_RawDelete() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -606,26 +885,46 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawDelete(
-      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawDeleteRequest* /*request*/, ::kvrpcpb::RawDeleteResponse* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawDeleteRequest* /*request*/, ::kvrpcpb::RawDeleteResponse* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawDelete(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::kvrpcpb::RawDeleteRequest* /*request*/, ::kvrpcpb::RawDeleteResponse* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithCallbackMethod_RawBatchDelete : public BaseClass {
+  class ExperimentalWithCallbackMethod_RawBatchDelete : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithCallbackMethod_RawBatchDelete() {
-      ::grpc::Service::MarkMethodCallback(5,
-          new ::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawBatchDeleteRequest, ::kvrpcpb::RawBatchDeleteResponse>(
+    ExperimentalWithCallbackMethod_RawBatchDelete() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodCallback(5,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawBatchDeleteRequest, ::kvrpcpb::RawBatchDeleteResponse>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::kvrpcpb::RawBatchDeleteRequest* request, ::kvrpcpb::RawBatchDeleteResponse* response) { return this->RawBatchDelete(context, request, response); }));}
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::kvrpcpb::RawBatchDeleteRequest* request, ::kvrpcpb::RawBatchDeleteResponse* response) { return this->RawBatchDelete(context, request, response); }));}
     void SetMessageAllocatorFor_RawBatchDelete(
-        ::grpc::MessageAllocator< ::kvrpcpb::RawBatchDeleteRequest, ::kvrpcpb::RawBatchDeleteResponse>* allocator) {
+        ::grpc::experimental::MessageAllocator< ::kvrpcpb::RawBatchDeleteRequest, ::kvrpcpb::RawBatchDeleteResponse>* allocator) {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(5);
-      static_cast<::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawBatchDeleteRequest, ::kvrpcpb::RawBatchDeleteResponse>*>(handler)
+    #else
+      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::experimental().GetHandler(5);
+    #endif
+      static_cast<::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawBatchDeleteRequest, ::kvrpcpb::RawBatchDeleteResponse>*>(handler)
               ->SetMessageAllocator(allocator);
     }
-    ~WithCallbackMethod_RawBatchDelete() override {
+    ~ExperimentalWithCallbackMethod_RawBatchDelete() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -633,26 +932,46 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawBatchDelete(
-      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawBatchDeleteRequest* /*request*/, ::kvrpcpb::RawBatchDeleteResponse* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawBatchDeleteRequest* /*request*/, ::kvrpcpb::RawBatchDeleteResponse* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawBatchDelete(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::kvrpcpb::RawBatchDeleteRequest* /*request*/, ::kvrpcpb::RawBatchDeleteResponse* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithCallbackMethod_RawDeleteRange : public BaseClass {
+  class ExperimentalWithCallbackMethod_RawDeleteRange : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithCallbackMethod_RawDeleteRange() {
-      ::grpc::Service::MarkMethodCallback(6,
-          new ::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawDeleteRangeRequest, ::kvrpcpb::RawDeleteRangeResponse>(
+    ExperimentalWithCallbackMethod_RawDeleteRange() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodCallback(6,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawDeleteRangeRequest, ::kvrpcpb::RawDeleteRangeResponse>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response) { return this->RawDeleteRange(context, request, response); }));}
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response) { return this->RawDeleteRange(context, request, response); }));}
     void SetMessageAllocatorFor_RawDeleteRange(
-        ::grpc::MessageAllocator< ::kvrpcpb::RawDeleteRangeRequest, ::kvrpcpb::RawDeleteRangeResponse>* allocator) {
+        ::grpc::experimental::MessageAllocator< ::kvrpcpb::RawDeleteRangeRequest, ::kvrpcpb::RawDeleteRangeResponse>* allocator) {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(6);
-      static_cast<::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawDeleteRangeRequest, ::kvrpcpb::RawDeleteRangeResponse>*>(handler)
+    #else
+      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::experimental().GetHandler(6);
+    #endif
+      static_cast<::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawDeleteRangeRequest, ::kvrpcpb::RawDeleteRangeResponse>*>(handler)
               ->SetMessageAllocator(allocator);
     }
-    ~WithCallbackMethod_RawDeleteRange() override {
+    ~ExperimentalWithCallbackMethod_RawDeleteRange() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -660,26 +979,46 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawDeleteRange(
-      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawDeleteRangeRequest* /*request*/, ::kvrpcpb::RawDeleteRangeResponse* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawDeleteRangeRequest* /*request*/, ::kvrpcpb::RawDeleteRangeResponse* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawDeleteRange(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::kvrpcpb::RawDeleteRangeRequest* /*request*/, ::kvrpcpb::RawDeleteRangeResponse* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithCallbackMethod_RawScan : public BaseClass {
+  class ExperimentalWithCallbackMethod_RawScan : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithCallbackMethod_RawScan() {
-      ::grpc::Service::MarkMethodCallback(7,
-          new ::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawScanRequest, ::kvrpcpb::RawScanResponse>(
+    ExperimentalWithCallbackMethod_RawScan() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodCallback(7,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawScanRequest, ::kvrpcpb::RawScanResponse>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response) { return this->RawScan(context, request, response); }));}
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response) { return this->RawScan(context, request, response); }));}
     void SetMessageAllocatorFor_RawScan(
-        ::grpc::MessageAllocator< ::kvrpcpb::RawScanRequest, ::kvrpcpb::RawScanResponse>* allocator) {
+        ::grpc::experimental::MessageAllocator< ::kvrpcpb::RawScanRequest, ::kvrpcpb::RawScanResponse>* allocator) {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(7);
-      static_cast<::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawScanRequest, ::kvrpcpb::RawScanResponse>*>(handler)
+    #else
+      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::experimental().GetHandler(7);
+    #endif
+      static_cast<::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawScanRequest, ::kvrpcpb::RawScanResponse>*>(handler)
               ->SetMessageAllocator(allocator);
     }
-    ~WithCallbackMethod_RawScan() override {
+    ~ExperimentalWithCallbackMethod_RawScan() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -687,26 +1026,46 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawScan(
-      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawScanRequest* /*request*/, ::kvrpcpb::RawScanResponse* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawScanRequest* /*request*/, ::kvrpcpb::RawScanResponse* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawScan(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::kvrpcpb::RawScanRequest* /*request*/, ::kvrpcpb::RawScanResponse* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithCallbackMethod_RawCoprocessor : public BaseClass {
+  class ExperimentalWithCallbackMethod_RawCoprocessor : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithCallbackMethod_RawCoprocessor() {
-      ::grpc::Service::MarkMethodCallback(8,
-          new ::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse>(
+    ExperimentalWithCallbackMethod_RawCoprocessor() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodCallback(8,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response) { return this->RawCoprocessor(context, request, response); }));}
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response) { return this->RawCoprocessor(context, request, response); }));}
     void SetMessageAllocatorFor_RawCoprocessor(
-        ::grpc::MessageAllocator< ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse>* allocator) {
+        ::grpc::experimental::MessageAllocator< ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse>* allocator) {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(8);
-      static_cast<::grpc::internal::CallbackUnaryHandler< ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse>*>(handler)
+    #else
+      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::experimental().GetHandler(8);
+    #endif
+      static_cast<::grpc_impl::internal::CallbackUnaryHandler< ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse>*>(handler)
               ->SetMessageAllocator(allocator);
     }
-    ~WithCallbackMethod_RawCoprocessor() override {
+    ~ExperimentalWithCallbackMethod_RawCoprocessor() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -714,11 +1073,20 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawCoprocessor(
-      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawCoprocessorRequest* /*request*/, ::kvrpcpb::RawCoprocessorResponse* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::kvrpcpb::RawCoprocessorRequest* /*request*/, ::kvrpcpb::RawCoprocessorResponse* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawCoprocessor(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::kvrpcpb::RawCoprocessorRequest* /*request*/, ::kvrpcpb::RawCoprocessorResponse* /*response*/)
+    #endif
+      { return nullptr; }
   };
-  typedef WithCallbackMethod_RawGet<WithCallbackMethod_RawBatchGet<WithCallbackMethod_RawPut<WithCallbackMethod_RawBatchPut<WithCallbackMethod_RawDelete<WithCallbackMethod_RawBatchDelete<WithCallbackMethod_RawDeleteRange<WithCallbackMethod_RawScan<WithCallbackMethod_RawCoprocessor<Service > > > > > > > > > CallbackService;
-  typedef CallbackService ExperimentalCallbackService;
+  #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+  typedef ExperimentalWithCallbackMethod_RawGet<ExperimentalWithCallbackMethod_RawBatchGet<ExperimentalWithCallbackMethod_RawPut<ExperimentalWithCallbackMethod_RawBatchPut<ExperimentalWithCallbackMethod_RawDelete<ExperimentalWithCallbackMethod_RawBatchDelete<ExperimentalWithCallbackMethod_RawDeleteRange<ExperimentalWithCallbackMethod_RawScan<ExperimentalWithCallbackMethod_RawCoprocessor<Service > > > > > > > > > CallbackService;
+  #endif
+
+  typedef ExperimentalWithCallbackMethod_RawGet<ExperimentalWithCallbackMethod_RawBatchGet<ExperimentalWithCallbackMethod_RawPut<ExperimentalWithCallbackMethod_RawBatchPut<ExperimentalWithCallbackMethod_RawDelete<ExperimentalWithCallbackMethod_RawBatchDelete<ExperimentalWithCallbackMethod_RawDeleteRange<ExperimentalWithCallbackMethod_RawScan<ExperimentalWithCallbackMethod_RawCoprocessor<Service > > > > > > > > > ExperimentalCallbackService;
   template <class BaseClass>
   class WithGenericMethod_RawGet : public BaseClass {
    private:
@@ -1053,17 +1421,27 @@ class Tikv final {
     }
   };
   template <class BaseClass>
-  class WithRawCallbackMethod_RawGet : public BaseClass {
+  class ExperimentalWithRawCallbackMethod_RawGet : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithRawCallbackMethod_RawGet() {
-      ::grpc::Service::MarkMethodRawCallback(0,
-          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+    ExperimentalWithRawCallbackMethod_RawGet() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodRawCallback(0,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawGet(context, request, response); }));
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawGet(context, request, response); }));
     }
-    ~WithRawCallbackMethod_RawGet() override {
+    ~ExperimentalWithRawCallbackMethod_RawGet() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -1071,21 +1449,37 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawGet(
-      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawGet(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithRawCallbackMethod_RawBatchGet : public BaseClass {
+  class ExperimentalWithRawCallbackMethod_RawBatchGet : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithRawCallbackMethod_RawBatchGet() {
-      ::grpc::Service::MarkMethodRawCallback(1,
-          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+    ExperimentalWithRawCallbackMethod_RawBatchGet() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodRawCallback(1,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawBatchGet(context, request, response); }));
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawBatchGet(context, request, response); }));
     }
-    ~WithRawCallbackMethod_RawBatchGet() override {
+    ~ExperimentalWithRawCallbackMethod_RawBatchGet() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -1093,21 +1487,37 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawBatchGet(
-      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawBatchGet(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithRawCallbackMethod_RawPut : public BaseClass {
+  class ExperimentalWithRawCallbackMethod_RawPut : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithRawCallbackMethod_RawPut() {
-      ::grpc::Service::MarkMethodRawCallback(2,
-          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+    ExperimentalWithRawCallbackMethod_RawPut() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodRawCallback(2,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawPut(context, request, response); }));
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawPut(context, request, response); }));
     }
-    ~WithRawCallbackMethod_RawPut() override {
+    ~ExperimentalWithRawCallbackMethod_RawPut() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -1115,21 +1525,37 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawPut(
-      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawPut(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithRawCallbackMethod_RawBatchPut : public BaseClass {
+  class ExperimentalWithRawCallbackMethod_RawBatchPut : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithRawCallbackMethod_RawBatchPut() {
-      ::grpc::Service::MarkMethodRawCallback(3,
-          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+    ExperimentalWithRawCallbackMethod_RawBatchPut() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodRawCallback(3,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawBatchPut(context, request, response); }));
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawBatchPut(context, request, response); }));
     }
-    ~WithRawCallbackMethod_RawBatchPut() override {
+    ~ExperimentalWithRawCallbackMethod_RawBatchPut() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -1137,21 +1563,37 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawBatchPut(
-      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawBatchPut(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithRawCallbackMethod_RawDelete : public BaseClass {
+  class ExperimentalWithRawCallbackMethod_RawDelete : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithRawCallbackMethod_RawDelete() {
-      ::grpc::Service::MarkMethodRawCallback(4,
-          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+    ExperimentalWithRawCallbackMethod_RawDelete() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodRawCallback(4,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawDelete(context, request, response); }));
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawDelete(context, request, response); }));
     }
-    ~WithRawCallbackMethod_RawDelete() override {
+    ~ExperimentalWithRawCallbackMethod_RawDelete() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -1159,21 +1601,37 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawDelete(
-      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawDelete(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithRawCallbackMethod_RawBatchDelete : public BaseClass {
+  class ExperimentalWithRawCallbackMethod_RawBatchDelete : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithRawCallbackMethod_RawBatchDelete() {
-      ::grpc::Service::MarkMethodRawCallback(5,
-          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+    ExperimentalWithRawCallbackMethod_RawBatchDelete() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodRawCallback(5,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawBatchDelete(context, request, response); }));
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawBatchDelete(context, request, response); }));
     }
-    ~WithRawCallbackMethod_RawBatchDelete() override {
+    ~ExperimentalWithRawCallbackMethod_RawBatchDelete() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -1181,21 +1639,37 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawBatchDelete(
-      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawBatchDelete(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithRawCallbackMethod_RawDeleteRange : public BaseClass {
+  class ExperimentalWithRawCallbackMethod_RawDeleteRange : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithRawCallbackMethod_RawDeleteRange() {
-      ::grpc::Service::MarkMethodRawCallback(6,
-          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+    ExperimentalWithRawCallbackMethod_RawDeleteRange() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodRawCallback(6,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawDeleteRange(context, request, response); }));
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawDeleteRange(context, request, response); }));
     }
-    ~WithRawCallbackMethod_RawDeleteRange() override {
+    ~ExperimentalWithRawCallbackMethod_RawDeleteRange() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -1203,21 +1677,37 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawDeleteRange(
-      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawDeleteRange(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithRawCallbackMethod_RawScan : public BaseClass {
+  class ExperimentalWithRawCallbackMethod_RawScan : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithRawCallbackMethod_RawScan() {
-      ::grpc::Service::MarkMethodRawCallback(7,
-          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+    ExperimentalWithRawCallbackMethod_RawScan() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodRawCallback(7,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawScan(context, request, response); }));
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawScan(context, request, response); }));
     }
-    ~WithRawCallbackMethod_RawScan() override {
+    ~ExperimentalWithRawCallbackMethod_RawScan() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -1225,21 +1715,37 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawScan(
-      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawScan(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithRawCallbackMethod_RawCoprocessor : public BaseClass {
+  class ExperimentalWithRawCallbackMethod_RawCoprocessor : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithRawCallbackMethod_RawCoprocessor() {
-      ::grpc::Service::MarkMethodRawCallback(8,
-          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+    ExperimentalWithRawCallbackMethod_RawCoprocessor() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodRawCallback(8,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawCoprocessor(context, request, response); }));
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->RawCoprocessor(context, request, response); }));
     }
-    ~WithRawCallbackMethod_RawCoprocessor() override {
+    ~ExperimentalWithRawCallbackMethod_RawCoprocessor() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -1247,8 +1753,14 @@ class Tikv final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* RawCoprocessor(
-      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* RawCoprocessor(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
   class WithStreamedUnaryMethod_RawGet : public BaseClass {
@@ -1259,8 +1771,8 @@ class Tikv final {
       ::grpc::Service::MarkMethodStreamed(0,
         new ::grpc::internal::StreamedUnaryHandler<
           ::kvrpcpb::RawGetRequest, ::kvrpcpb::RawGetResponse>(
-            [this](::grpc::ServerContext* context,
-                   ::grpc::ServerUnaryStreamer<
+            [this](::grpc_impl::ServerContext* context,
+                   ::grpc_impl::ServerUnaryStreamer<
                      ::kvrpcpb::RawGetRequest, ::kvrpcpb::RawGetResponse>* streamer) {
                        return this->StreamedRawGet(context,
                          streamer);
@@ -1286,8 +1798,8 @@ class Tikv final {
       ::grpc::Service::MarkMethodStreamed(1,
         new ::grpc::internal::StreamedUnaryHandler<
           ::kvrpcpb::RawBatchGetRequest, ::kvrpcpb::RawBatchGetResponse>(
-            [this](::grpc::ServerContext* context,
-                   ::grpc::ServerUnaryStreamer<
+            [this](::grpc_impl::ServerContext* context,
+                   ::grpc_impl::ServerUnaryStreamer<
                      ::kvrpcpb::RawBatchGetRequest, ::kvrpcpb::RawBatchGetResponse>* streamer) {
                        return this->StreamedRawBatchGet(context,
                          streamer);
@@ -1313,8 +1825,8 @@ class Tikv final {
       ::grpc::Service::MarkMethodStreamed(2,
         new ::grpc::internal::StreamedUnaryHandler<
           ::kvrpcpb::RawPutRequest, ::kvrpcpb::RawPutResponse>(
-            [this](::grpc::ServerContext* context,
-                   ::grpc::ServerUnaryStreamer<
+            [this](::grpc_impl::ServerContext* context,
+                   ::grpc_impl::ServerUnaryStreamer<
                      ::kvrpcpb::RawPutRequest, ::kvrpcpb::RawPutResponse>* streamer) {
                        return this->StreamedRawPut(context,
                          streamer);
@@ -1340,8 +1852,8 @@ class Tikv final {
       ::grpc::Service::MarkMethodStreamed(3,
         new ::grpc::internal::StreamedUnaryHandler<
           ::kvrpcpb::RawBatchPutRequest, ::kvrpcpb::RawBatchPutResponse>(
-            [this](::grpc::ServerContext* context,
-                   ::grpc::ServerUnaryStreamer<
+            [this](::grpc_impl::ServerContext* context,
+                   ::grpc_impl::ServerUnaryStreamer<
                      ::kvrpcpb::RawBatchPutRequest, ::kvrpcpb::RawBatchPutResponse>* streamer) {
                        return this->StreamedRawBatchPut(context,
                          streamer);
@@ -1367,8 +1879,8 @@ class Tikv final {
       ::grpc::Service::MarkMethodStreamed(4,
         new ::grpc::internal::StreamedUnaryHandler<
           ::kvrpcpb::RawDeleteRequest, ::kvrpcpb::RawDeleteResponse>(
-            [this](::grpc::ServerContext* context,
-                   ::grpc::ServerUnaryStreamer<
+            [this](::grpc_impl::ServerContext* context,
+                   ::grpc_impl::ServerUnaryStreamer<
                      ::kvrpcpb::RawDeleteRequest, ::kvrpcpb::RawDeleteResponse>* streamer) {
                        return this->StreamedRawDelete(context,
                          streamer);
@@ -1394,8 +1906,8 @@ class Tikv final {
       ::grpc::Service::MarkMethodStreamed(5,
         new ::grpc::internal::StreamedUnaryHandler<
           ::kvrpcpb::RawBatchDeleteRequest, ::kvrpcpb::RawBatchDeleteResponse>(
-            [this](::grpc::ServerContext* context,
-                   ::grpc::ServerUnaryStreamer<
+            [this](::grpc_impl::ServerContext* context,
+                   ::grpc_impl::ServerUnaryStreamer<
                      ::kvrpcpb::RawBatchDeleteRequest, ::kvrpcpb::RawBatchDeleteResponse>* streamer) {
                        return this->StreamedRawBatchDelete(context,
                          streamer);
@@ -1421,8 +1933,8 @@ class Tikv final {
       ::grpc::Service::MarkMethodStreamed(6,
         new ::grpc::internal::StreamedUnaryHandler<
           ::kvrpcpb::RawDeleteRangeRequest, ::kvrpcpb::RawDeleteRangeResponse>(
-            [this](::grpc::ServerContext* context,
-                   ::grpc::ServerUnaryStreamer<
+            [this](::grpc_impl::ServerContext* context,
+                   ::grpc_impl::ServerUnaryStreamer<
                      ::kvrpcpb::RawDeleteRangeRequest, ::kvrpcpb::RawDeleteRangeResponse>* streamer) {
                        return this->StreamedRawDeleteRange(context,
                          streamer);
@@ -1448,8 +1960,8 @@ class Tikv final {
       ::grpc::Service::MarkMethodStreamed(7,
         new ::grpc::internal::StreamedUnaryHandler<
           ::kvrpcpb::RawScanRequest, ::kvrpcpb::RawScanResponse>(
-            [this](::grpc::ServerContext* context,
-                   ::grpc::ServerUnaryStreamer<
+            [this](::grpc_impl::ServerContext* context,
+                   ::grpc_impl::ServerUnaryStreamer<
                      ::kvrpcpb::RawScanRequest, ::kvrpcpb::RawScanResponse>* streamer) {
                        return this->StreamedRawScan(context,
                          streamer);
@@ -1475,8 +1987,8 @@ class Tikv final {
       ::grpc::Service::MarkMethodStreamed(8,
         new ::grpc::internal::StreamedUnaryHandler<
           ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse>(
-            [this](::grpc::ServerContext* context,
-                   ::grpc::ServerUnaryStreamer<
+            [this](::grpc_impl::ServerContext* context,
+                   ::grpc_impl::ServerUnaryStreamer<
                      ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse>* streamer) {
                        return this->StreamedRawCoprocessor(context,
                          streamer);

@@ -6,19 +6,19 @@
 #include "pdpb.grpc.pb.h"
 
 #include <functional>
-#include <grpcpp/support/async_stream.h>
-#include <grpcpp/support/async_unary_call.h>
-#include <grpcpp/impl/channel_interface.h>
-#include <grpcpp/impl/client_unary_call.h>
-#include <grpcpp/support/client_callback.h>
-#include <grpcpp/support/message_allocator.h>
-#include <grpcpp/support/method_handler.h>
-#include <grpcpp/impl/rpc_service_method.h>
-#include <grpcpp/support/server_callback.h>
+#include <grpcpp/impl/codegen/async_stream.h>
+#include <grpcpp/impl/codegen/async_unary_call.h>
+#include <grpcpp/impl/codegen/channel_interface.h>
+#include <grpcpp/impl/codegen/client_unary_call.h>
+#include <grpcpp/impl/codegen/client_callback.h>
+#include <grpcpp/impl/codegen/message_allocator.h>
+#include <grpcpp/impl/codegen/method_handler.h>
+#include <grpcpp/impl/codegen/rpc_service_method.h>
+#include <grpcpp/impl/codegen/server_callback.h>
 #include <grpcpp/impl/codegen/server_callback_handlers.h>
-#include <grpcpp/server_context.h>
-#include <grpcpp/impl/service_type.h>
-#include <grpcpp/support/sync_stream.h>
+#include <grpcpp/impl/codegen/server_context.h>
+#include <grpcpp/impl/codegen/service_type.h>
+#include <grpcpp/impl/codegen/sync_stream.h>
 namespace pdpb {
 
 static const char* PD_method_names[] = {
@@ -30,116 +30,136 @@ static const char* PD_method_names[] = {
 
 std::unique_ptr< PD::Stub> PD::NewStub(const std::shared_ptr< ::grpc::ChannelInterface>& channel, const ::grpc::StubOptions& options) {
   (void)options;
-  std::unique_ptr< PD::Stub> stub(new PD::Stub(channel, options));
+  std::unique_ptr< PD::Stub> stub(new PD::Stub(channel));
   return stub;
 }
 
-PD::Stub::Stub(const std::shared_ptr< ::grpc::ChannelInterface>& channel, const ::grpc::StubOptions& options)
-  : channel_(channel), rpcmethod_GetMembers_(PD_method_names[0], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
-  , rpcmethod_GetRegion_(PD_method_names[1], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
-  , rpcmethod_GetRegionByID_(PD_method_names[2], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
-  , rpcmethod_GetStore_(PD_method_names[3], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
+PD::Stub::Stub(const std::shared_ptr< ::grpc::ChannelInterface>& channel)
+  : channel_(channel), rpcmethod_GetMembers_(PD_method_names[0], ::grpc::internal::RpcMethod::NORMAL_RPC, channel)
+  , rpcmethod_GetRegion_(PD_method_names[1], ::grpc::internal::RpcMethod::NORMAL_RPC, channel)
+  , rpcmethod_GetRegionByID_(PD_method_names[2], ::grpc::internal::RpcMethod::NORMAL_RPC, channel)
+  , rpcmethod_GetStore_(PD_method_names[3], ::grpc::internal::RpcMethod::NORMAL_RPC, channel)
   {}
 
 ::grpc::Status PD::Stub::GetMembers(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest& request, ::pdpb::GetMembersResponse* response) {
-  return ::grpc::internal::BlockingUnaryCall< ::pdpb::GetMembersRequest, ::pdpb::GetMembersResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_GetMembers_, context, request, response);
+  return ::grpc::internal::BlockingUnaryCall(channel_.get(), rpcmethod_GetMembers_, context, request, response);
 }
 
-void PD::Stub::async::GetMembers(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest* request, ::pdpb::GetMembersResponse* response, std::function<void(::grpc::Status)> f) {
-  ::grpc::internal::CallbackUnaryCall< ::pdpb::GetMembersRequest, ::pdpb::GetMembersResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_GetMembers_, context, request, response, std::move(f));
+void PD::Stub::experimental_async::GetMembers(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest* request, ::pdpb::GetMembersResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_GetMembers_, context, request, response, std::move(f));
 }
 
-void PD::Stub::async::GetMembers(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest* request, ::pdpb::GetMembersResponse* response, ::grpc::ClientUnaryReactor* reactor) {
-  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_GetMembers_, context, request, response, reactor);
+void PD::Stub::experimental_async::GetMembers(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetMembersResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_GetMembers_, context, request, response, std::move(f));
 }
 
-::grpc::ClientAsyncResponseReader< ::pdpb::GetMembersResponse>* PD::Stub::PrepareAsyncGetMembersRaw(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest& request, ::grpc::CompletionQueue* cq) {
-  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::pdpb::GetMembersResponse, ::pdpb::GetMembersRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_GetMembers_, context, request);
+void PD::Stub::experimental_async::GetMembers(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest* request, ::pdpb::GetMembersResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_GetMembers_, context, request, response, reactor);
+}
+
+void PD::Stub::experimental_async::GetMembers(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetMembersResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_GetMembers_, context, request, response, reactor);
 }
 
 ::grpc::ClientAsyncResponseReader< ::pdpb::GetMembersResponse>* PD::Stub::AsyncGetMembersRaw(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest& request, ::grpc::CompletionQueue* cq) {
-  auto* result =
-    this->PrepareAsyncGetMembersRaw(context, request, cq);
-  result->StartCall();
-  return result;
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::pdpb::GetMembersResponse>::Create(channel_.get(), cq, rpcmethod_GetMembers_, context, request, true);
+}
+
+::grpc::ClientAsyncResponseReader< ::pdpb::GetMembersResponse>* PD::Stub::PrepareAsyncGetMembersRaw(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest& request, ::grpc::CompletionQueue* cq) {
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::pdpb::GetMembersResponse>::Create(channel_.get(), cq, rpcmethod_GetMembers_, context, request, false);
 }
 
 ::grpc::Status PD::Stub::GetRegion(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest& request, ::pdpb::GetRegionResponse* response) {
-  return ::grpc::internal::BlockingUnaryCall< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_GetRegion_, context, request, response);
+  return ::grpc::internal::BlockingUnaryCall(channel_.get(), rpcmethod_GetRegion_, context, request, response);
 }
 
-void PD::Stub::async::GetRegion(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, std::function<void(::grpc::Status)> f) {
-  ::grpc::internal::CallbackUnaryCall< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_GetRegion_, context, request, response, std::move(f));
+void PD::Stub::experimental_async::GetRegion(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_GetRegion_, context, request, response, std::move(f));
 }
 
-void PD::Stub::async::GetRegion(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, ::grpc::ClientUnaryReactor* reactor) {
-  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_GetRegion_, context, request, response, reactor);
+void PD::Stub::experimental_async::GetRegion(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_GetRegion_, context, request, response, std::move(f));
 }
 
-::grpc::ClientAsyncResponseReader< ::pdpb::GetRegionResponse>* PD::Stub::PrepareAsyncGetRegionRaw(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest& request, ::grpc::CompletionQueue* cq) {
-  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::pdpb::GetRegionResponse, ::pdpb::GetRegionRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_GetRegion_, context, request);
+void PD::Stub::experimental_async::GetRegion(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_GetRegion_, context, request, response, reactor);
+}
+
+void PD::Stub::experimental_async::GetRegion(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_GetRegion_, context, request, response, reactor);
 }
 
 ::grpc::ClientAsyncResponseReader< ::pdpb::GetRegionResponse>* PD::Stub::AsyncGetRegionRaw(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest& request, ::grpc::CompletionQueue* cq) {
-  auto* result =
-    this->PrepareAsyncGetRegionRaw(context, request, cq);
-  result->StartCall();
-  return result;
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::pdpb::GetRegionResponse>::Create(channel_.get(), cq, rpcmethod_GetRegion_, context, request, true);
+}
+
+::grpc::ClientAsyncResponseReader< ::pdpb::GetRegionResponse>* PD::Stub::PrepareAsyncGetRegionRaw(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest& request, ::grpc::CompletionQueue* cq) {
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::pdpb::GetRegionResponse>::Create(channel_.get(), cq, rpcmethod_GetRegion_, context, request, false);
 }
 
 ::grpc::Status PD::Stub::GetRegionByID(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest& request, ::pdpb::GetRegionResponse* response) {
-  return ::grpc::internal::BlockingUnaryCall< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_GetRegionByID_, context, request, response);
+  return ::grpc::internal::BlockingUnaryCall(channel_.get(), rpcmethod_GetRegionByID_, context, request, response);
 }
 
-void PD::Stub::async::GetRegionByID(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, std::function<void(::grpc::Status)> f) {
-  ::grpc::internal::CallbackUnaryCall< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_GetRegionByID_, context, request, response, std::move(f));
+void PD::Stub::experimental_async::GetRegionByID(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_GetRegionByID_, context, request, response, std::move(f));
 }
 
-void PD::Stub::async::GetRegionByID(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, ::grpc::ClientUnaryReactor* reactor) {
-  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_GetRegionByID_, context, request, response, reactor);
+void PD::Stub::experimental_async::GetRegionByID(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_GetRegionByID_, context, request, response, std::move(f));
 }
 
-::grpc::ClientAsyncResponseReader< ::pdpb::GetRegionResponse>* PD::Stub::PrepareAsyncGetRegionByIDRaw(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest& request, ::grpc::CompletionQueue* cq) {
-  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::pdpb::GetRegionResponse, ::pdpb::GetRegionRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_GetRegionByID_, context, request);
+void PD::Stub::experimental_async::GetRegionByID(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_GetRegionByID_, context, request, response, reactor);
+}
+
+void PD::Stub::experimental_async::GetRegionByID(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_GetRegionByID_, context, request, response, reactor);
 }
 
 ::grpc::ClientAsyncResponseReader< ::pdpb::GetRegionResponse>* PD::Stub::AsyncGetRegionByIDRaw(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest& request, ::grpc::CompletionQueue* cq) {
-  auto* result =
-    this->PrepareAsyncGetRegionByIDRaw(context, request, cq);
-  result->StartCall();
-  return result;
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::pdpb::GetRegionResponse>::Create(channel_.get(), cq, rpcmethod_GetRegionByID_, context, request, true);
+}
+
+::grpc::ClientAsyncResponseReader< ::pdpb::GetRegionResponse>* PD::Stub::PrepareAsyncGetRegionByIDRaw(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest& request, ::grpc::CompletionQueue* cq) {
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::pdpb::GetRegionResponse>::Create(channel_.get(), cq, rpcmethod_GetRegionByID_, context, request, false);
 }
 
 ::grpc::Status PD::Stub::GetStore(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest& request, ::pdpb::GetStoreResponse* response) {
-  return ::grpc::internal::BlockingUnaryCall< ::pdpb::GetStoreRequest, ::pdpb::GetStoreResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_GetStore_, context, request, response);
+  return ::grpc::internal::BlockingUnaryCall(channel_.get(), rpcmethod_GetStore_, context, request, response);
 }
 
-void PD::Stub::async::GetStore(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest* request, ::pdpb::GetStoreResponse* response, std::function<void(::grpc::Status)> f) {
-  ::grpc::internal::CallbackUnaryCall< ::pdpb::GetStoreRequest, ::pdpb::GetStoreResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_GetStore_, context, request, response, std::move(f));
+void PD::Stub::experimental_async::GetStore(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest* request, ::pdpb::GetStoreResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_GetStore_, context, request, response, std::move(f));
 }
 
-void PD::Stub::async::GetStore(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest* request, ::pdpb::GetStoreResponse* response, ::grpc::ClientUnaryReactor* reactor) {
-  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_GetStore_, context, request, response, reactor);
+void PD::Stub::experimental_async::GetStore(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetStoreResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_GetStore_, context, request, response, std::move(f));
 }
 
-::grpc::ClientAsyncResponseReader< ::pdpb::GetStoreResponse>* PD::Stub::PrepareAsyncGetStoreRaw(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest& request, ::grpc::CompletionQueue* cq) {
-  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::pdpb::GetStoreResponse, ::pdpb::GetStoreRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_GetStore_, context, request);
+void PD::Stub::experimental_async::GetStore(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest* request, ::pdpb::GetStoreResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_GetStore_, context, request, response, reactor);
+}
+
+void PD::Stub::experimental_async::GetStore(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetStoreResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_GetStore_, context, request, response, reactor);
 }
 
 ::grpc::ClientAsyncResponseReader< ::pdpb::GetStoreResponse>* PD::Stub::AsyncGetStoreRaw(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest& request, ::grpc::CompletionQueue* cq) {
-  auto* result =
-    this->PrepareAsyncGetStoreRaw(context, request, cq);
-  result->StartCall();
-  return result;
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::pdpb::GetStoreResponse>::Create(channel_.get(), cq, rpcmethod_GetStore_, context, request, true);
+}
+
+::grpc::ClientAsyncResponseReader< ::pdpb::GetStoreResponse>* PD::Stub::PrepareAsyncGetStoreRaw(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest& request, ::grpc::CompletionQueue* cq) {
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::pdpb::GetStoreResponse>::Create(channel_.get(), cq, rpcmethod_GetStore_, context, request, false);
 }
 
 PD::Service::Service() {
   AddMethod(new ::grpc::internal::RpcServiceMethod(
       PD_method_names[0],
       ::grpc::internal::RpcMethod::NORMAL_RPC,
-      new ::grpc::internal::RpcMethodHandler< PD::Service, ::pdpb::GetMembersRequest, ::pdpb::GetMembersResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+      new ::grpc::internal::RpcMethodHandler< PD::Service, ::pdpb::GetMembersRequest, ::pdpb::GetMembersResponse>(
           [](PD::Service* service,
-             ::grpc::ServerContext* ctx,
+             ::grpc_impl::ServerContext* ctx,
              const ::pdpb::GetMembersRequest* req,
              ::pdpb::GetMembersResponse* resp) {
                return service->GetMembers(ctx, req, resp);
@@ -147,9 +167,9 @@ PD::Service::Service() {
   AddMethod(new ::grpc::internal::RpcServiceMethod(
       PD_method_names[1],
       ::grpc::internal::RpcMethod::NORMAL_RPC,
-      new ::grpc::internal::RpcMethodHandler< PD::Service, ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+      new ::grpc::internal::RpcMethodHandler< PD::Service, ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>(
           [](PD::Service* service,
-             ::grpc::ServerContext* ctx,
+             ::grpc_impl::ServerContext* ctx,
              const ::pdpb::GetRegionRequest* req,
              ::pdpb::GetRegionResponse* resp) {
                return service->GetRegion(ctx, req, resp);
@@ -157,9 +177,9 @@ PD::Service::Service() {
   AddMethod(new ::grpc::internal::RpcServiceMethod(
       PD_method_names[2],
       ::grpc::internal::RpcMethod::NORMAL_RPC,
-      new ::grpc::internal::RpcMethodHandler< PD::Service, ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+      new ::grpc::internal::RpcMethodHandler< PD::Service, ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>(
           [](PD::Service* service,
-             ::grpc::ServerContext* ctx,
+             ::grpc_impl::ServerContext* ctx,
              const ::pdpb::GetRegionRequest* req,
              ::pdpb::GetRegionResponse* resp) {
                return service->GetRegionByID(ctx, req, resp);
@@ -167,9 +187,9 @@ PD::Service::Service() {
   AddMethod(new ::grpc::internal::RpcServiceMethod(
       PD_method_names[3],
       ::grpc::internal::RpcMethod::NORMAL_RPC,
-      new ::grpc::internal::RpcMethodHandler< PD::Service, ::pdpb::GetStoreRequest, ::pdpb::GetStoreResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+      new ::grpc::internal::RpcMethodHandler< PD::Service, ::pdpb::GetStoreRequest, ::pdpb::GetStoreResponse>(
           [](PD::Service* service,
-             ::grpc::ServerContext* ctx,
+             ::grpc_impl::ServerContext* ctx,
              const ::pdpb::GetStoreRequest* req,
              ::pdpb::GetStoreResponse* resp) {
                return service->GetStore(ctx, req, resp);

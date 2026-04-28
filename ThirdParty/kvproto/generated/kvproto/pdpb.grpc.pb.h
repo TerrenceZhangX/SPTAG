@@ -11,23 +11,24 @@
 #include "pdpb.pb.h"
 
 #include <functional>
-#include <grpcpp/generic/async_generic_service.h>
-#include <grpcpp/support/async_stream.h>
-#include <grpcpp/support/async_unary_call.h>
-#include <grpcpp/support/client_callback.h>
-#include <grpcpp/client_context.h>
-#include <grpcpp/completion_queue.h>
-#include <grpcpp/support/message_allocator.h>
-#include <grpcpp/support/method_handler.h>
+#include <grpc/impl/codegen/port_platform.h>
+#include <grpcpp/impl/codegen/async_generic_service.h>
+#include <grpcpp/impl/codegen/async_stream.h>
+#include <grpcpp/impl/codegen/async_unary_call.h>
+#include <grpcpp/impl/codegen/client_callback.h>
+#include <grpcpp/impl/codegen/client_context.h>
+#include <grpcpp/impl/codegen/completion_queue.h>
+#include <grpcpp/impl/codegen/message_allocator.h>
+#include <grpcpp/impl/codegen/method_handler.h>
 #include <grpcpp/impl/codegen/proto_utils.h>
-#include <grpcpp/impl/rpc_method.h>
-#include <grpcpp/support/server_callback.h>
+#include <grpcpp/impl/codegen/rpc_method.h>
+#include <grpcpp/impl/codegen/server_callback.h>
 #include <grpcpp/impl/codegen/server_callback_handlers.h>
-#include <grpcpp/server_context.h>
-#include <grpcpp/impl/service_type.h>
+#include <grpcpp/impl/codegen/server_context.h>
+#include <grpcpp/impl/codegen/service_type.h>
 #include <grpcpp/impl/codegen/status.h>
-#include <grpcpp/support/stub_options.h>
-#include <grpcpp/support/sync_stream.h>
+#include <grpcpp/impl/codegen/stub_options.h>
+#include <grpcpp/impl/codegen/sync_stream.h>
 
 namespace pdpb {
 
@@ -68,22 +69,66 @@ class PD final {
     std::unique_ptr< ::grpc::ClientAsyncResponseReaderInterface< ::pdpb::GetStoreResponse>> PrepareAsyncGetStore(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest& request, ::grpc::CompletionQueue* cq) {
       return std::unique_ptr< ::grpc::ClientAsyncResponseReaderInterface< ::pdpb::GetStoreResponse>>(PrepareAsyncGetStoreRaw(context, request, cq));
     }
-    class async_interface {
+    class experimental_async_interface {
      public:
-      virtual ~async_interface() {}
+      virtual ~experimental_async_interface() {}
       virtual void GetMembers(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest* request, ::pdpb::GetMembersResponse* response, std::function<void(::grpc::Status)>) = 0;
+      virtual void GetMembers(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetMembersResponse* response, std::function<void(::grpc::Status)>) = 0;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       virtual void GetMembers(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest* request, ::pdpb::GetMembersResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void GetMembers(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest* request, ::pdpb::GetMembersResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      virtual void GetMembers(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetMembersResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void GetMembers(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetMembersResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
       virtual void GetRegion(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, std::function<void(::grpc::Status)>) = 0;
+      virtual void GetRegion(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, std::function<void(::grpc::Status)>) = 0;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       virtual void GetRegion(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void GetRegion(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      virtual void GetRegion(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void GetRegion(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
       virtual void GetRegionByID(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, std::function<void(::grpc::Status)>) = 0;
+      virtual void GetRegionByID(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, std::function<void(::grpc::Status)>) = 0;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       virtual void GetRegionByID(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void GetRegionByID(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      virtual void GetRegionByID(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void GetRegionByID(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
       virtual void GetStore(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest* request, ::pdpb::GetStoreResponse* response, std::function<void(::grpc::Status)>) = 0;
+      virtual void GetStore(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetStoreResponse* response, std::function<void(::grpc::Status)>) = 0;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       virtual void GetStore(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest* request, ::pdpb::GetStoreResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void GetStore(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest* request, ::pdpb::GetStoreResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      virtual void GetStore(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetStoreResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
+      #else
+      virtual void GetStore(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetStoreResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) = 0;
+      #endif
     };
-    typedef class async_interface experimental_async_interface;
-    virtual class async_interface* async() { return nullptr; }
-    class async_interface* experimental_async() { return async(); }
-   private:
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+    typedef class experimental_async_interface async_interface;
+    #endif
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+    async_interface* async() { return experimental_async(); }
+    #endif
+    virtual class experimental_async_interface* experimental_async() { return nullptr; }
+  private:
     virtual ::grpc::ClientAsyncResponseReaderInterface< ::pdpb::GetMembersResponse>* AsyncGetMembersRaw(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest& request, ::grpc::CompletionQueue* cq) = 0;
     virtual ::grpc::ClientAsyncResponseReaderInterface< ::pdpb::GetMembersResponse>* PrepareAsyncGetMembersRaw(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest& request, ::grpc::CompletionQueue* cq) = 0;
     virtual ::grpc::ClientAsyncResponseReaderInterface< ::pdpb::GetRegionResponse>* AsyncGetRegionRaw(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest& request, ::grpc::CompletionQueue* cq) = 0;
@@ -95,7 +140,7 @@ class PD final {
   };
   class Stub final : public StubInterface {
    public:
-    Stub(const std::shared_ptr< ::grpc::ChannelInterface>& channel, const ::grpc::StubOptions& options = ::grpc::StubOptions());
+    Stub(const std::shared_ptr< ::grpc::ChannelInterface>& channel);
     ::grpc::Status GetMembers(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest& request, ::pdpb::GetMembersResponse* response) override;
     std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::pdpb::GetMembersResponse>> AsyncGetMembers(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest& request, ::grpc::CompletionQueue* cq) {
       return std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::pdpb::GetMembersResponse>>(AsyncGetMembersRaw(context, request, cq));
@@ -124,28 +169,68 @@ class PD final {
     std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::pdpb::GetStoreResponse>> PrepareAsyncGetStore(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest& request, ::grpc::CompletionQueue* cq) {
       return std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::pdpb::GetStoreResponse>>(PrepareAsyncGetStoreRaw(context, request, cq));
     }
-    class async final :
-      public StubInterface::async_interface {
+    class experimental_async final :
+      public StubInterface::experimental_async_interface {
      public:
       void GetMembers(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest* request, ::pdpb::GetMembersResponse* response, std::function<void(::grpc::Status)>) override;
+      void GetMembers(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetMembersResponse* response, std::function<void(::grpc::Status)>) override;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       void GetMembers(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest* request, ::pdpb::GetMembersResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void GetMembers(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest* request, ::pdpb::GetMembersResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      void GetMembers(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetMembersResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void GetMembers(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetMembersResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
       void GetRegion(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, std::function<void(::grpc::Status)>) override;
+      void GetRegion(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, std::function<void(::grpc::Status)>) override;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       void GetRegion(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void GetRegion(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      void GetRegion(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void GetRegion(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
       void GetRegionByID(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, std::function<void(::grpc::Status)>) override;
+      void GetRegionByID(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, std::function<void(::grpc::Status)>) override;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       void GetRegionByID(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void GetRegionByID(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      void GetRegionByID(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void GetRegionByID(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetRegionResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
       void GetStore(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest* request, ::pdpb::GetStoreResponse* response, std::function<void(::grpc::Status)>) override;
+      void GetStore(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetStoreResponse* response, std::function<void(::grpc::Status)>) override;
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       void GetStore(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest* request, ::pdpb::GetStoreResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void GetStore(::grpc::ClientContext* context, const ::pdpb::GetStoreRequest* request, ::pdpb::GetStoreResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
+      #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      void GetStore(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetStoreResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
+      #else
+      void GetStore(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::pdpb::GetStoreResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) override;
+      #endif
      private:
       friend class Stub;
-      explicit async(Stub* stub): stub_(stub) { }
+      explicit experimental_async(Stub* stub): stub_(stub) { }
       Stub* stub() { return stub_; }
       Stub* stub_;
     };
-    class async* async() override { return &async_stub_; }
+    class experimental_async_interface* experimental_async() override { return &async_stub_; }
 
    private:
     std::shared_ptr< ::grpc::ChannelInterface> channel_;
-    class async async_stub_{this};
+    class experimental_async async_stub_{this};
     ::grpc::ClientAsyncResponseReader< ::pdpb::GetMembersResponse>* AsyncGetMembersRaw(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest& request, ::grpc::CompletionQueue* cq) override;
     ::grpc::ClientAsyncResponseReader< ::pdpb::GetMembersResponse>* PrepareAsyncGetMembersRaw(::grpc::ClientContext* context, const ::pdpb::GetMembersRequest& request, ::grpc::CompletionQueue* cq) override;
     ::grpc::ClientAsyncResponseReader< ::pdpb::GetRegionResponse>* AsyncGetRegionRaw(::grpc::ClientContext* context, const ::pdpb::GetRegionRequest& request, ::grpc::CompletionQueue* cq) override;
@@ -252,22 +337,36 @@ class PD final {
   };
   typedef WithAsyncMethod_GetMembers<WithAsyncMethod_GetRegion<WithAsyncMethod_GetRegionByID<WithAsyncMethod_GetStore<Service > > > > AsyncService;
   template <class BaseClass>
-  class WithCallbackMethod_GetMembers : public BaseClass {
+  class ExperimentalWithCallbackMethod_GetMembers : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithCallbackMethod_GetMembers() {
-      ::grpc::Service::MarkMethodCallback(0,
-          new ::grpc::internal::CallbackUnaryHandler< ::pdpb::GetMembersRequest, ::pdpb::GetMembersResponse>(
+    ExperimentalWithCallbackMethod_GetMembers() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodCallback(0,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::pdpb::GetMembersRequest, ::pdpb::GetMembersResponse>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::pdpb::GetMembersRequest* request, ::pdpb::GetMembersResponse* response) { return this->GetMembers(context, request, response); }));}
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::pdpb::GetMembersRequest* request, ::pdpb::GetMembersResponse* response) { return this->GetMembers(context, request, response); }));}
     void SetMessageAllocatorFor_GetMembers(
-        ::grpc::MessageAllocator< ::pdpb::GetMembersRequest, ::pdpb::GetMembersResponse>* allocator) {
+        ::grpc::experimental::MessageAllocator< ::pdpb::GetMembersRequest, ::pdpb::GetMembersResponse>* allocator) {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(0);
-      static_cast<::grpc::internal::CallbackUnaryHandler< ::pdpb::GetMembersRequest, ::pdpb::GetMembersResponse>*>(handler)
+    #else
+      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::experimental().GetHandler(0);
+    #endif
+      static_cast<::grpc_impl::internal::CallbackUnaryHandler< ::pdpb::GetMembersRequest, ::pdpb::GetMembersResponse>*>(handler)
               ->SetMessageAllocator(allocator);
     }
-    ~WithCallbackMethod_GetMembers() override {
+    ~ExperimentalWithCallbackMethod_GetMembers() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -275,26 +374,46 @@ class PD final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* GetMembers(
-      ::grpc::CallbackServerContext* /*context*/, const ::pdpb::GetMembersRequest* /*request*/, ::pdpb::GetMembersResponse* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::pdpb::GetMembersRequest* /*request*/, ::pdpb::GetMembersResponse* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* GetMembers(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::pdpb::GetMembersRequest* /*request*/, ::pdpb::GetMembersResponse* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithCallbackMethod_GetRegion : public BaseClass {
+  class ExperimentalWithCallbackMethod_GetRegion : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithCallbackMethod_GetRegion() {
-      ::grpc::Service::MarkMethodCallback(1,
-          new ::grpc::internal::CallbackUnaryHandler< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>(
+    ExperimentalWithCallbackMethod_GetRegion() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodCallback(1,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response) { return this->GetRegion(context, request, response); }));}
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response) { return this->GetRegion(context, request, response); }));}
     void SetMessageAllocatorFor_GetRegion(
-        ::grpc::MessageAllocator< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>* allocator) {
+        ::grpc::experimental::MessageAllocator< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>* allocator) {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(1);
-      static_cast<::grpc::internal::CallbackUnaryHandler< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>*>(handler)
+    #else
+      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::experimental().GetHandler(1);
+    #endif
+      static_cast<::grpc_impl::internal::CallbackUnaryHandler< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>*>(handler)
               ->SetMessageAllocator(allocator);
     }
-    ~WithCallbackMethod_GetRegion() override {
+    ~ExperimentalWithCallbackMethod_GetRegion() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -302,26 +421,46 @@ class PD final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* GetRegion(
-      ::grpc::CallbackServerContext* /*context*/, const ::pdpb::GetRegionRequest* /*request*/, ::pdpb::GetRegionResponse* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::pdpb::GetRegionRequest* /*request*/, ::pdpb::GetRegionResponse* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* GetRegion(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::pdpb::GetRegionRequest* /*request*/, ::pdpb::GetRegionResponse* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithCallbackMethod_GetRegionByID : public BaseClass {
+  class ExperimentalWithCallbackMethod_GetRegionByID : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithCallbackMethod_GetRegionByID() {
-      ::grpc::Service::MarkMethodCallback(2,
-          new ::grpc::internal::CallbackUnaryHandler< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>(
+    ExperimentalWithCallbackMethod_GetRegionByID() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodCallback(2,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response) { return this->GetRegionByID(context, request, response); }));}
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::pdpb::GetRegionRequest* request, ::pdpb::GetRegionResponse* response) { return this->GetRegionByID(context, request, response); }));}
     void SetMessageAllocatorFor_GetRegionByID(
-        ::grpc::MessageAllocator< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>* allocator) {
+        ::grpc::experimental::MessageAllocator< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>* allocator) {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(2);
-      static_cast<::grpc::internal::CallbackUnaryHandler< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>*>(handler)
+    #else
+      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::experimental().GetHandler(2);
+    #endif
+      static_cast<::grpc_impl::internal::CallbackUnaryHandler< ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>*>(handler)
               ->SetMessageAllocator(allocator);
     }
-    ~WithCallbackMethod_GetRegionByID() override {
+    ~ExperimentalWithCallbackMethod_GetRegionByID() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -329,26 +468,46 @@ class PD final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* GetRegionByID(
-      ::grpc::CallbackServerContext* /*context*/, const ::pdpb::GetRegionRequest* /*request*/, ::pdpb::GetRegionResponse* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::pdpb::GetRegionRequest* /*request*/, ::pdpb::GetRegionResponse* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* GetRegionByID(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::pdpb::GetRegionRequest* /*request*/, ::pdpb::GetRegionResponse* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithCallbackMethod_GetStore : public BaseClass {
+  class ExperimentalWithCallbackMethod_GetStore : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithCallbackMethod_GetStore() {
-      ::grpc::Service::MarkMethodCallback(3,
-          new ::grpc::internal::CallbackUnaryHandler< ::pdpb::GetStoreRequest, ::pdpb::GetStoreResponse>(
+    ExperimentalWithCallbackMethod_GetStore() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodCallback(3,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::pdpb::GetStoreRequest, ::pdpb::GetStoreResponse>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::pdpb::GetStoreRequest* request, ::pdpb::GetStoreResponse* response) { return this->GetStore(context, request, response); }));}
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::pdpb::GetStoreRequest* request, ::pdpb::GetStoreResponse* response) { return this->GetStore(context, request, response); }));}
     void SetMessageAllocatorFor_GetStore(
-        ::grpc::MessageAllocator< ::pdpb::GetStoreRequest, ::pdpb::GetStoreResponse>* allocator) {
+        ::grpc::experimental::MessageAllocator< ::pdpb::GetStoreRequest, ::pdpb::GetStoreResponse>* allocator) {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
       ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(3);
-      static_cast<::grpc::internal::CallbackUnaryHandler< ::pdpb::GetStoreRequest, ::pdpb::GetStoreResponse>*>(handler)
+    #else
+      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::experimental().GetHandler(3);
+    #endif
+      static_cast<::grpc_impl::internal::CallbackUnaryHandler< ::pdpb::GetStoreRequest, ::pdpb::GetStoreResponse>*>(handler)
               ->SetMessageAllocator(allocator);
     }
-    ~WithCallbackMethod_GetStore() override {
+    ~ExperimentalWithCallbackMethod_GetStore() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -356,11 +515,20 @@ class PD final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* GetStore(
-      ::grpc::CallbackServerContext* /*context*/, const ::pdpb::GetStoreRequest* /*request*/, ::pdpb::GetStoreResponse* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::pdpb::GetStoreRequest* /*request*/, ::pdpb::GetStoreResponse* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* GetStore(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::pdpb::GetStoreRequest* /*request*/, ::pdpb::GetStoreResponse* /*response*/)
+    #endif
+      { return nullptr; }
   };
-  typedef WithCallbackMethod_GetMembers<WithCallbackMethod_GetRegion<WithCallbackMethod_GetRegionByID<WithCallbackMethod_GetStore<Service > > > > CallbackService;
-  typedef CallbackService ExperimentalCallbackService;
+  #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+  typedef ExperimentalWithCallbackMethod_GetMembers<ExperimentalWithCallbackMethod_GetRegion<ExperimentalWithCallbackMethod_GetRegionByID<ExperimentalWithCallbackMethod_GetStore<Service > > > > CallbackService;
+  #endif
+
+  typedef ExperimentalWithCallbackMethod_GetMembers<ExperimentalWithCallbackMethod_GetRegion<ExperimentalWithCallbackMethod_GetRegionByID<ExperimentalWithCallbackMethod_GetStore<Service > > > > ExperimentalCallbackService;
   template <class BaseClass>
   class WithGenericMethod_GetMembers : public BaseClass {
    private:
@@ -510,17 +678,27 @@ class PD final {
     }
   };
   template <class BaseClass>
-  class WithRawCallbackMethod_GetMembers : public BaseClass {
+  class ExperimentalWithRawCallbackMethod_GetMembers : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithRawCallbackMethod_GetMembers() {
-      ::grpc::Service::MarkMethodRawCallback(0,
-          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+    ExperimentalWithRawCallbackMethod_GetMembers() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodRawCallback(0,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->GetMembers(context, request, response); }));
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->GetMembers(context, request, response); }));
     }
-    ~WithRawCallbackMethod_GetMembers() override {
+    ~ExperimentalWithRawCallbackMethod_GetMembers() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -528,21 +706,37 @@ class PD final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* GetMembers(
-      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* GetMembers(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithRawCallbackMethod_GetRegion : public BaseClass {
+  class ExperimentalWithRawCallbackMethod_GetRegion : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithRawCallbackMethod_GetRegion() {
-      ::grpc::Service::MarkMethodRawCallback(1,
-          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+    ExperimentalWithRawCallbackMethod_GetRegion() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodRawCallback(1,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->GetRegion(context, request, response); }));
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->GetRegion(context, request, response); }));
     }
-    ~WithRawCallbackMethod_GetRegion() override {
+    ~ExperimentalWithRawCallbackMethod_GetRegion() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -550,21 +744,37 @@ class PD final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* GetRegion(
-      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* GetRegion(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithRawCallbackMethod_GetRegionByID : public BaseClass {
+  class ExperimentalWithRawCallbackMethod_GetRegionByID : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithRawCallbackMethod_GetRegionByID() {
-      ::grpc::Service::MarkMethodRawCallback(2,
-          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+    ExperimentalWithRawCallbackMethod_GetRegionByID() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodRawCallback(2,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->GetRegionByID(context, request, response); }));
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->GetRegionByID(context, request, response); }));
     }
-    ~WithRawCallbackMethod_GetRegionByID() override {
+    ~ExperimentalWithRawCallbackMethod_GetRegionByID() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -572,21 +782,37 @@ class PD final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* GetRegionByID(
-      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* GetRegionByID(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
-  class WithRawCallbackMethod_GetStore : public BaseClass {
+  class ExperimentalWithRawCallbackMethod_GetStore : public BaseClass {
    private:
     void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
    public:
-    WithRawCallbackMethod_GetStore() {
-      ::grpc::Service::MarkMethodRawCallback(3,
-          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+    ExperimentalWithRawCallbackMethod_GetStore() {
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+      ::grpc::Service::
+    #else
+      ::grpc::Service::experimental().
+    #endif
+        MarkMethodRawCallback(3,
+          new ::grpc_impl::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
             [this](
-                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->GetStore(context, request, response); }));
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
+                   ::grpc::CallbackServerContext*
+    #else
+                   ::grpc::experimental::CallbackServerContext*
+    #endif
+                     context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->GetStore(context, request, response); }));
     }
-    ~WithRawCallbackMethod_GetStore() override {
+    ~ExperimentalWithRawCallbackMethod_GetStore() override {
       BaseClassMustBeDerivedFromService(this);
     }
     // disable synchronous version of this method
@@ -594,8 +820,14 @@ class PD final {
       abort();
       return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
     }
+    #ifdef GRPC_CALLBACK_API_NONEXPERIMENTAL
     virtual ::grpc::ServerUnaryReactor* GetStore(
-      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
+      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #else
+    virtual ::grpc::experimental::ServerUnaryReactor* GetStore(
+      ::grpc::experimental::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)
+    #endif
+      { return nullptr; }
   };
   template <class BaseClass>
   class WithStreamedUnaryMethod_GetMembers : public BaseClass {
@@ -606,8 +838,8 @@ class PD final {
       ::grpc::Service::MarkMethodStreamed(0,
         new ::grpc::internal::StreamedUnaryHandler<
           ::pdpb::GetMembersRequest, ::pdpb::GetMembersResponse>(
-            [this](::grpc::ServerContext* context,
-                   ::grpc::ServerUnaryStreamer<
+            [this](::grpc_impl::ServerContext* context,
+                   ::grpc_impl::ServerUnaryStreamer<
                      ::pdpb::GetMembersRequest, ::pdpb::GetMembersResponse>* streamer) {
                        return this->StreamedGetMembers(context,
                          streamer);
@@ -633,8 +865,8 @@ class PD final {
       ::grpc::Service::MarkMethodStreamed(1,
         new ::grpc::internal::StreamedUnaryHandler<
           ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>(
-            [this](::grpc::ServerContext* context,
-                   ::grpc::ServerUnaryStreamer<
+            [this](::grpc_impl::ServerContext* context,
+                   ::grpc_impl::ServerUnaryStreamer<
                      ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>* streamer) {
                        return this->StreamedGetRegion(context,
                          streamer);
@@ -660,8 +892,8 @@ class PD final {
       ::grpc::Service::MarkMethodStreamed(2,
         new ::grpc::internal::StreamedUnaryHandler<
           ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>(
-            [this](::grpc::ServerContext* context,
-                   ::grpc::ServerUnaryStreamer<
+            [this](::grpc_impl::ServerContext* context,
+                   ::grpc_impl::ServerUnaryStreamer<
                      ::pdpb::GetRegionRequest, ::pdpb::GetRegionResponse>* streamer) {
                        return this->StreamedGetRegionByID(context,
                          streamer);
@@ -687,8 +919,8 @@ class PD final {
       ::grpc::Service::MarkMethodStreamed(3,
         new ::grpc::internal::StreamedUnaryHandler<
           ::pdpb::GetStoreRequest, ::pdpb::GetStoreResponse>(
-            [this](::grpc::ServerContext* context,
-                   ::grpc::ServerUnaryStreamer<
+            [this](::grpc_impl::ServerContext* context,
+                   ::grpc_impl::ServerUnaryStreamer<
                      ::pdpb::GetStoreRequest, ::pdpb::GetStoreResponse>* streamer) {
                        return this->StreamedGetStore(context,
                          streamer);

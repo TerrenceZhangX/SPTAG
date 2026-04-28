@@ -15,6 +15,19 @@
 #                      build phase, then restart TiKV with nocache config and drop all
 #                      OS caches before the search/insert phase. Useful for large scales
 #                      (e.g. 100M) where building under nocache is impractical.
+#   SKIP_TIKV_SWAP=1   (only with BUILD_WITH_CACHE=1) Skip the TiKV container restart.
+#                      Drop OS caches and rely on VersionCache=0 INI overrides for "nocache"
+#                      semantics. Avoids docker rm -f corruption that has destroyed recall
+#                      at 100M scale; TiKV block cache stays warm but contains mostly recent
+#                      build writes (random search reads largely miss it anyway).
+#   SKIP_SAVE_LOAD=1   (only with NOCACHE=1) Bypass the post-build SaveIndex / per-batch
+#                      LoadIndex / Clone / SaveIndex cycles. For 1-node, build+search+insert
+#                      run in a single SPTAGTest process, dropping OS pagecache after build.
+#                      For 2-node, the build phase skips the broken final SaveIndex (relies
+#                      on the index files written during BuildLargeIndex). Required at 100M
+#                      scale where SaveIndex's "wait for all background jobs to finish" loop
+#                      never terminates and risks a gRPC SEGFAULT after several hours.
+#                      VersionCache cannot be reset mid-process so it stays warm from build.
 #   SKIP_HEAD_BUILD=1  Reuse existing HeadIndex if present (RebuildSSDOnly). Falls back to
 #                      full build if HeadIndex is missing.
 #
@@ -388,7 +401,8 @@ tikv_switch_to_nocache() {
             remote_exec "$host" "docker run --rm -v $DATA_DIR/tikv-data/conf:/conf -v ${SPTAG_DIR}/tikv.toml:/src/tikv.toml:ro alpine cp /src/tikv.toml /conf/tikv.toml"
         fi
 
-        remote_exec "$host" "docker rm -f sptag-tikv-$i 2>/dev/null; \
+        remote_exec "$host" "docker stop -t 120 sptag-tikv-$i 2>/dev/null; \
+            docker rm -f sptag-tikv-$i 2>/dev/null; \
             docker run -d --name sptag-tikv-$i --net host \
             --ulimit nofile=1048576:1048576 \
             -v $DATA_DIR/tikv-data/tikv-$i:/data \
@@ -690,6 +704,26 @@ cmd_run() {
                 echo ""
                 echo "--- Phase 1: Build only (NOCACHE) ---"
             fi
+
+            if [[ "${SKIP_SAVE_LOAD:-0}" == "1" ]]; then
+                # Single-process flow: build + search + insert in one SPTAGTest invocation.
+                # SkipSaveLoadCycles=true bypasses the broken post-build SaveIndex and per-batch
+                # Load/Clone/Save. SPTAGTest itself drops OS pagecache after build, before query.
+                echo "[SKIP_SAVE_LOAD=1] running build + search + insert in a single SPTAGTest process"
+                local SINGLE_INI
+                SINGLE_INI=$(generate_ini "$SCALE" 1 "${BUILD_MODE_OVERRIDES[@]}" \
+                    "SkipSaveLoadCycles=true" "${BUILD_VERSIONCACHE_OVERRIDES[@]}") || exit 1
+
+                BENCHMARK_CONFIG="$SINGLE_INI" \
+                BENCHMARK_OUTPUT="output_${SCALE}_1node.json" \
+                    "$BINARY" --run_test=SPFreshTest/BenchmarkFromConfig \
+                    2>&1 | tee "$LOGDIR/benchmark_${SCALE}_1node_driver.log"
+
+                echo "Done: $(date)"
+                tikv_stop 1
+                return 0
+            fi
+
             local BUILD_INI
             BUILD_INI=$(generate_ini "$SCALE" 1 "${BUILD_MODE_OVERRIDES[@]}" "BuildOnly=true" "${BUILD_VERSIONCACHE_OVERRIDES[@]}") || exit 1
 
@@ -700,10 +734,12 @@ cmd_run() {
 
             echo "Build done: $(date)"
 
-            if [[ "${BUILD_WITH_CACHE:-0}" == "1" ]]; then
+            if [[ "${BUILD_WITH_CACHE:-0}" == "1" && "${SKIP_TIKV_SWAP:-0}" != "1" ]]; then
                 echo ""
                 echo "--- Phase 1.4: Switch TiKV to nocache config ---"
                 tikv_switch_to_nocache 1
+            elif [[ "${SKIP_TIKV_SWAP:-0}" == "1" ]]; then
+                echo "[SKIP_TIKV_SWAP=1] keeping TiKV containers running; relying on drop_caches + VersionCache=0"
             fi
 
             echo ""
@@ -771,7 +807,18 @@ cmd_run() {
         fi
         mkdir -p "$DATA_DIR/proidx_${SCALE}_${NODE_COUNT}node"
 
-        BUILD_INI=$(generate_ini "$SCALE" "$NODE_COUNT" "${BUILD_MODE_OVERRIDES[@]}" "BuildOnly=true" "${BUILD_NOCACHE_OVERRIDES[@]}") || exit 1
+        local SKIP_SAVE_LOAD_OVERRIDES=()
+        if [[ "${SKIP_SAVE_LOAD:-0}" == "1" ]]; then
+            # In multi-node, the build phase still needs to persist files to disk so
+            # workers can LoadIndex them. SkipSaveLoadCycles=true skips ONLY the redundant
+            # post-build final SaveIndex (which truncates SPTAGHeadVectorIDs.bin and then
+            # blocks forever in the SaveIndexData drain at 100M scale). Files written by
+            # BuildLargeIndex during BuildHead remain valid on disk for the run phase.
+            SKIP_SAVE_LOAD_OVERRIDES=("SkipSaveLoadCycles=true")
+            echo "[SKIP_SAVE_LOAD=1] build phase will skip post-build SaveIndex"
+        fi
+
+        BUILD_INI=$(generate_ini "$SCALE" "$NODE_COUNT" "${BUILD_MODE_OVERRIDES[@]}" "BuildOnly=true" "${BUILD_NOCACHE_OVERRIDES[@]}" "${SKIP_SAVE_LOAD_OVERRIDES[@]}") || exit 1
 
         BENCHMARK_CONFIG="$BUILD_INI" \
         BENCHMARK_OUTPUT="output_${SCALE}_${NODE_COUNT}node_build.json" \
@@ -800,9 +847,11 @@ cmd_run() {
 
         # Drop caches if NOCACHE mode
         if [[ "${NOCACHE:-0}" == "1" ]]; then
-            if [[ "${BUILD_WITH_CACHE:-0}" == "1" ]]; then
+            if [[ "${BUILD_WITH_CACHE:-0}" == "1" && "${SKIP_TIKV_SWAP:-0}" != "1" ]]; then
                 echo "--- Phase 2.4: Switch TiKV to nocache config ---"
                 tikv_switch_to_nocache "$NODE_COUNT"
+            elif [[ "${SKIP_TIKV_SWAP:-0}" == "1" ]]; then
+                echo "[SKIP_TIKV_SWAP=1] keeping TiKV containers running; relying on drop_caches + VersionCache=0"
             fi
             echo "--- Phase 2.5: Drop all caches (NOCACHE) ---"
             drop_all_caches "$NODE_COUNT"

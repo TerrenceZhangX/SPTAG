@@ -6,19 +6,19 @@
 #include "tikvpb.grpc.pb.h"
 
 #include <functional>
-#include <grpcpp/support/async_stream.h>
-#include <grpcpp/support/async_unary_call.h>
-#include <grpcpp/impl/channel_interface.h>
-#include <grpcpp/impl/client_unary_call.h>
-#include <grpcpp/support/client_callback.h>
-#include <grpcpp/support/message_allocator.h>
-#include <grpcpp/support/method_handler.h>
-#include <grpcpp/impl/rpc_service_method.h>
-#include <grpcpp/support/server_callback.h>
+#include <grpcpp/impl/codegen/async_stream.h>
+#include <grpcpp/impl/codegen/async_unary_call.h>
+#include <grpcpp/impl/codegen/channel_interface.h>
+#include <grpcpp/impl/codegen/client_unary_call.h>
+#include <grpcpp/impl/codegen/client_callback.h>
+#include <grpcpp/impl/codegen/message_allocator.h>
+#include <grpcpp/impl/codegen/method_handler.h>
+#include <grpcpp/impl/codegen/rpc_service_method.h>
+#include <grpcpp/impl/codegen/server_callback.h>
 #include <grpcpp/impl/codegen/server_callback_handlers.h>
-#include <grpcpp/server_context.h>
-#include <grpcpp/impl/service_type.h>
-#include <grpcpp/support/sync_stream.h>
+#include <grpcpp/impl/codegen/server_context.h>
+#include <grpcpp/impl/codegen/service_type.h>
+#include <grpcpp/impl/codegen/sync_stream.h>
 namespace tikvpb {
 
 static const char* Tikv_method_names[] = {
@@ -35,236 +35,281 @@ static const char* Tikv_method_names[] = {
 
 std::unique_ptr< Tikv::Stub> Tikv::NewStub(const std::shared_ptr< ::grpc::ChannelInterface>& channel, const ::grpc::StubOptions& options) {
   (void)options;
-  std::unique_ptr< Tikv::Stub> stub(new Tikv::Stub(channel, options));
+  std::unique_ptr< Tikv::Stub> stub(new Tikv::Stub(channel));
   return stub;
 }
 
-Tikv::Stub::Stub(const std::shared_ptr< ::grpc::ChannelInterface>& channel, const ::grpc::StubOptions& options)
-  : channel_(channel), rpcmethod_RawGet_(Tikv_method_names[0], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
-  , rpcmethod_RawBatchGet_(Tikv_method_names[1], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
-  , rpcmethod_RawPut_(Tikv_method_names[2], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
-  , rpcmethod_RawBatchPut_(Tikv_method_names[3], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
-  , rpcmethod_RawDelete_(Tikv_method_names[4], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
-  , rpcmethod_RawBatchDelete_(Tikv_method_names[5], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
-  , rpcmethod_RawDeleteRange_(Tikv_method_names[6], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
-  , rpcmethod_RawScan_(Tikv_method_names[7], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
-  , rpcmethod_RawCoprocessor_(Tikv_method_names[8], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
+Tikv::Stub::Stub(const std::shared_ptr< ::grpc::ChannelInterface>& channel)
+  : channel_(channel), rpcmethod_RawGet_(Tikv_method_names[0], ::grpc::internal::RpcMethod::NORMAL_RPC, channel)
+  , rpcmethod_RawBatchGet_(Tikv_method_names[1], ::grpc::internal::RpcMethod::NORMAL_RPC, channel)
+  , rpcmethod_RawPut_(Tikv_method_names[2], ::grpc::internal::RpcMethod::NORMAL_RPC, channel)
+  , rpcmethod_RawBatchPut_(Tikv_method_names[3], ::grpc::internal::RpcMethod::NORMAL_RPC, channel)
+  , rpcmethod_RawDelete_(Tikv_method_names[4], ::grpc::internal::RpcMethod::NORMAL_RPC, channel)
+  , rpcmethod_RawBatchDelete_(Tikv_method_names[5], ::grpc::internal::RpcMethod::NORMAL_RPC, channel)
+  , rpcmethod_RawDeleteRange_(Tikv_method_names[6], ::grpc::internal::RpcMethod::NORMAL_RPC, channel)
+  , rpcmethod_RawScan_(Tikv_method_names[7], ::grpc::internal::RpcMethod::NORMAL_RPC, channel)
+  , rpcmethod_RawCoprocessor_(Tikv_method_names[8], ::grpc::internal::RpcMethod::NORMAL_RPC, channel)
   {}
 
 ::grpc::Status Tikv::Stub::RawGet(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest& request, ::kvrpcpb::RawGetResponse* response) {
-  return ::grpc::internal::BlockingUnaryCall< ::kvrpcpb::RawGetRequest, ::kvrpcpb::RawGetResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_RawGet_, context, request, response);
+  return ::grpc::internal::BlockingUnaryCall(channel_.get(), rpcmethod_RawGet_, context, request, response);
 }
 
-void Tikv::Stub::async::RawGet(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest* request, ::kvrpcpb::RawGetResponse* response, std::function<void(::grpc::Status)> f) {
-  ::grpc::internal::CallbackUnaryCall< ::kvrpcpb::RawGetRequest, ::kvrpcpb::RawGetResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawGet_, context, request, response, std::move(f));
+void Tikv::Stub::experimental_async::RawGet(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest* request, ::kvrpcpb::RawGetResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawGet_, context, request, response, std::move(f));
 }
 
-void Tikv::Stub::async::RawGet(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest* request, ::kvrpcpb::RawGetResponse* response, ::grpc::ClientUnaryReactor* reactor) {
-  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawGet_, context, request, response, reactor);
+void Tikv::Stub::experimental_async::RawGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawGetResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawGet_, context, request, response, std::move(f));
 }
 
-::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawGetResponse>* Tikv::Stub::PrepareAsyncRawGetRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest& request, ::grpc::CompletionQueue* cq) {
-  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::kvrpcpb::RawGetResponse, ::kvrpcpb::RawGetRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_RawGet_, context, request);
+void Tikv::Stub::experimental_async::RawGet(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest* request, ::kvrpcpb::RawGetResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawGet_, context, request, response, reactor);
+}
+
+void Tikv::Stub::experimental_async::RawGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawGetResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawGet_, context, request, response, reactor);
 }
 
 ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawGetResponse>* Tikv::Stub::AsyncRawGetRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest& request, ::grpc::CompletionQueue* cq) {
-  auto* result =
-    this->PrepareAsyncRawGetRaw(context, request, cq);
-  result->StartCall();
-  return result;
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawGetResponse>::Create(channel_.get(), cq, rpcmethod_RawGet_, context, request, true);
+}
+
+::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawGetResponse>* Tikv::Stub::PrepareAsyncRawGetRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawGetRequest& request, ::grpc::CompletionQueue* cq) {
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawGetResponse>::Create(channel_.get(), cq, rpcmethod_RawGet_, context, request, false);
 }
 
 ::grpc::Status Tikv::Stub::RawBatchGet(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest& request, ::kvrpcpb::RawBatchGetResponse* response) {
-  return ::grpc::internal::BlockingUnaryCall< ::kvrpcpb::RawBatchGetRequest, ::kvrpcpb::RawBatchGetResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_RawBatchGet_, context, request, response);
+  return ::grpc::internal::BlockingUnaryCall(channel_.get(), rpcmethod_RawBatchGet_, context, request, response);
 }
 
-void Tikv::Stub::async::RawBatchGet(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest* request, ::kvrpcpb::RawBatchGetResponse* response, std::function<void(::grpc::Status)> f) {
-  ::grpc::internal::CallbackUnaryCall< ::kvrpcpb::RawBatchGetRequest, ::kvrpcpb::RawBatchGetResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawBatchGet_, context, request, response, std::move(f));
+void Tikv::Stub::experimental_async::RawBatchGet(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest* request, ::kvrpcpb::RawBatchGetResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawBatchGet_, context, request, response, std::move(f));
 }
 
-void Tikv::Stub::async::RawBatchGet(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest* request, ::kvrpcpb::RawBatchGetResponse* response, ::grpc::ClientUnaryReactor* reactor) {
-  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawBatchGet_, context, request, response, reactor);
+void Tikv::Stub::experimental_async::RawBatchGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchGetResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawBatchGet_, context, request, response, std::move(f));
 }
 
-::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawBatchGetResponse>* Tikv::Stub::PrepareAsyncRawBatchGetRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest& request, ::grpc::CompletionQueue* cq) {
-  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::kvrpcpb::RawBatchGetResponse, ::kvrpcpb::RawBatchGetRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_RawBatchGet_, context, request);
+void Tikv::Stub::experimental_async::RawBatchGet(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest* request, ::kvrpcpb::RawBatchGetResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawBatchGet_, context, request, response, reactor);
+}
+
+void Tikv::Stub::experimental_async::RawBatchGet(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchGetResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawBatchGet_, context, request, response, reactor);
 }
 
 ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawBatchGetResponse>* Tikv::Stub::AsyncRawBatchGetRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest& request, ::grpc::CompletionQueue* cq) {
-  auto* result =
-    this->PrepareAsyncRawBatchGetRaw(context, request, cq);
-  result->StartCall();
-  return result;
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawBatchGetResponse>::Create(channel_.get(), cq, rpcmethod_RawBatchGet_, context, request, true);
+}
+
+::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawBatchGetResponse>* Tikv::Stub::PrepareAsyncRawBatchGetRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchGetRequest& request, ::grpc::CompletionQueue* cq) {
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawBatchGetResponse>::Create(channel_.get(), cq, rpcmethod_RawBatchGet_, context, request, false);
 }
 
 ::grpc::Status Tikv::Stub::RawPut(::grpc::ClientContext* context, const ::kvrpcpb::RawPutRequest& request, ::kvrpcpb::RawPutResponse* response) {
-  return ::grpc::internal::BlockingUnaryCall< ::kvrpcpb::RawPutRequest, ::kvrpcpb::RawPutResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_RawPut_, context, request, response);
+  return ::grpc::internal::BlockingUnaryCall(channel_.get(), rpcmethod_RawPut_, context, request, response);
 }
 
-void Tikv::Stub::async::RawPut(::grpc::ClientContext* context, const ::kvrpcpb::RawPutRequest* request, ::kvrpcpb::RawPutResponse* response, std::function<void(::grpc::Status)> f) {
-  ::grpc::internal::CallbackUnaryCall< ::kvrpcpb::RawPutRequest, ::kvrpcpb::RawPutResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawPut_, context, request, response, std::move(f));
+void Tikv::Stub::experimental_async::RawPut(::grpc::ClientContext* context, const ::kvrpcpb::RawPutRequest* request, ::kvrpcpb::RawPutResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawPut_, context, request, response, std::move(f));
 }
 
-void Tikv::Stub::async::RawPut(::grpc::ClientContext* context, const ::kvrpcpb::RawPutRequest* request, ::kvrpcpb::RawPutResponse* response, ::grpc::ClientUnaryReactor* reactor) {
-  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawPut_, context, request, response, reactor);
+void Tikv::Stub::experimental_async::RawPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawPutResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawPut_, context, request, response, std::move(f));
 }
 
-::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawPutResponse>* Tikv::Stub::PrepareAsyncRawPutRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawPutRequest& request, ::grpc::CompletionQueue* cq) {
-  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::kvrpcpb::RawPutResponse, ::kvrpcpb::RawPutRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_RawPut_, context, request);
+void Tikv::Stub::experimental_async::RawPut(::grpc::ClientContext* context, const ::kvrpcpb::RawPutRequest* request, ::kvrpcpb::RawPutResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawPut_, context, request, response, reactor);
+}
+
+void Tikv::Stub::experimental_async::RawPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawPutResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawPut_, context, request, response, reactor);
 }
 
 ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawPutResponse>* Tikv::Stub::AsyncRawPutRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawPutRequest& request, ::grpc::CompletionQueue* cq) {
-  auto* result =
-    this->PrepareAsyncRawPutRaw(context, request, cq);
-  result->StartCall();
-  return result;
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawPutResponse>::Create(channel_.get(), cq, rpcmethod_RawPut_, context, request, true);
+}
+
+::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawPutResponse>* Tikv::Stub::PrepareAsyncRawPutRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawPutRequest& request, ::grpc::CompletionQueue* cq) {
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawPutResponse>::Create(channel_.get(), cq, rpcmethod_RawPut_, context, request, false);
 }
 
 ::grpc::Status Tikv::Stub::RawBatchPut(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchPutRequest& request, ::kvrpcpb::RawBatchPutResponse* response) {
-  return ::grpc::internal::BlockingUnaryCall< ::kvrpcpb::RawBatchPutRequest, ::kvrpcpb::RawBatchPutResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_RawBatchPut_, context, request, response);
+  return ::grpc::internal::BlockingUnaryCall(channel_.get(), rpcmethod_RawBatchPut_, context, request, response);
 }
 
-void Tikv::Stub::async::RawBatchPut(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchPutRequest* request, ::kvrpcpb::RawBatchPutResponse* response, std::function<void(::grpc::Status)> f) {
-  ::grpc::internal::CallbackUnaryCall< ::kvrpcpb::RawBatchPutRequest, ::kvrpcpb::RawBatchPutResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawBatchPut_, context, request, response, std::move(f));
+void Tikv::Stub::experimental_async::RawBatchPut(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchPutRequest* request, ::kvrpcpb::RawBatchPutResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawBatchPut_, context, request, response, std::move(f));
 }
 
-void Tikv::Stub::async::RawBatchPut(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchPutRequest* request, ::kvrpcpb::RawBatchPutResponse* response, ::grpc::ClientUnaryReactor* reactor) {
-  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawBatchPut_, context, request, response, reactor);
+void Tikv::Stub::experimental_async::RawBatchPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchPutResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawBatchPut_, context, request, response, std::move(f));
 }
 
-::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawBatchPutResponse>* Tikv::Stub::PrepareAsyncRawBatchPutRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchPutRequest& request, ::grpc::CompletionQueue* cq) {
-  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::kvrpcpb::RawBatchPutResponse, ::kvrpcpb::RawBatchPutRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_RawBatchPut_, context, request);
+void Tikv::Stub::experimental_async::RawBatchPut(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchPutRequest* request, ::kvrpcpb::RawBatchPutResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawBatchPut_, context, request, response, reactor);
+}
+
+void Tikv::Stub::experimental_async::RawBatchPut(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchPutResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawBatchPut_, context, request, response, reactor);
 }
 
 ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawBatchPutResponse>* Tikv::Stub::AsyncRawBatchPutRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchPutRequest& request, ::grpc::CompletionQueue* cq) {
-  auto* result =
-    this->PrepareAsyncRawBatchPutRaw(context, request, cq);
-  result->StartCall();
-  return result;
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawBatchPutResponse>::Create(channel_.get(), cq, rpcmethod_RawBatchPut_, context, request, true);
+}
+
+::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawBatchPutResponse>* Tikv::Stub::PrepareAsyncRawBatchPutRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchPutRequest& request, ::grpc::CompletionQueue* cq) {
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawBatchPutResponse>::Create(channel_.get(), cq, rpcmethod_RawBatchPut_, context, request, false);
 }
 
 ::grpc::Status Tikv::Stub::RawDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRequest& request, ::kvrpcpb::RawDeleteResponse* response) {
-  return ::grpc::internal::BlockingUnaryCall< ::kvrpcpb::RawDeleteRequest, ::kvrpcpb::RawDeleteResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_RawDelete_, context, request, response);
+  return ::grpc::internal::BlockingUnaryCall(channel_.get(), rpcmethod_RawDelete_, context, request, response);
 }
 
-void Tikv::Stub::async::RawDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRequest* request, ::kvrpcpb::RawDeleteResponse* response, std::function<void(::grpc::Status)> f) {
-  ::grpc::internal::CallbackUnaryCall< ::kvrpcpb::RawDeleteRequest, ::kvrpcpb::RawDeleteResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawDelete_, context, request, response, std::move(f));
+void Tikv::Stub::experimental_async::RawDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRequest* request, ::kvrpcpb::RawDeleteResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawDelete_, context, request, response, std::move(f));
 }
 
-void Tikv::Stub::async::RawDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRequest* request, ::kvrpcpb::RawDeleteResponse* response, ::grpc::ClientUnaryReactor* reactor) {
-  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawDelete_, context, request, response, reactor);
+void Tikv::Stub::experimental_async::RawDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawDelete_, context, request, response, std::move(f));
 }
 
-::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawDeleteResponse>* Tikv::Stub::PrepareAsyncRawDeleteRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRequest& request, ::grpc::CompletionQueue* cq) {
-  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::kvrpcpb::RawDeleteResponse, ::kvrpcpb::RawDeleteRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_RawDelete_, context, request);
+void Tikv::Stub::experimental_async::RawDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRequest* request, ::kvrpcpb::RawDeleteResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawDelete_, context, request, response, reactor);
+}
+
+void Tikv::Stub::experimental_async::RawDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawDelete_, context, request, response, reactor);
 }
 
 ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawDeleteResponse>* Tikv::Stub::AsyncRawDeleteRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRequest& request, ::grpc::CompletionQueue* cq) {
-  auto* result =
-    this->PrepareAsyncRawDeleteRaw(context, request, cq);
-  result->StartCall();
-  return result;
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawDeleteResponse>::Create(channel_.get(), cq, rpcmethod_RawDelete_, context, request, true);
+}
+
+::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawDeleteResponse>* Tikv::Stub::PrepareAsyncRawDeleteRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRequest& request, ::grpc::CompletionQueue* cq) {
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawDeleteResponse>::Create(channel_.get(), cq, rpcmethod_RawDelete_, context, request, false);
 }
 
 ::grpc::Status Tikv::Stub::RawBatchDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchDeleteRequest& request, ::kvrpcpb::RawBatchDeleteResponse* response) {
-  return ::grpc::internal::BlockingUnaryCall< ::kvrpcpb::RawBatchDeleteRequest, ::kvrpcpb::RawBatchDeleteResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_RawBatchDelete_, context, request, response);
+  return ::grpc::internal::BlockingUnaryCall(channel_.get(), rpcmethod_RawBatchDelete_, context, request, response);
 }
 
-void Tikv::Stub::async::RawBatchDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchDeleteRequest* request, ::kvrpcpb::RawBatchDeleteResponse* response, std::function<void(::grpc::Status)> f) {
-  ::grpc::internal::CallbackUnaryCall< ::kvrpcpb::RawBatchDeleteRequest, ::kvrpcpb::RawBatchDeleteResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawBatchDelete_, context, request, response, std::move(f));
+void Tikv::Stub::experimental_async::RawBatchDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchDeleteRequest* request, ::kvrpcpb::RawBatchDeleteResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawBatchDelete_, context, request, response, std::move(f));
 }
 
-void Tikv::Stub::async::RawBatchDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchDeleteRequest* request, ::kvrpcpb::RawBatchDeleteResponse* response, ::grpc::ClientUnaryReactor* reactor) {
-  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawBatchDelete_, context, request, response, reactor);
+void Tikv::Stub::experimental_async::RawBatchDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchDeleteResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawBatchDelete_, context, request, response, std::move(f));
 }
 
-::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawBatchDeleteResponse>* Tikv::Stub::PrepareAsyncRawBatchDeleteRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchDeleteRequest& request, ::grpc::CompletionQueue* cq) {
-  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::kvrpcpb::RawBatchDeleteResponse, ::kvrpcpb::RawBatchDeleteRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_RawBatchDelete_, context, request);
+void Tikv::Stub::experimental_async::RawBatchDelete(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchDeleteRequest* request, ::kvrpcpb::RawBatchDeleteResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawBatchDelete_, context, request, response, reactor);
+}
+
+void Tikv::Stub::experimental_async::RawBatchDelete(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawBatchDeleteResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawBatchDelete_, context, request, response, reactor);
 }
 
 ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawBatchDeleteResponse>* Tikv::Stub::AsyncRawBatchDeleteRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchDeleteRequest& request, ::grpc::CompletionQueue* cq) {
-  auto* result =
-    this->PrepareAsyncRawBatchDeleteRaw(context, request, cq);
-  result->StartCall();
-  return result;
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawBatchDeleteResponse>::Create(channel_.get(), cq, rpcmethod_RawBatchDelete_, context, request, true);
+}
+
+::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawBatchDeleteResponse>* Tikv::Stub::PrepareAsyncRawBatchDeleteRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawBatchDeleteRequest& request, ::grpc::CompletionQueue* cq) {
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawBatchDeleteResponse>::Create(channel_.get(), cq, rpcmethod_RawBatchDelete_, context, request, false);
 }
 
 ::grpc::Status Tikv::Stub::RawDeleteRange(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest& request, ::kvrpcpb::RawDeleteRangeResponse* response) {
-  return ::grpc::internal::BlockingUnaryCall< ::kvrpcpb::RawDeleteRangeRequest, ::kvrpcpb::RawDeleteRangeResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_RawDeleteRange_, context, request, response);
+  return ::grpc::internal::BlockingUnaryCall(channel_.get(), rpcmethod_RawDeleteRange_, context, request, response);
 }
 
-void Tikv::Stub::async::RawDeleteRange(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response, std::function<void(::grpc::Status)> f) {
-  ::grpc::internal::CallbackUnaryCall< ::kvrpcpb::RawDeleteRangeRequest, ::kvrpcpb::RawDeleteRangeResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawDeleteRange_, context, request, response, std::move(f));
+void Tikv::Stub::experimental_async::RawDeleteRange(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawDeleteRange_, context, request, response, std::move(f));
 }
 
-void Tikv::Stub::async::RawDeleteRange(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response, ::grpc::ClientUnaryReactor* reactor) {
-  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawDeleteRange_, context, request, response, reactor);
+void Tikv::Stub::experimental_async::RawDeleteRange(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteRangeResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawDeleteRange_, context, request, response, std::move(f));
 }
 
-::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawDeleteRangeResponse>* Tikv::Stub::PrepareAsyncRawDeleteRangeRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest& request, ::grpc::CompletionQueue* cq) {
-  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::kvrpcpb::RawDeleteRangeResponse, ::kvrpcpb::RawDeleteRangeRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_RawDeleteRange_, context, request);
+void Tikv::Stub::experimental_async::RawDeleteRange(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest* request, ::kvrpcpb::RawDeleteRangeResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawDeleteRange_, context, request, response, reactor);
+}
+
+void Tikv::Stub::experimental_async::RawDeleteRange(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawDeleteRangeResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawDeleteRange_, context, request, response, reactor);
 }
 
 ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawDeleteRangeResponse>* Tikv::Stub::AsyncRawDeleteRangeRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest& request, ::grpc::CompletionQueue* cq) {
-  auto* result =
-    this->PrepareAsyncRawDeleteRangeRaw(context, request, cq);
-  result->StartCall();
-  return result;
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawDeleteRangeResponse>::Create(channel_.get(), cq, rpcmethod_RawDeleteRange_, context, request, true);
+}
+
+::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawDeleteRangeResponse>* Tikv::Stub::PrepareAsyncRawDeleteRangeRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawDeleteRangeRequest& request, ::grpc::CompletionQueue* cq) {
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawDeleteRangeResponse>::Create(channel_.get(), cq, rpcmethod_RawDeleteRange_, context, request, false);
 }
 
 ::grpc::Status Tikv::Stub::RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest& request, ::kvrpcpb::RawScanResponse* response) {
-  return ::grpc::internal::BlockingUnaryCall< ::kvrpcpb::RawScanRequest, ::kvrpcpb::RawScanResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_RawScan_, context, request, response);
+  return ::grpc::internal::BlockingUnaryCall(channel_.get(), rpcmethod_RawScan_, context, request, response);
 }
 
-void Tikv::Stub::async::RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response, std::function<void(::grpc::Status)> f) {
-  ::grpc::internal::CallbackUnaryCall< ::kvrpcpb::RawScanRequest, ::kvrpcpb::RawScanResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawScan_, context, request, response, std::move(f));
+void Tikv::Stub::experimental_async::RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawScan_, context, request, response, std::move(f));
 }
 
-void Tikv::Stub::async::RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response, ::grpc::ClientUnaryReactor* reactor) {
-  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawScan_, context, request, response, reactor);
+void Tikv::Stub::experimental_async::RawScan(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawScanResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawScan_, context, request, response, std::move(f));
 }
 
-::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawScanResponse>* Tikv::Stub::PrepareAsyncRawScanRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest& request, ::grpc::CompletionQueue* cq) {
-  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::kvrpcpb::RawScanResponse, ::kvrpcpb::RawScanRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_RawScan_, context, request);
+void Tikv::Stub::experimental_async::RawScan(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest* request, ::kvrpcpb::RawScanResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawScan_, context, request, response, reactor);
+}
+
+void Tikv::Stub::experimental_async::RawScan(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawScanResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawScan_, context, request, response, reactor);
 }
 
 ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawScanResponse>* Tikv::Stub::AsyncRawScanRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest& request, ::grpc::CompletionQueue* cq) {
-  auto* result =
-    this->PrepareAsyncRawScanRaw(context, request, cq);
-  result->StartCall();
-  return result;
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawScanResponse>::Create(channel_.get(), cq, rpcmethod_RawScan_, context, request, true);
+}
+
+::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawScanResponse>* Tikv::Stub::PrepareAsyncRawScanRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawScanRequest& request, ::grpc::CompletionQueue* cq) {
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawScanResponse>::Create(channel_.get(), cq, rpcmethod_RawScan_, context, request, false);
 }
 
 ::grpc::Status Tikv::Stub::RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::kvrpcpb::RawCoprocessorResponse* response) {
-  return ::grpc::internal::BlockingUnaryCall< ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_RawCoprocessor_, context, request, response);
+  return ::grpc::internal::BlockingUnaryCall(channel_.get(), rpcmethod_RawCoprocessor_, context, request, response);
 }
 
-void Tikv::Stub::async::RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, std::function<void(::grpc::Status)> f) {
-  ::grpc::internal::CallbackUnaryCall< ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawCoprocessor_, context, request, response, std::move(f));
+void Tikv::Stub::experimental_async::RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawCoprocessor_, context, request, response, std::move(f));
 }
 
-void Tikv::Stub::async::RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, ::grpc::ClientUnaryReactor* reactor) {
-  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_RawCoprocessor_, context, request, response, reactor);
+void Tikv::Stub::experimental_async::RawCoprocessor(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawCoprocessorResponse* response, std::function<void(::grpc::Status)> f) {
+  ::grpc_impl::internal::CallbackUnaryCall(stub_->channel_.get(), stub_->rpcmethod_RawCoprocessor_, context, request, response, std::move(f));
 }
 
-::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawCoprocessorResponse>* Tikv::Stub::PrepareAsyncRawCoprocessorRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) {
-  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::kvrpcpb::RawCoprocessorResponse, ::kvrpcpb::RawCoprocessorRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_RawCoprocessor_, context, request);
+void Tikv::Stub::experimental_async::RawCoprocessor(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest* request, ::kvrpcpb::RawCoprocessorResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawCoprocessor_, context, request, response, reactor);
+}
+
+void Tikv::Stub::experimental_async::RawCoprocessor(::grpc::ClientContext* context, const ::grpc::ByteBuffer* request, ::kvrpcpb::RawCoprocessorResponse* response, ::grpc::experimental::ClientUnaryReactor* reactor) {
+  ::grpc_impl::internal::ClientCallbackUnaryFactory::Create(stub_->channel_.get(), stub_->rpcmethod_RawCoprocessor_, context, request, response, reactor);
 }
 
 ::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawCoprocessorResponse>* Tikv::Stub::AsyncRawCoprocessorRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) {
-  auto* result =
-    this->PrepareAsyncRawCoprocessorRaw(context, request, cq);
-  result->StartCall();
-  return result;
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawCoprocessorResponse>::Create(channel_.get(), cq, rpcmethod_RawCoprocessor_, context, request, true);
+}
+
+::grpc::ClientAsyncResponseReader< ::kvrpcpb::RawCoprocessorResponse>* Tikv::Stub::PrepareAsyncRawCoprocessorRaw(::grpc::ClientContext* context, const ::kvrpcpb::RawCoprocessorRequest& request, ::grpc::CompletionQueue* cq) {
+  return ::grpc_impl::internal::ClientAsyncResponseReaderFactory< ::kvrpcpb::RawCoprocessorResponse>::Create(channel_.get(), cq, rpcmethod_RawCoprocessor_, context, request, false);
 }
 
 Tikv::Service::Service() {
   AddMethod(new ::grpc::internal::RpcServiceMethod(
       Tikv_method_names[0],
       ::grpc::internal::RpcMethod::NORMAL_RPC,
-      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawGetRequest, ::kvrpcpb::RawGetResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawGetRequest, ::kvrpcpb::RawGetResponse>(
           [](Tikv::Service* service,
-             ::grpc::ServerContext* ctx,
+             ::grpc_impl::ServerContext* ctx,
              const ::kvrpcpb::RawGetRequest* req,
              ::kvrpcpb::RawGetResponse* resp) {
                return service->RawGet(ctx, req, resp);
@@ -272,9 +317,9 @@ Tikv::Service::Service() {
   AddMethod(new ::grpc::internal::RpcServiceMethod(
       Tikv_method_names[1],
       ::grpc::internal::RpcMethod::NORMAL_RPC,
-      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawBatchGetRequest, ::kvrpcpb::RawBatchGetResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawBatchGetRequest, ::kvrpcpb::RawBatchGetResponse>(
           [](Tikv::Service* service,
-             ::grpc::ServerContext* ctx,
+             ::grpc_impl::ServerContext* ctx,
              const ::kvrpcpb::RawBatchGetRequest* req,
              ::kvrpcpb::RawBatchGetResponse* resp) {
                return service->RawBatchGet(ctx, req, resp);
@@ -282,9 +327,9 @@ Tikv::Service::Service() {
   AddMethod(new ::grpc::internal::RpcServiceMethod(
       Tikv_method_names[2],
       ::grpc::internal::RpcMethod::NORMAL_RPC,
-      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawPutRequest, ::kvrpcpb::RawPutResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawPutRequest, ::kvrpcpb::RawPutResponse>(
           [](Tikv::Service* service,
-             ::grpc::ServerContext* ctx,
+             ::grpc_impl::ServerContext* ctx,
              const ::kvrpcpb::RawPutRequest* req,
              ::kvrpcpb::RawPutResponse* resp) {
                return service->RawPut(ctx, req, resp);
@@ -292,9 +337,9 @@ Tikv::Service::Service() {
   AddMethod(new ::grpc::internal::RpcServiceMethod(
       Tikv_method_names[3],
       ::grpc::internal::RpcMethod::NORMAL_RPC,
-      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawBatchPutRequest, ::kvrpcpb::RawBatchPutResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawBatchPutRequest, ::kvrpcpb::RawBatchPutResponse>(
           [](Tikv::Service* service,
-             ::grpc::ServerContext* ctx,
+             ::grpc_impl::ServerContext* ctx,
              const ::kvrpcpb::RawBatchPutRequest* req,
              ::kvrpcpb::RawBatchPutResponse* resp) {
                return service->RawBatchPut(ctx, req, resp);
@@ -302,9 +347,9 @@ Tikv::Service::Service() {
   AddMethod(new ::grpc::internal::RpcServiceMethod(
       Tikv_method_names[4],
       ::grpc::internal::RpcMethod::NORMAL_RPC,
-      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawDeleteRequest, ::kvrpcpb::RawDeleteResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawDeleteRequest, ::kvrpcpb::RawDeleteResponse>(
           [](Tikv::Service* service,
-             ::grpc::ServerContext* ctx,
+             ::grpc_impl::ServerContext* ctx,
              const ::kvrpcpb::RawDeleteRequest* req,
              ::kvrpcpb::RawDeleteResponse* resp) {
                return service->RawDelete(ctx, req, resp);
@@ -312,9 +357,9 @@ Tikv::Service::Service() {
   AddMethod(new ::grpc::internal::RpcServiceMethod(
       Tikv_method_names[5],
       ::grpc::internal::RpcMethod::NORMAL_RPC,
-      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawBatchDeleteRequest, ::kvrpcpb::RawBatchDeleteResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawBatchDeleteRequest, ::kvrpcpb::RawBatchDeleteResponse>(
           [](Tikv::Service* service,
-             ::grpc::ServerContext* ctx,
+             ::grpc_impl::ServerContext* ctx,
              const ::kvrpcpb::RawBatchDeleteRequest* req,
              ::kvrpcpb::RawBatchDeleteResponse* resp) {
                return service->RawBatchDelete(ctx, req, resp);
@@ -322,9 +367,9 @@ Tikv::Service::Service() {
   AddMethod(new ::grpc::internal::RpcServiceMethod(
       Tikv_method_names[6],
       ::grpc::internal::RpcMethod::NORMAL_RPC,
-      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawDeleteRangeRequest, ::kvrpcpb::RawDeleteRangeResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawDeleteRangeRequest, ::kvrpcpb::RawDeleteRangeResponse>(
           [](Tikv::Service* service,
-             ::grpc::ServerContext* ctx,
+             ::grpc_impl::ServerContext* ctx,
              const ::kvrpcpb::RawDeleteRangeRequest* req,
              ::kvrpcpb::RawDeleteRangeResponse* resp) {
                return service->RawDeleteRange(ctx, req, resp);
@@ -332,9 +377,9 @@ Tikv::Service::Service() {
   AddMethod(new ::grpc::internal::RpcServiceMethod(
       Tikv_method_names[7],
       ::grpc::internal::RpcMethod::NORMAL_RPC,
-      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawScanRequest, ::kvrpcpb::RawScanResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawScanRequest, ::kvrpcpb::RawScanResponse>(
           [](Tikv::Service* service,
-             ::grpc::ServerContext* ctx,
+             ::grpc_impl::ServerContext* ctx,
              const ::kvrpcpb::RawScanRequest* req,
              ::kvrpcpb::RawScanResponse* resp) {
                return service->RawScan(ctx, req, resp);
@@ -342,9 +387,9 @@ Tikv::Service::Service() {
   AddMethod(new ::grpc::internal::RpcServiceMethod(
       Tikv_method_names[8],
       ::grpc::internal::RpcMethod::NORMAL_RPC,
-      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+      new ::grpc::internal::RpcMethodHandler< Tikv::Service, ::kvrpcpb::RawCoprocessorRequest, ::kvrpcpb::RawCoprocessorResponse>(
           [](Tikv::Service* service,
-             ::grpc::ServerContext* ctx,
+             ::grpc_impl::ServerContext* ctx,
              const ::kvrpcpb::RawCoprocessorRequest* req,
              ::kvrpcpb::RawCoprocessorResponse* resp) {
                return service->RawCoprocessor(ctx, req, resp);
