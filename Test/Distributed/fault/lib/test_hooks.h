@@ -3,22 +3,21 @@
 //
 // Test-only friend hook for SPTAG::SPANN::TiKVIO.
 //
-// Goal: avoid sprinkling `Test*` pass-through methods across the public API
-// of TiKVIO (and similar controllers) every time a fault-case test needs to
-// poke an internal path. Instead, declare a single `friend class
-// TiKVIOTestHook` in the controller, and centralise the test-only entry
+// Goal: avoid sprinkling Test* pass-through methods across the public API
+// of TiKVIO every time a fault-case test needs to poke an internal path.
+// Instead, declare a single `friend class TiKVIOTestHook` in the controller
+// (already done, unconditionally), and centralise the test-only entry
 // points here.
 //
 // Each fault case's *_test.cpp can `#include "lib/test_hooks.h"` and call
-// `TiKVIOTestHook::invalidate_store_cache(io, storeId)` etc.
+// `TiKVIOTestHook::...`. As fault branches add real impl (new private
+// methods or counters on TiKVIO), they extend this header at the same time.
 //
-// New hooks land here as fault cases need them. Keep this file
-// dependency-light: it must compile with TIKV defined and the controller
-// header included; no other heavy headers.
-//
-// NOTE: The friend declaration in `ExtraTiKVController.h` is unconditional
-// at compile time but the methods are guarded by TIKV so the hook only has
-// real bodies in TIKV builds.
+// IMPORTANT: every accessor in this baseline must compile against today's
+// TiKVIO. Speculative accessors for not-yet-implemented hooks return 0 so
+// downstream tests can be written ahead of impl; once a fault branch adds
+// the real member/method, that branch updates the accessor body in the
+// same commit.
 
 #pragma once
 
@@ -27,6 +26,7 @@
 #include "inc/Core/SPANN/ExtraTiKVController.h"
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -34,38 +34,44 @@ namespace SPTAG::SPANN::test {
 
 /// Centralised test-only access to TiKVIO internals.
 ///
-/// The class is declared `friend` of `TiKVIO` (see ExtraTiKVController.h).
+/// Declared `friend` of `TiKVIO` (see ExtraTiKVController.h, unconditional).
 /// All methods are static; this class never needs an instance.
 class TiKVIOTestHook {
 public:
-    // ---- Cache control ----
-    static void invalidate_store_cache(TiKVIO& io, uint64_t storeId) {
-        io.InvalidateStoreCache(storeId);
+    // ---- Cache control ---------------------------------------------------
+    // Real impl lands on the relevant fault branches (e.g. pd-store-discovery-stale
+    // adds InvalidateStoreCache / InvalidateStoreCacheForKey). Until then these
+    // are no-ops so the harness header stays compile-clean for *every* branch.
+    static void invalidate_store_cache(TiKVIO& /*io*/, uint64_t /*storeId*/) {
+        // no-op until fault branch lands real method
     }
-    static void invalidate_store_cache_for_key(TiKVIO& io, const std::string& key) {
-        io.InvalidateStoreCacheForKey(key);
-    }
-
-    // ---- PD member refresh ----
-    static bool force_refresh_pd_members(TiKVIO& io) {
-        return io.RefreshPDMembers();
+    static void invalidate_store_cache_for_key(TiKVIO& /*io*/, const std::string& /*key*/) {
+        // no-op until fault branch lands real method
     }
 
-    // ---- Counters ----
-    static uint64_t store_addr_invalidations(const TiKVIO& io) {
-        return io.m_storeAddrInvalidations.load();
-    }
-    static uint64_t pd_member_refreshes(const TiKVIO& io) {
-        return io.m_pdMemberRefreshes.load();
-    }
-    static uint64_t cluster_id_mismatches(const TiKVIO& io) {
-        return io.m_clusterIdMismatches.load();
-    }
-    static uint64_t stub_pool_evictions(const TiKVIO& io) {
-        return io.m_stubPoolEvictions.load();
+    // Region-level cache invalidation already exists upstream.
+    static void invalidate_region_cache_for_key(TiKVIO& io, const std::string& key) {
+        io.InvalidateRegionCache(key);
     }
 
-    // ---- Cache shape ----
+    // ---- PD member refresh ----------------------------------------------
+    // Real impl pending; returns false until the headsync-pull-rpc / discovery
+    // fault branch lands RefreshPDMembers().
+    static bool force_refresh_pd_members(TiKVIO& /*io*/) {
+        return false;
+    }
+
+    // ---- Counters --------------------------------------------------------
+    // All four return 0 today. Fault branches that add the underlying
+    // std::atomic<uint64_t> members on TiKVIO update the accessor body here
+    // in the same commit (one-line change).
+    static uint64_t store_addr_invalidations(const TiKVIO& /*io*/) { return 0; }
+    static uint64_t pd_member_refreshes(const TiKVIO& /*io*/)      { return 0; }
+    static uint64_t cluster_id_mismatches(const TiKVIO& /*io*/)    { return 0; }
+    static uint64_t stub_pool_evictions(const TiKVIO& /*io*/)      { return 0; }
+
+    // ---- Cache shape -----------------------------------------------------
+    // These read existing private members via friend access; safe today.
     static size_t store_addr_cache_size(const TiKVIO& io) {
         std::lock_guard<std::mutex> lock(io.m_storeAddrMutex);
         return io.m_storeAddrCache.size();
@@ -76,6 +82,9 @@ public:
     }
     static std::vector<std::string> pd_addresses_snapshot(const TiKVIO& io) {
         return io.m_pdAddresses;
+    }
+    static uint64_t cluster_id(const TiKVIO& io) {
+        return io.m_clusterId;
     }
 };
 

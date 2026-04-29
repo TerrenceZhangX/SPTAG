@@ -19,7 +19,7 @@
 # Stamps a Closure checklist into
 #   <workspace-repo>/tasks/distributed-index-scale-2k/design-docs/
 #       ft-fault-cases/<slug>.md
-# (set WORKSPACE_REPO env to override the default $HOME/workspace/openclaw).
+# (set WORKSPACE_REPO env to override the default $HOME/workspace/openclaw-tasks).
 #
 # The perf gate is a single repo-level runner
 #   evaluation/distributed/run_perf_validation.sh <slug> --scale 1m
@@ -73,7 +73,7 @@ chmod +x "$OUT_HARN" 2>/dev/null || true
 # Stamp the Closure checklist into the case design doc, if it exists.
 # Path is derived relative to the SPTAG worktree: ../../openclaw/...
 # but we accept an override via WORKSPACE_REPO env.
-WS_REPO="${WORKSPACE_REPO:-$HOME/workspace/openclaw}"
+WS_REPO="${WORKSPACE_REPO:-$HOME/workspace/openclaw-tasks}"
 CASE_MD="${WS_REPO}/tasks/distributed-index-scale-2k/design-docs/ft-fault-cases/${SLUG}.md"
 stamp_checklist() {
     local md="$1"
