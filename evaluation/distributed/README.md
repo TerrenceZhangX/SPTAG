@@ -2,6 +2,21 @@
 
 Scripts and configs for running SPTAG SPANN distributed benchmarks — single-machine (multi-process) and multi-machine.
 
+## Component metrics (post-run)
+
+After a run completes, run `collect_component_metrics.sh` to merge router /
+HeadSync / PD / per-node resource counters into the bench JSON under a new
+`component_metrics` block. See [`COMPONENT_METRICS_SCHEMA.md`](./COMPONENT_METRICS_SCHEMA.md)
+for the field list and origins.
+
+```bash
+evaluation/distributed/collect_component_metrics.sh \
+    cluster.conf results/output_10m_4node.json results/logs/ [duration_sec]
+```
+
+The helper does not modify `run_distributed.sh` or the benchmark hot path;
+it is safe to re-run on archived result directories.
+
 ## Directory Structure
 
 ```
