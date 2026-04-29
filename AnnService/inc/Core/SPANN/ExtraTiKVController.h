@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cmath>
 #include <climits>
+#include <cstdlib>
 #include <future>
 #include <mutex>
 #include <shared_mutex>
@@ -128,6 +129,32 @@ namespace SPTAG::SPANN
 
             m_available = true;
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "TiKVIO: Initialized with key prefix '%s'\n", m_keyPrefix.c_str());
+
+            // pd-store-discovery-stale: spawn background PD member refresher.
+            // Defaults to enabled; opt out via env SPTAG_TIKV_PD_REFRESH=0.
+            const char* refreshEnv = std::getenv("SPTAG_TIKV_PD_REFRESH");
+            bool refreshEnabled = !(refreshEnv && std::string(refreshEnv) == "0");
+            if (refreshEnabled) {
+                m_refresherStop.store(false, std::memory_order_release);
+                m_pdMemberRefresher = std::thread([this]() {
+                    auto interval = std::chrono::seconds(m_pdMemberRefreshIntervalSec);
+                    auto next = std::chrono::steady_clock::now() + interval;
+                    while (!m_refresherStop.load(std::memory_order_acquire)) {
+                        // Sleep in small slices so ShutDown can wake us quickly.
+                        auto now = std::chrono::steady_clock::now();
+                        if (now < next) {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                            continue;
+                        }
+                        next = now + interval;
+                        try {
+                            (void)RefreshPDMembers();
+                        } catch (...) {
+                            // Defensive: never let refresher crash the process.
+                        }
+                    }
+                });
+            }
         }
 
         ~TiKVIO() override {
@@ -136,6 +163,11 @@ namespace SPTAG::SPANN
 
         void ShutDown() override {
             m_available = false;
+            // Stop PD member refresher first (it may be reading m_pdStub).
+            m_refresherStop.store(true, std::memory_order_release);
+            if (m_pdMemberRefresher.joinable()) {
+                m_pdMemberRefresher.join();
+            }
             std::lock_guard<std::mutex> lock(m_storeMutex);
             m_storeStubs.clear();
             m_pdStub.reset();
@@ -169,6 +201,13 @@ namespace SPTAG::SPANN
                 if (!status.ok()) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::Get gRPC error (attempt %d): %s\n",
                                  attempt, status.error_message().c_str());
+                    // pd-store-discovery-stale: on UNAVAILABLE/DEADLINE_EXCEEDED
+                    // also invalidate store address cache + evict stub pool so
+                    // a moved store is re-resolved on the next attempt.
+                    if (status.error_code() == grpc::StatusCode::UNAVAILABLE ||
+                        status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED) {
+                        InvalidateStoreCacheForKey(prefixedKey);
+                    }
                     InvalidateRegionCache(prefixedKey);
                     std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
                     continue;
@@ -225,6 +264,10 @@ namespace SPTAG::SPANN
                 if (!status.ok()) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::Put gRPC error (attempt %d): %s\n",
                                  attempt, status.error_message().c_str());
+                    if (status.error_code() == grpc::StatusCode::UNAVAILABLE ||
+                        status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED) {
+                        InvalidateStoreCacheForKey(prefixedKey);
+                    }
                     InvalidateRegionCache(prefixedKey);
                     std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
                     continue;
@@ -1162,6 +1205,25 @@ namespace SPTAG::SPANN
             return ErrorCode::Success;
         }
 
+        // pd-store-discovery-stale: test/observability accessors.
+        uint64_t GetStoreAddrInvalidations() const { return m_storeAddrInvalidations.load(); }
+        uint64_t GetPDMemberRefreshes() const { return m_pdMemberRefreshes.load(); }
+        uint64_t GetClusterIdMismatches() const { return m_clusterIdMismatches.load(); }
+        uint64_t GetStubPoolEvictions() const { return m_stubPoolEvictions.load(); }
+        size_t StoreAddrCacheSize() const {
+            std::lock_guard<std::mutex> lock(m_storeAddrMutex);
+            return m_storeAddrCache.size();
+        }
+        size_t StubPoolCount() const {
+            std::lock_guard<std::mutex> lock(m_storeMutex);
+            return m_storeStubs.size();
+        }
+        std::vector<std::string> GetPDAddressesSnapshot() const {
+            return m_pdAddresses;
+        }
+        // Force a synchronous PD member refresh; used by tests + admin RPCs.
+        bool ForceRefreshPDMembers() { return RefreshPDMembers(); }
+
     private:
         std::string m_keyPrefix;
         std::vector<std::string> m_pdAddresses;
@@ -1181,9 +1243,37 @@ namespace SPTAG::SPANN
         mutable std::mutex m_storeMutex;
         std::unordered_map<std::string, std::shared_ptr<StubPool>> m_storeStubs;
 
-        // Store address cache: store_id -> address
+        // pd-store-discovery-stale: store address cache with TTL.
+        // Each entry has the resolved address, fetch timestamp, and TTL.
+        // After TTL expires, next lookup re-resolves from PD; on RPC failure
+        // the entry is invalidated and the corresponding stub pool is evicted.
+        struct StoreAddrEntry {
+            std::string addr;
+            std::chrono::steady_clock::time_point fetchedAt;
+        };
         mutable std::mutex m_storeAddrMutex;
-        std::unordered_map<uint64_t, std::string> m_storeAddrCache;
+        std::unordered_map<uint64_t, StoreAddrEntry> m_storeAddrCache;
+        // Default TTL for store address cache. 30 s matches the case spec.
+        // Override via env SPTAG_TIKV_STORE_ADDR_TTL_SEC (>=1).
+        int m_storeAddrTtlSec = []() {
+            const char* v = std::getenv("SPTAG_TIKV_STORE_ADDR_TTL_SEC");
+            if (v) { int n = atoi(v); if (n >= 1) return n; }
+            return 30;
+        }();
+        // pd-store-discovery-stale: PD member auto-refresh.
+        int m_pdMemberRefreshIntervalSec = []() {
+            const char* v = std::getenv("SPTAG_TIKV_PD_REFRESH_SEC");
+            if (v) { int n = atoi(v); if (n >= 5) return n; }
+            return 60;
+        }();
+        std::thread m_pdMemberRefresher;
+        std::atomic<bool> m_refresherStop{true};
+
+        // pd-store-discovery-stale: counters for observability + tests.
+        std::atomic<uint64_t> m_storeAddrInvalidations{0};
+        std::atomic<uint64_t> m_pdMemberRefreshes{0};
+        std::atomic<uint64_t> m_clusterIdMismatches{0};
+        std::atomic<uint64_t> m_stubPoolEvictions{0};
 
         // Region cache: maps a key prefix to (region_id, leader_store_addr)
         struct RegionInfo {
@@ -1411,14 +1501,19 @@ namespace SPTAG::SPANN
             return false;
         }
 
-        // ---- PD: get store address by store ID (with retry + reconnect + cache) ----
+        // ---- PD: get store address by store ID (with retry + reconnect + cache + TTL) ----
         std::string GetStoreAddress(uint64_t storeId) {
-            // Check cache first
+            // Check cache first; honor TTL.
             {
                 std::lock_guard<std::mutex> lock(m_storeAddrMutex);
                 auto it = m_storeAddrCache.find(storeId);
                 if (it != m_storeAddrCache.end()) {
-                    return it->second;
+                    auto age = std::chrono::steady_clock::now() - it->second.fetchedAt;
+                    if (age < std::chrono::seconds(m_storeAddrTtlSec)) {
+                        return it->second.addr;
+                    }
+                    // TTL expired: drop entry; fall through to re-fetch.
+                    m_storeAddrCache.erase(it);
                 }
             }
 
@@ -1447,11 +1542,23 @@ namespace SPTAG::SPANN
                     continue;
                 }
 
+                // pd-store-discovery-stale: cluster_id mismatch detection.
+                if (response.has_header()) {
+                    CheckClusterIdHeader(response.header());
+                    if (!m_available) return "";
+                }
+
                 std::string addr = response.store().address();
-                // Cache the result
+                // pd-store-discovery-stale: positive invalidation — if a known
+                // storeId now resolves to a different addr, evict the stale
+                // stub pool so it isn't reused for stale TCP.
                 {
                     std::lock_guard<std::mutex> lock(m_storeAddrMutex);
-                    m_storeAddrCache[storeId] = addr;
+                    auto it = m_storeAddrCache.find(storeId);
+                    if (it != m_storeAddrCache.end() && it->second.addr != addr) {
+                        EvictStubPool(it->second.addr);
+                    }
+                    m_storeAddrCache[storeId] = StoreAddrEntry{addr, std::chrono::steady_clock::now()};
                 }
                 return addr;
             }
@@ -1487,6 +1594,117 @@ namespace SPTAG::SPANN
                 m_regionCache.end());
         }
 
+        // pd-store-discovery-stale: drop a single store-id cache entry and
+        // evict its stub pool. Called from RPC error handlers when a stub
+        // returns UNAVAILABLE / DEADLINE_EXCEEDED, indicating either the
+        // TiKV process is gone or its IP/port has shifted.
+        void InvalidateStoreCache(uint64_t storeId) {
+            std::string oldAddr;
+            {
+                std::lock_guard<std::mutex> lock(m_storeAddrMutex);
+                auto it = m_storeAddrCache.find(storeId);
+                if (it != m_storeAddrCache.end()) {
+                    oldAddr = it->second.addr;
+                    m_storeAddrCache.erase(it);
+                }
+            }
+            if (!oldAddr.empty()) {
+                EvictStubPool(oldAddr);
+            }
+            m_storeAddrInvalidations.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        // pd-store-discovery-stale: from a key, derive the storeId via the
+        // cached region (if any) and call InvalidateStoreCache. Used in the
+        // hot RPC paths where the caller knows the key but not the storeId.
+        void InvalidateStoreCacheForKey(const std::string& key) {
+            uint64_t storeId = 0;
+            {
+                std::shared_lock<std::shared_mutex> lock(m_regionMutex);
+                for (const auto& r : m_regionCache) {
+                    if ((r.startKey.empty() || key >= r.startKey) &&
+                        (r.endKey.empty() || key < r.endKey)) {
+                        storeId = r.storeId;
+                        break;
+                    }
+                }
+            }
+            if (storeId != 0) {
+                InvalidateStoreCache(storeId);
+            }
+        }
+
+        // pd-store-discovery-stale: tear down a stub pool (channels close
+        // when the StubPool's shared_ptr goes out of scope).
+        void EvictStubPool(const std::string& address) {
+            std::lock_guard<std::mutex> lock(m_storeMutex);
+            auto it = m_storeStubs.find(address);
+            if (it != m_storeStubs.end()) {
+                m_storeStubs.erase(it);
+                m_stubPoolEvictions.fetch_add(1, std::memory_order_relaxed);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                             "TiKVIO: Evicted stub pool for %s\n", address.c_str());
+            }
+        }
+
+        // pd-store-discovery-stale: cluster_id mismatch surfacing.
+        // PD echoes the authoritative cluster_id in every response header.
+        // If it diverges from what we recorded at construction, the cluster
+        // has been rebuilt under us; we refuse to operate (no auto-recover).
+        void CheckClusterIdHeader(const pdpb::ResponseHeader& hdr) {
+            uint64_t cid = hdr.cluster_id();
+            if (cid == 0 || m_clusterId == 0) return;
+            if (cid != m_clusterId) {
+                m_clusterIdMismatches.fetch_add(1, std::memory_order_relaxed);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                             "TiKVIO: ClusterIdChanged: expected %lu, got %lu — refusing further operations\n",
+                             m_clusterId, cid);
+                m_available = false;
+            }
+        }
+
+        // pd-store-discovery-stale: refresh m_pdAddresses from PD GetMembers.
+        // Replaces the bootstrap list with the authoritative current member
+        // URLs. Called periodically by m_pdMemberRefresher and on demand.
+        bool RefreshPDMembers() {
+            if (!m_pdStub) {
+                if (!ReconnectPD()) return false;
+            }
+            pdpb::GetMembersRequest req;
+            auto* hdr = req.mutable_header();
+            hdr->set_cluster_id(m_clusterId);
+            pdpb::GetMembersResponse resp;
+            grpc::ClientContext ctx;
+            ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+            auto status = m_pdStub->GetMembers(&ctx, req, &resp);
+            if (!status.ok()) {
+                m_pdStub.reset();
+                return false;
+            }
+            if (resp.has_header()) CheckClusterIdHeader(resp.header());
+            std::vector<std::string> newAddrs;
+            std::string leaderAddr;
+            if (resp.has_leader() && resp.leader().client_urls_size() > 0) {
+                leaderAddr = resp.leader().client_urls(0);
+                auto pos = leaderAddr.find("://");
+                if (pos != std::string::npos) leaderAddr = leaderAddr.substr(pos + 3);
+                newAddrs.push_back(leaderAddr);
+            }
+            for (const auto& m : resp.members()) {
+                for (const auto& url : m.client_urls()) {
+                    std::string a = url;
+                    auto pos = a.find("://");
+                    if (pos != std::string::npos) a = a.substr(pos + 3);
+                    if (a != leaderAddr) newAddrs.push_back(a);
+                }
+            }
+            if (!newAddrs.empty()) {
+                m_pdAddresses = std::move(newAddrs);
+                m_pdMemberRefreshes.fetch_add(1, std::memory_order_relaxed);
+            }
+            return true;
+        }
+
         // ---- Get or create a TiKV stub for a key ----
         tikvpb::Tikv::Stub* GetStubForKey(const std::string& key) {
             RegionInfo region;
@@ -1517,8 +1735,8 @@ namespace SPTAG::SPANN
             // First check the store address cache
             {
                 std::lock_guard<std::mutex> lock(m_storeAddrMutex);
-                for (const auto& [id, addr] : m_storeAddrCache) {
-                    if (!addr.empty()) return addr;
+                for (const auto& kv : m_storeAddrCache) {
+                    if (!kv.second.addr.empty()) return kv.second.addr;
                 }
             }
 
