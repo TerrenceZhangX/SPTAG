@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Per-case 1M-scale perf gate: __SLUG__
+#
+# REQUIRED before fault-case closure (see results/README.md). Captures
+#   baseline:  query p50/p99, insert QPS, recall@5  with no fault
+#   post_fault: same metrics with fault injected + recovery in place
+# Then writes metrics.json under
+#   <WORKSPACE_REPO>/tasks/distributed-index-scale-2k/results/__SLUG__/1m/
+# Exits non-zero if regression thresholds breached
+#   (default: p99 +20%, qps -10%, recall -1pp).
+#
+# Usage:
+#   ./__SLUG___perf.sh                 # 1M (mandatory floor)
+#   SCALE=10m ./__SLUG___perf.sh       # 10M (preferred when time permits)
+#
+# Hard rules (hard-coded; do not parametrise away):
+#   * Never run on spfresh-dev-amd-005 (sdr-only).
+#   * Never run at 1B on sdr.
+#   * 1M floor is non-negotiable; this script refuses lower.
+#
+# Env knobs:
+#   SCALE                1m | 10m  (default 1m)
+#   FAULT_INJECT_CMD     command run between baseline and post_fault.
+#                        Must inject the case's fault and leave the
+#                        cluster in a state where recovery should kick in.
+#                        Default: "true" (no-op; perf compares two clean
+#                        runs — useful as a smoke check while writing
+#                        the per-case impl, NOT as a real validation).
+#   RESULTS_DIR          override results path. Default:
+#                        $WORKSPACE_REPO/tasks/distributed-index-scale-2k/results
+#   WORKSPACE_REPO       path to OpenClaw workspace clone with results/.
+#                        Default: $HOME/workspace/openclaw
+#   THRESH_P99_PCT       max acceptable p99 increase, percent (default 20)
+#   THRESH_QPS_PCT       max acceptable qps drop, percent (default 10)
+#   THRESH_RECALL_PP     max acceptable recall@5 drop, pp (default 1)
+#   BENCH_CONFIG         override the .ini path (default scaffolded below)
+#   BUILD_DIR            cmake build dir holding Release/SPTAGTest
+#                        default: $HOME/workspace/sptag-ft/build/__SLUG__
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SLUG="__SLUG__"
+
+# ── Hard guards ──
+HOSTSHORT="$(hostname -s 2>/dev/null || hostname)"
+if [[ "$HOSTSHORT" == *"spfresh-dev-amd-005"* || "$HOSTSHORT" == *"msccl-dev-000005"* ]]; then
+    echo "REFUSING: never run perf on spfresh-dev-amd-005" >&2
+    exit 10
+fi
+
+SCALE="${SCALE:-1m}"
+case "$SCALE" in
+    1m|10m) ;;
+    1b|*1b*|100m) echo "REFUSING: scale '$SCALE' is forbidden on sdr (1M floor, 10M preferred, 1B never)" >&2; exit 11 ;;
+    *) echo "REFUSING: unknown SCALE '$SCALE'; allowed: 1m, 10m" >&2; exit 11 ;;
+esac
+
+THRESH_P99_PCT="${THRESH_P99_PCT:-20}"
+THRESH_QPS_PCT="${THRESH_QPS_PCT:-10}"
+THRESH_RECALL_PP="${THRESH_RECALL_PP:-1}"
+
+WORKSPACE_REPO="${WORKSPACE_REPO:-$HOME/workspace/openclaw}"
+RESULTS_DIR="${RESULTS_DIR:-${WORKSPACE_REPO}/tasks/distributed-index-scale-2k/results}"
+CASE_DIR="${RESULTS_DIR}/${SLUG}/${SCALE}"
+mkdir -p "$CASE_DIR"
+
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+LOG_BASE="${CASE_DIR}/run_${RUN_ID}"
+
+BUILD_DIR="${BUILD_DIR:-$HOME/workspace/sptag-ft/build/${SLUG}}"
+TEST_BIN="${BUILD_DIR}/../../wt/${SLUG}/Release/SPTAGTest"
+[[ -x "$TEST_BIN" ]] || { echo "SPTAGTest not found at $TEST_BIN"; exit 2; }
+
+# Default scaffolded config: derive from evaluation/distributed/configs.
+# Each case overrides BENCH_CONFIG if it needs custom params.
+SPTAG_REPO="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+DEFAULT_CFG="${SPTAG_REPO}/evaluation/distributed/configs/benchmark_${SCALE}_template.ini"
+BENCH_CONFIG="${BENCH_CONFIG:-${DEFAULT_CFG}}"
+[[ -f "$BENCH_CONFIG" ]] || { echo "Bench config not found: $BENCH_CONFIG"; exit 3; }
+
+# Materialise a per-run config with IndexPath / KeyPrefix substituted.
+RUN_CFG="${LOG_BASE}.ini"
+sed -e "s|IndexPath=PLACEHOLDER|IndexPath=${LOG_BASE}.idx|" \
+    -e "s|TiKVKeyPrefix=PLACEHOLDER|TiKVKeyPrefix=perf_${SLUG}_${RUN_ID}_|" \
+    "$BENCH_CONFIG" > "$RUN_CFG"
+
+# ── Cluster bring-up ──
+export FAULT_SLUG="${SLUG}-perf"
+# shellcheck disable=SC1090
+source "${SCRIPT_DIR}/lib/docker_pd_tikv.sh"
+trap pd_tikv_teardown EXIT
+pd_tikv_bringup
+
+# Note: benchmark_*_template.ini has Distributed.Enabled=true with
+# placeholders. For the perf gate we run *single-node TIKVIO* against
+# the docker PD/TiKV; this matches the unit-test path the impl exercises
+# and avoids needing a 3-node cluster on sdr just to get a regression
+# signal. Each case can override BENCH_CONFIG with a real distributed
+# .ini once the multi-node harness lands.
+sed -i "s|^Storage=.*|Storage=TIKVIO|" "$RUN_CFG"
+echo "TiKVPDAddresses=${TIKV_PD_ADDRESSES}" >> "$RUN_CFG"
+
+run_phase() {
+    local phase="$1"
+    local out_json="${LOG_BASE}.${phase}.json"
+    local log="${LOG_BASE}.${phase}.log"
+    echo "[perf:${SLUG}] phase=${phase} -> ${out_json}"
+    BENCHMARK_CONFIG="$RUN_CFG" \
+    BENCHMARK_OUTPUT="$out_json" \
+    "$TEST_BIN" --run_test=SPFreshTest/BenchmarkFromConfig \
+        --log_level=test_suite --report_level=short >"$log" 2>&1
+    echo "$out_json"
+}
+
+BASELINE_JSON="$(run_phase baseline)"
+
+INJECT_CMD="${FAULT_INJECT_CMD:-true}"
+echo "[perf:${SLUG}] injecting fault: ${INJECT_CMD}"
+bash -c "$INJECT_CMD" || { echo "[perf:${SLUG}] fault injection failed"; exit 4; }
+
+POST_JSON="$(run_phase post_fault)"
+
+# ── Extract + verdict ──
+PY_EXTRACT='
+import json, sys, os
+case, scale, run_id = os.environ["SLUG"], os.environ["SCALE"], os.environ["RUN_ID"]
+b = json.load(open(os.environ["BASELINE_JSON"]))
+p = json.load(open(os.environ["POST_JSON"]))
+
+def pluck(doc):
+    # SPFreshTest emits results across batches; take the last batch as
+    # steady-state. Field names match Test/src/SPFreshTest.cpp emission.
+    res = doc.get("results", {})
+    # Newer benchmarks emit per-batch; take final or aggregate.
+    batches = sorted([k for k in res if k.startswith("batch")])
+    last = res[batches[-1]] if batches else res
+    return {
+        "p50_ms":      float(last.get("p50", 0)),
+        "p99_ms":      float(last.get("p99", 0)),
+        "insert_qps":  float(last.get("insertQPS", last.get("qps", 0))),
+        "recall_at_5": float(last.get("recall", last.get("recall@5", 0))),
+    }
+
+bm = pluck(b); pm = pluck(p)
+th_p99 = float(os.environ["THRESH_P99_PCT"])
+th_qps = float(os.environ["THRESH_QPS_PCT"])
+th_rec = float(os.environ["THRESH_RECALL_PP"])
+
+reasons = []
+if bm["p99_ms"] > 0 and pm["p99_ms"] > bm["p99_ms"] * (1 + th_p99/100):
+    reasons.append(f"p99 +{(pm[\"p99_ms\"]/bm[\"p99_ms\"]-1)*100:.1f}% > {th_p99}%")
+if bm["insert_qps"] > 0 and pm["insert_qps"] < bm["insert_qps"] * (1 - th_qps/100):
+    reasons.append(f"qps -{(1-pm[\"insert_qps\"]/bm[\"insert_qps\"])*100:.1f}% > {th_qps}%")
+if bm["recall_at_5"] > 0 and (bm["recall_at_5"] - pm["recall_at_5"]) > th_rec/100:
+    reasons.append(f"recall -{(bm[\"recall_at_5\"]-pm[\"recall_at_5\"])*100:.2f}pp > {th_rec}pp")
+
+verdict = "PASS" if not reasons else "REGRESS"
+out = {
+    "case": case, "scale": scale, "run_id": run_id,
+    "timestamp_utc": run_id,
+    "host": os.uname().nodename,
+    "baseline": bm,
+    "post_fault": pm,
+    "regression_thresholds": {
+        "p99_pct": th_p99, "qps_pct": th_qps, "recall_pp": th_rec,
+    },
+    "verdict": verdict,
+    "reasons": reasons,
+}
+json.dump(out, open(os.environ["METRICS_OUT"], "w"), indent=2)
+print(verdict + (": " + "; ".join(reasons) if reasons else ""))
+sys.exit(0 if verdict == "PASS" else 5)
+'
+
+METRICS_OUT="${CASE_DIR}/metrics.json"
+SLUG="$SLUG" SCALE="$SCALE" RUN_ID="$RUN_ID" \
+BASELINE_JSON="$BASELINE_JSON" POST_JSON="$POST_JSON" \
+THRESH_P99_PCT="$THRESH_P99_PCT" THRESH_QPS_PCT="$THRESH_QPS_PCT" \
+THRESH_RECALL_PP="$THRESH_RECALL_PP" METRICS_OUT="$METRICS_OUT" \
+python3 -c "$PY_EXTRACT" | tee "${CASE_DIR}/verdict.txt"
+RC=${PIPESTATUS[0]}
+
+cp "$BASELINE_JSON" "${CASE_DIR}/baseline.json"
+cp "$POST_JSON"     "${CASE_DIR}/post_fault.json"
+cp "${LOG_BASE}.baseline.log"   "${CASE_DIR}/baseline.log"
+cp "${LOG_BASE}.post_fault.log" "${CASE_DIR}/post_fault.log"
+
+echo "[perf:${SLUG}] artifacts in ${CASE_DIR}"
+exit $RC
