@@ -65,9 +65,11 @@ public:
         auto sleepFor = std::chrono::milliseconds(
             static_cast<long long>(base.count() * dist(rng)));
 
-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        auto remainingNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
             m_deadline - now);
-        if (sleepFor > remaining) sleepFor = remaining;
+        if (remainingNs.count() <= 0) return false;
+        auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(remainingNs);
+        if (sleepFor > remainingMs) sleepFor = remainingMs;
         if (sleepFor.count() > 0) std::this_thread::sleep_for(sleepFor);
 
         return true;
