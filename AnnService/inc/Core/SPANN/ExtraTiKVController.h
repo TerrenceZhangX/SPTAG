@@ -1221,6 +1221,8 @@ namespace SPTAG::SPANN
         std::vector<std::string> GetPDAddressesSnapshot() const {
             return m_pdAddresses;
         }
+        // Public wrapper around InvalidateStoreCache for tests + admin RPCs.
+        void TestInvalidateStoreCache(uint64_t storeId) { InvalidateStoreCache(storeId); }
         // Force a synchronous PD member refresh; used by tests + admin RPCs.
         bool ForceRefreshPDMembers() { return RefreshPDMembers(); }
 
