@@ -1696,15 +1696,9 @@ TiKVIO::StubPool::GetNext(std::atomic<uint64_t>* evictions) {
     if (slots.empty()) return nullptr;
     size_t idx = next.fetch_add(1, std::memory_order_relaxed) % slots.size();
     auto& slot = *slots[idx];
-    // Hot path: single relaxed fetch_add + one acquire-load.
-    // Detection of a broken channel is out-of-band:
-    //   * test hooks (TiKVIOTestHook::force_evict_stub_slot)
-    //   * future post-RPC signal path (status::UNAVAILABLE etc.)
-    // We do NOT poll grpc::Channel::GetState() on the hot path; v1 of
-    // this case did and regressed steady-state qps ~9% / insert qps
-    // ~21% on the 1M perf gate (see tikv-grpc-stub-channel-broken
-    // retro). Keepalive args still let the channel transition to
-    // TRANSIENT_FAILURE for the future signal path to observe.
+    // Production sets broken flag via RPC error callback; active
+    // GetState() probe deferred to a future channel-health design,
+    // not in this case's contract.
     if (!slot.broken.load(std::memory_order_acquire)) {
         return slot.stub.get();
     }
