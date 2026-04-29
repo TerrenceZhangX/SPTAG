@@ -343,11 +343,21 @@ namespace SPTAG::SPANN {
         }
 
         void EmitDirectPingsLocked(std::vector<SwimMessage>& out) {
+            // Probe Alive/Suspect every tick. Probe Dead members at a
+            // reduced cadence (every dead_after_ticks) so rejoin can
+            // be observed: without this, once a node is marked Dead
+            // we would never ping it again and a healed partition
+            // cannot recover (no message exchange => no MarkAlive).
             std::vector<int> candidates;
             candidates.reserve(m_members.size());
+            const std::uint64_t deadProbePeriod =
+                std::max<std::uint64_t>(1, m_config.dead_after_ticks);
             for (const auto& [id, st] : m_members) {
                 if (id == m_self) continue;
-                if (st.health == MemberHealth::Dead) continue;
+                if (st.health == MemberHealth::Dead) {
+                    // Slow rejoin probe: sample dead nodes occasionally.
+                    if ((m_tick % deadProbePeriod) != 0) continue;
+                }
                 candidates.push_back(id);
             }
             if (candidates.empty()) return;
