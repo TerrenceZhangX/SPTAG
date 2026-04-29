@@ -120,6 +120,13 @@ namespace SPTAG::SPANN::Distributed {
         std::atomic<std::uint64_t> m_counter{0};
     };
 
+
+    /// Cached result type used by RemotePostingOps' receiver-side dedup
+    /// cache. Currently just a status code; expand if needed.
+    struct AppendDedupResult {
+        std::uint8_t status = 0;  // RemoteAppendResponse::Status
+    };
+
 } // namespace SPTAG::SPANN::Distributed
 
 namespace std {
