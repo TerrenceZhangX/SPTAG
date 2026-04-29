@@ -18,6 +18,7 @@
 #include "inc/Core/Common/IVersionMap.h"
 #include "inc/Core/Common/LocalVersionMap.h"
 #include "inc/Core/Common/TiKVVersionMap.h"
+#include "Distributed/prim/RetryBudget.h"
 #include "ExtraFileController.h"
 #include "Distributed/WorkerNode.h"
 #include <chrono>
@@ -2173,6 +2174,7 @@ namespace SPTAG::SPANN {
             auto readStart = std::chrono::high_resolution_clock::now();
 
             std::vector<TiKVIO::CoprocessorResult> coprResults;
+            std::vector<SizeType> failedPostingIDs;
             auto ret = tikvDB->CoprocessorSearch(
                 p_exWorkSpace->m_postingIDs,
                 reinterpret_cast<const uint8_t*>(queryResults.GetQuantizedTarget()),
@@ -2181,7 +2183,98 @@ namespace SPTAG::SPANN {
                 m_metaDataSize,
                 topN,
                 m_hardLatencyLimit,
-                coprResults);
+                coprResults,
+                &failedPostingIDs);
+
+            // Coprocessor explicit-error recovery (prim/coprocessor-error).
+            // If a region group failed (region_error / gRPC), it returns
+            // the affected posting IDs in `failedPostingIDs` rather than
+            // silently dropping them. Policy:
+            //   1) retry once via prim::RetryBudget on the coprocessor path
+            //   2) if still failing, fall back to per-key MultiGet for the
+            //      affected postings (existing recall path)
+            //   3) if that also fails, surface DiskIOFail to the caller
+            if (ret == ErrorCode::DiskIOFail && !failedPostingIDs.empty()) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "[SearchIndexWithCoprocessor] %zu posting IDs failed via coprocessor; attempting recovery\n",
+                    failedPostingIDs.size());
+
+                // 1) Single retry via RetryBudget on the coprocessor path.
+                prim::RetryBudget budget(/*maxAttempts=*/1,
+                                         /*totalBudget=*/std::chrono::milliseconds(2000));
+                if (budget.TryAgain(nullptr)) {
+                    std::vector<SizeType> retryFailed;
+                    std::vector<TiKVIO::CoprocessorResult> retryResults;
+                    auto retryRet = tikvDB->CoprocessorSearch(
+                        failedPostingIDs,
+                        reinterpret_cast<const uint8_t*>(queryResults.GetQuantizedTarget()),
+                        m_opt->m_dim,
+                        valueType,
+                        m_metaDataSize,
+                        topN,
+                        m_hardLatencyLimit,
+                        retryResults,
+                        &retryFailed);
+                    coprResults.insert(coprResults.end(),
+                                       retryResults.begin(), retryResults.end());
+                    if (retryRet == ErrorCode::Success && retryFailed.empty()) {
+                        ret = ErrorCode::Success;
+                        failedPostingIDs.clear();
+                    } else {
+                        failedPostingIDs.swap(retryFailed);
+                    }
+                }
+
+                // 2) Fallback to per-key MultiGet for any still-failed
+                //    postings. The existing posting-decode path then
+                //    contributes to recall the same way the non-
+                //    coprocessor SearchIndex path does. Note: this
+                //    bypasses TiKV-side top-N selection and brings back
+                //    full posting payloads, which is heavier but
+                //    correct.
+                if (!failedPostingIDs.empty()) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                        "[SearchIndexWithCoprocessor] retry left %zu failed postings; falling back to MultiGet\n",
+                        failedPostingIDs.size());
+
+                    auto fallbackKeys = DBKeys(failedPostingIDs);
+                    std::vector<Helper::PageBuffer<std::uint8_t>> fallbackBuffers(failedPostingIDs.size());
+                    auto fbRet = tikvDB->MultiGet(*fallbackKeys, fallbackBuffers,
+                                                  m_hardLatencyLimit,
+                                                  &(p_exWorkSpace->m_diskRequests));
+                    if (fbRet != ErrorCode::Success) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                            "[SearchIndexWithCoprocessor] MultiGet fallback failed; surfacing DiskIOFail\n");
+                        return ErrorCode::DiskIOFail;
+                    }
+
+                    // Decode the fallback postings inline. We do *not*
+                    // reuse the cached coprocessor top-N here; we walk
+                    // the raw posting payload and add candidates to
+                    // queryResults the same way the non-coprocessor
+                    // SearchIndex path does.
+                    for (size_t pi = 0; pi < failedPostingIDs.size(); ++pi) {
+                        auto& buffer = fallbackBuffers[pi];
+                        char* data = (char*)buffer.GetBuffer();
+                        int vectorNum = (int)(buffer.GetAvailableSize() / m_vectorInfoSize);
+                        for (int i = 0; i < vectorNum; ++i) {
+                            char* vectorInfo = data + i * m_vectorInfoSize;
+                            SizeType vectorID = *(reinterpret_cast<SizeType*>(vectorInfo));
+                            if (p_exWorkSpace->m_deduper.CheckAndSet(vectorID)) continue;
+                            auto distance2leaf = m_headIndex->ComputeDistance(
+                                queryResults.GetQuantizedTarget(),
+                                vectorInfo + m_metaDataSize);
+                            queryResults.AddPoint(vectorID, distance2leaf,
+                                queryResults.WithVec()
+                                    ? ByteArray::Alloc((std::uint8_t*)(vectorInfo + m_metaDataSize), m_vectorDataSize)
+                                    : ByteArray::c_empty);
+                            listElements++;
+                        }
+                    }
+                    ret = ErrorCode::Success;
+                    failedPostingIDs.clear();
+                }
+            }
 
             auto readEnd = std::chrono::high_resolution_clock::now();
             readLatency = (double)std::chrono::duration_cast<std::chrono::microseconds>(readEnd - readStart).count();

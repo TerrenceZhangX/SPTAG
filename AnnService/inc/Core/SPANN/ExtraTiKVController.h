@@ -565,6 +565,23 @@ namespace SPTAG::SPANN
             float distance;
         };
 
+        // Test-only injector. When non-zero, the next N region groups
+        // processed by CoprocessorSearch will be forced to return
+        // region_error (without contacting TiKV). Decremented per group.
+        // Used by prim/coprocessor-error unit test to validate the
+        // error-surfacing path without a live cluster.
+        std::atomic<int> m_testInjectCoprRegionError{0};
+
+        // CoprocessorSearch with explicit error surfacing.
+        //
+        // On region_error or gRPC failure for a region group, the group's
+        // posting IDs are appended to `failedPostingIDs` (out param).
+        // Caller is expected to retry / fall back / surface error.
+        // Returns:
+        //   Success           -- all groups returned cleanly
+        //   DiskIOFail        -- one or more groups failed; failed posting
+        //                        IDs are in failedPostingIDs and partial
+        //                        results are in `results`.
         ErrorCode CoprocessorSearch(
             const std::vector<SizeType>& postingIDs,
             const uint8_t* queryVector,
@@ -573,7 +590,8 @@ namespace SPTAG::SPANN
             int metaDataSize,
             int topN,
             const std::chrono::microseconds& timeout,
-            std::vector<CoprocessorResult>& results)
+            std::vector<CoprocessorResult>& results,
+            std::vector<SizeType>* failedPostingIDs = nullptr)
         {
             if (postingIDs.empty()) return ErrorCode::Success;
 
@@ -605,15 +623,48 @@ namespace SPTAG::SPANN
                 g.keys.push_back({i, prefixedKeys[i]});
             }
 
+            // Per-group outcome: results + failed posting-id list.
+            struct GroupOutcome {
+                std::vector<CoprocessorResult> results;
+                std::vector<SizeType> failedPostingIDs;
+                bool hadError = false;
+            };
+
+            // Map original-key index back to its postingID for failure
+            // reporting.
+            // (We only use the index of group.keys.first into postingIDs.)
+
             // Send RawCoprocessor per region group in parallel
-            std::vector<std::future<std::vector<CoprocessorResult>>> futures;
+            std::vector<std::future<GroupOutcome>> futures;
 
             for (auto& [gkey, rg] : regionGroups) {
                 futures.push_back(std::async(std::launch::async,
-                    [&, &gkey, &rg]() -> std::vector<CoprocessorResult> {
+                    [&, &gkey, &rg]() -> GroupOutcome {
+                    GroupOutcome outcome;
                     auto& group = rg.keys;
+                    auto recordFailure = [&]() {
+                        outcome.hadError = true;
+                        outcome.failedPostingIDs.reserve(group.size());
+                        for (auto& [idx, pkey] : group) {
+                            outcome.failedPostingIDs.push_back(postingIDs[idx]);
+                        }
+                    };
+                    // Test injection: synthesize a region_error for this
+                    // group (skips RPC entirely).
+                    int inject = m_testInjectCoprRegionError.load();
+                    while (inject > 0 &&
+                           !m_testInjectCoprRegionError.compare_exchange_weak(inject, inject - 1)) {}
+                    if (inject > 0) {
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                            "TiKVIO::CoprocessorSearch INJECTED region error for group leader=%s region=%llu\n",
+                            gkey.leaderAddr.c_str(),
+                            static_cast<unsigned long long>(gkey.regionId));
+                        if (!group.empty()) InvalidateRegionCache(group[0].second);
+                        recordFailure();
+                        return outcome;
+                    }
                     auto* stub = GetOrCreateStub(gkey.leaderAddr);
-                    if (!stub) return {};
+                    if (!stub) { recordFailure(); return outcome; }
 
                     // Encode the vector search request
                     std::string requestData = EncodeVectorSearchRequest(
@@ -640,30 +691,44 @@ namespace SPTAG::SPANN
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
                             "TiKVIO::CoprocessorSearch gRPC error: %s\n",
                             status.error_message().c_str());
-                        return {};
+                        recordFailure();
+                        return outcome;
                     }
                     if (response.has_region_error()) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
-                            "TiKVIO::CoprocessorSearch region error\n");
+                            "TiKVIO::CoprocessorSearch region error (surfacing %zu posting IDs)\n",
+                            group.size());
                         InvalidateRegionCache(group[0].second);
-                        return {};
+                        recordFailure();
+                        return outcome;
                     }
                     if (!response.error().empty()) {
                         SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
                             "TiKVIO::CoprocessorSearch error: %s\n",
                             response.error().c_str());
-                        return {};
+                        recordFailure();
+                        return outcome;
                     }
 
-                    return DecodeVectorSearchResponse(response.data());
+                    outcome.results = DecodeVectorSearchResponse(response.data());
+                    return outcome;
                 }));
             }
 
-            // Merge results from all regions
+            // Merge results from all regions; collect failed posting IDs.
             results.clear();
+            bool anyError = false;
             for (auto& f : futures) {
-                auto regionResults = f.get();
-                results.insert(results.end(), regionResults.begin(), regionResults.end());
+                auto outcome = f.get();
+                results.insert(results.end(), outcome.results.begin(), outcome.results.end());
+                if (outcome.hadError) {
+                    anyError = true;
+                    if (failedPostingIDs) {
+                        failedPostingIDs->insert(failedPostingIDs->end(),
+                            outcome.failedPostingIDs.begin(),
+                            outcome.failedPostingIDs.end());
+                    }
+                }
             }
 
             // Sort by distance and truncate to topN
@@ -675,7 +740,7 @@ namespace SPTAG::SPANN
                 results.resize(topN);
             }
 
-            return ErrorCode::Success;
+            return anyError ? ErrorCode::DiskIOFail : ErrorCode::Success;
         }
 
         // ---- Multi-Chunk Posting operations ----
