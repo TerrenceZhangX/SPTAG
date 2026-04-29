@@ -21,7 +21,7 @@
 #
 # Defaults:
 #   --scale            1m   (mandatory floor; 10m optional)
-#   --workspace-repo   $HOME/workspace/openclaw
+#   --workspace-repo   $HOME/workspace/openclaw-tasks
 #                      (where tasks/distributed-index-scale-2k/results/ lives)
 #   --cluster-conf     evaluation/distributed/configs/sdr_single.conf
 #                      (single-node cluster pointing at localhost; if absent,
@@ -52,7 +52,7 @@ fi
 
 SLUG=""
 SCALE_LOW="1m"
-WS_REPO="${HOME}/workspace/openclaw"
+WS_REPO="${HOME}/workspace/openclaw-tasks"
 CLUSTER_CONF="${SCRIPT_DIR}/configs/sdr_single.conf"
 WORKTREE=""
 
