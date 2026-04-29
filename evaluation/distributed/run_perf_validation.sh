@@ -21,7 +21,7 @@
 #
 # Defaults:
 #   --scale            1m   (mandatory floor; 10m optional)
-#   --workspace-repo   $HOME/workspace/openclaw-tasks
+#   --workspace-repo   $HOME/workspace/openclaw
 #                      (where tasks/distributed-index-scale-2k/results/ lives)
 #   --cluster-conf     evaluation/distributed/configs/sdr_single.conf
 #                      (single-node cluster pointing at localhost; if absent,
@@ -52,7 +52,7 @@ fi
 
 SLUG=""
 SCALE_LOW="1m"
-WS_REPO="${HOME}/workspace/openclaw-tasks"
+WS_REPO="${HOME}/workspace/openclaw"
 CLUSTER_CONF="${SCRIPT_DIR}/configs/sdr_single.conf"
 WORKTREE=""
 
@@ -101,7 +101,7 @@ if [[ ! -f "$CLUSTER_CONF" ]]; then
 [cluster]
 ssh_user=$USER
 sptag_dir=$WORKTREE
-data_dir=${DATA_DIR:-/mnt/nvme}
+data_dir=${DATA_DIR:-/mnt_ssd/data}
 tikv_version=v8.5.1
 pd_version=v8.5.1
 ssh_key=~/.ssh/id_ed25519
