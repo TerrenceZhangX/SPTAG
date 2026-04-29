@@ -3,8 +3,9 @@
 # This file defines the machines, roles, and TiKV topology for
 # multi-machine distributed benchmarks.
 #
-# Architecture: Each machine runs its own independent PD + TiKV
-# (NOT a shared Raft cluster). max-replicas is set to 1 automatically.
+# Architecture: All PDs form ONE shared Raft cluster (default), with TiKV stores
+# joining via the full PD endpoint list and max-replicas=3. Override with
+# TIKV_TOPOLOGY=independent to fall back to one standalone PD+TiKV per machine.
 #
 # Usage:
 #   cp cluster.conf.example cluster.conf
@@ -35,8 +36,10 @@ ssh_key=~/.ssh/rsa
 10.11.0.4       30002
 
 [tikv]
-# Independent TiKV + PD instances. One PD and one TiKV per machine.
-# Each PD runs standalone (not a shared Raft cluster).
+# In unified mode (default) all PDs cross-reference each other via
+# --initial-cluster=pd0=http://N0:peer,pd1=http://N1:peer,... and form one
+# Raft group; every TiKV joins that single cluster. In independent mode each
+# host is standalone (max-replicas=1).
 # Fields: host  pd_client_port  pd_peer_port  tikv_port
 #
 # host          pd_client  pd_peer  tikv_port
