@@ -122,7 +122,7 @@ Scaffolded fault case: ${SLUG}
 
 Next steps:
   1. Implement recovery contract on branch fault/${SLUG}.
-     Gate the impl behind a TestHook env var: SPTAG_FAULT_${SLUG^^}=1.
+     Gate the impl behind a TestHook env var: SPTAG_FAULT_${SLUG_UPPER}=1.
      Off by default; baseline runs see the unmodified hot path.
   2. Fill in the RecoveryContract test case + any sub-cases.
   3. Build:  cd build/${SLUG} && make -j SPTAGTest  (~25 s incremental).
