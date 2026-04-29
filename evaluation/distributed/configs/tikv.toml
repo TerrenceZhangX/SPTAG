@@ -1,7 +1,7 @@
 # TiKV configuration for SPTAG distributed benchmarks
 # From BENCHMARK_GUIDE_SCALE_COMPUTE.md Section 4.1
 
-memory-usage-limit = "300GB"
+memory-usage-limit = "80GB"
 
 [server]
 grpc-concurrency = 8
@@ -37,7 +37,7 @@ max-write-buffer-number = 5
 reserve-space = "1GB"
 
 [storage.block-cache]
-capacity = "200GB"
+capacity = "40GB"
 
 [coprocessor]
 region-max-size = "512MB"
