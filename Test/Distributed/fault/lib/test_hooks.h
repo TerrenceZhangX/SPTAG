@@ -68,7 +68,7 @@ public:
     static uint64_t store_addr_invalidations(const TiKVIO& /*io*/) { return 0; }
     static uint64_t pd_member_refreshes(const TiKVIO& /*io*/)      { return 0; }
     static uint64_t cluster_id_mismatches(const TiKVIO& /*io*/)    { return 0; }
-    static uint64_t stub_pool_evictions(const TiKVIO& /*io*/)      { return 0; }
+    static uint64_t stub_pool_evictions(const TiKVIO& io)          { return io.m_stubPoolEvictions.load(); }
 
     // ---- Cache shape -----------------------------------------------------
     // These read existing private members via friend access; safe today.
@@ -85,6 +85,31 @@ public:
     }
     static uint64_t cluster_id(const TiKVIO& io) {
         return io.m_clusterId;
+    }
+    // ---- Stub-pool fault injection ----------------------------------------
+    // Force a slot in the stub pool for `address` to be marked broken.
+    // Returns true if a slot was flipped. The next GetNext() landing on it
+    // rebuilds the channel and bumps stub_pool_evictions.
+    static bool force_evict_stub_slot(TiKVIO& io, const std::string& address, size_t idx) {
+        std::lock_guard<std::mutex> lock(io.m_storeMutex);
+        auto it = io.m_storeStubs.find(address);
+        if (it == io.m_storeStubs.end()) return false;
+        auto& pool = *it->second;
+        if (idx >= pool.slots.size()) return false;
+        pool.slots[idx]->broken.store(true, std::memory_order_release);
+        return true;
+    }
+    static size_t stub_pool_size_for(TiKVIO& io, const std::string& address) {
+        std::lock_guard<std::mutex> lock(io.m_storeMutex);
+        auto it = io.m_storeStubs.find(address);
+        if (it == io.m_storeStubs.end()) return 0;
+        return it->second->slots.size();
+    }
+    static std::vector<std::string> known_store_addresses(const TiKVIO& io) {
+        std::lock_guard<std::mutex> lock(io.m_storeMutex);
+        std::vector<std::string> r; r.reserve(io.m_storeStubs.size());
+        for (auto& kv : io.m_storeStubs) r.push_back(kv.first);
+        return r;
     }
 };
 

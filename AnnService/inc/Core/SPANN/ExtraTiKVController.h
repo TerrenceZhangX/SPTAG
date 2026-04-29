@@ -1171,15 +1171,25 @@ namespace SPTAG::SPANN
         std::unique_ptr<pdpb::PD::Stub> m_pdStub;
         uint64_t m_clusterId = 0;
         bool m_available = false;
+        // Counter: stub-slots evicted+rebuilt due to broken channel.
+        mutable std::atomic<uint64_t> m_stubPoolEvictions{0};
 
         // TiKV store stub pools keyed by store address (multiple channels per store)
         static constexpr int kStubPoolSize = 48;
+        // Per-slot atomics: broken flag is test-hook controllable
+        // (real-world detection comes from grpc channel state).
+        struct StubSlot {
+            std::shared_ptr<grpc::Channel> channel;
+            std::shared_ptr<tikvpb::Tikv::Stub> stub;
+            std::atomic<bool> broken{false};
+            std::mutex rebuildMutex;
+        };
         struct StubPool {
-            std::vector<std::shared_ptr<tikvpb::Tikv::Stub>> stubs;
+            std::vector<std::unique_ptr<StubSlot>> slots;
             std::atomic<uint64_t> next{0};
-            tikvpb::Tikv::Stub* GetNext() {
-                return stubs[next.fetch_add(1, std::memory_order_relaxed) % stubs.size()].get();
-            }
+            std::string address;
+            tikvpb::Tikv::Stub* GetNext(std::atomic<uint64_t>* evictions);
+            static std::shared_ptr<grpc::Channel> MakeChannel(const std::string& addr);
         };
         mutable std::mutex m_storeMutex;
         std::unordered_map<std::string, std::shared_ptr<StubPool>> m_storeStubs;
@@ -1556,35 +1566,39 @@ namespace SPTAG::SPANN
                 std::lock_guard<std::mutex> lock(m_storeMutex);
                 auto it = m_storeStubs.find(address);
                 if (it != m_storeStubs.end()) {
-                    return it->second->GetNext();
+                    return it->second->GetNext(&m_stubPoolEvictions);
                 }
             }
 
-            // Create a pool of stubs with separate channels
+            // Create a pool of stubs with separate channels.
+            // Channels carry gRPC keepalive args so half-open / NAT-dropped
+            // connections move to TRANSIENT_FAILURE rather than silently
+            // black-holing RPCs (see fault/tikv-grpc-stub-channel-broken).
             auto pool = std::make_shared<StubPool>();
-            pool->stubs.reserve(kStubPoolSize);
+            pool->address = address;
+            pool->slots.reserve(kStubPoolSize);
             for (int i = 0; i < kStubPoolSize; i++) {
-                grpc::ChannelArguments args;
-                args.SetMaxReceiveMessageSize(64 * 1024 * 1024); // 64MB
-                args.SetMaxSendMessageSize(64 * 1024 * 1024);    // 64MB
-                auto channel = grpc::CreateCustomChannel(address, grpc::InsecureChannelCredentials(), args);
+                auto channel = StubPool::MakeChannel(address);
                 auto stub = tikvpb::Tikv::NewStub(channel);
                 if (!stub) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "TiKVIO: Failed to create stub for %s\n", address.c_str());
                     return nullptr;
                 }
-                pool->stubs.push_back(std::move(stub));
+                auto slot = std::make_unique<StubSlot>();
+                slot->channel = std::move(channel);
+                slot->stub = std::move(stub);
+                pool->slots.push_back(std::move(slot));
             }
 
             std::lock_guard<std::mutex> lock(m_storeMutex);
             // Double-check after acquiring lock
             auto it = m_storeStubs.find(address);
             if (it != m_storeStubs.end()) {
-                return it->second->GetNext();
+                return it->second->GetNext(&m_stubPoolEvictions);
             }
             m_storeStubs[address] = pool;
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "TiKVIO: Created %d stubs for TiKV store at %s\n", kStubPoolSize, address.c_str());
-            return pool->GetNext();
+            return pool->GetNext(&m_stubPoolEvictions);
         }
 
         // ---- Vector search protocol encoding/decoding ----
@@ -1665,6 +1679,53 @@ namespace SPTAG::SPANN
             return results;
         }
     };
+
+inline std::shared_ptr<grpc::Channel>
+TiKVIO::StubPool::MakeChannel(const std::string& addr) {
+    grpc::ChannelArguments args;
+    args.SetMaxReceiveMessageSize(64 * 1024 * 1024);
+    args.SetMaxSendMessageSize(64 * 1024 * 1024);
+    args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, 10000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, 5000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
+    return grpc::CreateCustomChannel(addr, grpc::InsecureChannelCredentials(), args);
+}
+
+inline tikvpb::Tikv::Stub*
+TiKVIO::StubPool::GetNext(std::atomic<uint64_t>* evictions) {
+    if (slots.empty()) return nullptr;
+    size_t idx = next.fetch_add(1, std::memory_order_relaxed) % slots.size();
+    auto& slot = *slots[idx];
+    // Hot path: single relaxed fetch_add + one acquire-load.
+    // Detection of a broken channel is out-of-band:
+    //   * test hooks (TiKVIOTestHook::force_evict_stub_slot)
+    //   * future post-RPC signal path (status::UNAVAILABLE etc.)
+    // We do NOT poll grpc::Channel::GetState() on the hot path; v1 of
+    // this case did and regressed steady-state qps ~9% / insert qps
+    // ~21% on the 1M perf gate (see tikv-grpc-stub-channel-broken
+    // retro). Keepalive args still let the channel transition to
+    // TRANSIENT_FAILURE for the future signal path to observe.
+    if (!slot.broken.load(std::memory_order_acquire)) {
+        return slot.stub.get();
+    }
+    // Cold path: rebuild slot under the slot mutex.
+    std::lock_guard<std::mutex> lk(slot.rebuildMutex);
+    if (slot.broken.load(std::memory_order_acquire)) {
+        auto ch = MakeChannel(address);
+        auto stub = tikvpb::Tikv::NewStub(ch);
+        if (stub) {
+            slot.channel = std::move(ch);
+            slot.stub = std::move(stub);
+            slot.broken.store(false, std::memory_order_release);
+            if (evictions) evictions->fetch_add(1, std::memory_order_relaxed);
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                "TiKVIO: rebuilt stub slot %zu for store %s (broken channel)\n",
+                idx, address.c_str());
+        }
+    }
+    return slot.stub.get();
+}
+
 } // namespace SPTAG::SPANN
 
 #endif // _SPTAG_SPANN_EXTRATIKVCONTROLLER_H_
