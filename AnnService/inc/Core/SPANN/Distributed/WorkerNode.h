@@ -157,6 +157,26 @@ namespace SPTAG::SPANN {
             return m_remoteOps.SendRemoteLock(nodeIndex, headID, lock);
         }
 
+        // ---- HeadSync pull (gap-fill) ----
+
+        void SetHeadSyncPullProvider(RemotePostingOps::HeadSyncPullProvider cb) {
+            m_remoteOps.SetHeadSyncPullProvider(std::move(cb));
+        }
+
+        ErrorCode SendHeadSyncPull(
+            int targetNodeIndex,
+            std::int32_t originOwner,
+            std::uint64_t epochFloor,
+            std::uint64_t sequenceFloor,
+            std::uint32_t maxEntries,
+            HeadSyncPullResponse& outResp,
+            std::chrono::milliseconds timeout = std::chrono::milliseconds(5000))
+        {
+            if (!m_enabled) return ErrorCode::Fail;
+            return m_remoteOps.SendHeadSyncPull(targetNodeIndex, originOwner,
+                epochFloor, sequenceFloor, maxEntries, outResp, timeout);
+        }
+
         // ---- Append queue ----
 
         void QueueRemoteAppend(int nodeIndex, RemoteAppendRequest req) {
@@ -232,6 +252,8 @@ namespace SPTAG::SPANN {
                 [this](Socket::ConnectionID c, Socket::Packet p) { m_remoteOps.HandleBatchAppendRequest(c, std::move(p)); });
             handlers->emplace(Socket::PacketType::HeadSyncRequest,
                 [this](Socket::ConnectionID c, Socket::Packet p) { m_remoteOps.HandleHeadSyncRequest(c, std::move(p)); });
+            handlers->emplace(Socket::PacketType::HeadSyncPullRequest,
+                [this](Socket::ConnectionID c, Socket::Packet p) { m_remoteOps.HandleHeadSyncPullRequest(c, std::move(p)); });
             handlers->emplace(Socket::PacketType::RemoteLockRequest,
                 [this](Socket::ConnectionID c, Socket::Packet p) { m_remoteOps.HandleRemoteLockRequest(c, std::move(p)); });
             handlers->emplace(Socket::PacketType::DispatchCommand,
@@ -247,6 +269,8 @@ namespace SPTAG::SPANN {
                 [this](Socket::ConnectionID c, Socket::Packet p) { m_remoteOps.HandleAppendResponse(c, std::move(p)); });
             handlers->emplace(Socket::PacketType::BatchAppendResponse,
                 [this](Socket::ConnectionID c, Socket::Packet p) { m_remoteOps.HandleBatchAppendResponse(c, std::move(p)); });
+            handlers->emplace(Socket::PacketType::HeadSyncPullResponse,
+                [this](Socket::ConnectionID c, Socket::Packet p) { m_remoteOps.HandleHeadSyncPullResponse(c, std::move(p)); });
             handlers->emplace(Socket::PacketType::RemoteLockResponse,
                 [this](Socket::ConnectionID c, Socket::Packet p) { m_remoteOps.HandleRemoteLockResponse(c, std::move(p)); });
             handlers->emplace(Socket::PacketType::DispatchResult,
