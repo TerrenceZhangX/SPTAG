@@ -43,8 +43,11 @@ namespace SPTAG::SPANN
     /// All keys are prefixed with a configurable namespace prefix so that
     /// SPANN posting data does not collide with other data in the same TiKV
     /// cluster.
+    namespace test { class TiKVIOTestHook; }
+
     class TiKVIO : public Helper::KeyValueIO
     {
+        friend class ::SPTAG::SPANN::test::TiKVIOTestHook;
     public:
         TiKVIO(const std::string& pdAddresses, const std::string& keyPrefix)
             : m_keyPrefix(keyPrefix)
