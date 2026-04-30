@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #pragma once
+#include <algorithm>
 
 #include "inc/Core/SPANN/Distributed/DistributedProtocol.h"
 #include "inc/Socket/Client.h"
@@ -608,6 +609,155 @@ namespace SPTAG::SPANN {
                 ? ErrorCode::Success : ErrorCode::Fail);
         }
 
+
+        // ==================================================================
+        //  Head-replica-drift audit + reconcile (FT case: head-replica-drift)
+        // ==================================================================
+        //
+        // Steady-state anti-entropy: peers compare the local head-index set
+        // against the authoritative owner-side scan and reconcile divergence
+        // through the existing HeadSync pull-RPC primitive (HandleHeadSync-
+        // PullRequest / HeadSyncPullProvider).
+        //
+        // Receiver-side audit:
+        //   1. Compute a hash digest over the local head VID set.
+        //   2. Ask the owner for its digest (via scanHeads callback that
+        //      enumerates authoritative VIDs, or a digest-only RPC; the
+        //      wrapper is callback-driven so the test harness can supply
+        //      either form).
+        //   3. On mismatch, call scanHeads to get the authoritative VID
+        //      set and apply the symmetric difference (adds + deletes)
+        //      via applyDelta.
+        //
+        // Counters mirror the design-doc metrics:
+        //   - m_headDriftDetected      : audit passes that observed a digest mismatch
+        //   - m_headReconciled         : audit passes that issued a reconcile
+        //   - m_headDriftEntryDelta    : cumulative |symmetric-difference| applied
+        //
+        // env-gate: SPTAG_FAULT_HEAD_REPLICA_DRIFT must be set for the
+        // wrapper to do anything. When unset the wrapper is dormant —
+        // baseline runs see the unmodified hot path; recall on the query
+        // path is unchanged either way (the audit never touches the
+        // search path; it only mutates the local head set when armed).
+        static bool HeadDriftArmed() {
+            return std::getenv("SPTAG_FAULT_HEAD_REPLICA_DRIFT") != nullptr;
+        }
+
+        struct HeadDriftCounters {
+            std::uint64_t detected;     // audits with digest mismatch
+            std::uint64_t reconciled;   // audits that issued a repair
+            std::uint64_t entryDelta;   // cumulative |symmetric-diff| applied
+        };
+
+        HeadDriftCounters GetHeadDriftCounters() const {
+            return HeadDriftCounters{
+                m_headDriftDetected.load(),
+                m_headReconciled.load(),
+                m_headDriftEntryDelta.load(),
+            };
+        }
+
+        /// Outcome of one audit pass.
+        enum class HeadDriftAuditResult : std::uint8_t {
+            Dormant   = 0, ///< env-off; nothing observed, no mutation.
+            InSync    = 1, ///< digests matched; no drift detected.
+            Drift     = 2, ///< digest mismatch detected, no reconcile attempted.
+            Repaired  = 3, ///< drift detected and reconcile applied; |Δ| recorded.
+            Failed    = 4, ///< owner scan callback failed; caller may retry.
+        };
+
+        /// Stable digest over a VID set. We sort + xor-fold to keep the
+        /// digest order-independent and trivially comparable across peers.
+        /// Implementation is deliberately small + header-only; the production
+        /// path is expected to plug in a Merkle digest per ring slice
+        /// (see design-doc §"Detection point"). The audit contract is:
+        ///   eq(digest(A), digest(B)) <=> A == B as sets.
+        static std::uint64_t HeadSetDigest(const std::vector<SizeType>& vids) {
+            std::uint64_t h = 1469598103934665603ull; // FNV-1a basis
+            std::vector<SizeType> tmp = vids;
+            std::sort(tmp.begin(), tmp.end());
+            tmp.erase(std::unique(tmp.begin(), tmp.end()), tmp.end());
+            for (SizeType v : tmp) {
+                std::uint64_t x = static_cast<std::uint64_t>(static_cast<std::int64_t>(v));
+                h ^= x;
+                h *= 1099511628211ull;
+            }
+            return h;
+        }
+
+        /// Audit-and-reconcile primitive. The caller supplies:
+        ///   localScan    : returns the peer's local head VID set.
+        ///   ownerDigest  : returns the authoritative digest (uint64_t).
+        ///                  May be the full owner-side scan + HeadSetDigest
+        ///                  for tests; production wires to a digest-only RPC.
+        ///   ownerScan    : returns the authoritative VID set, only invoked
+        ///                  on digest mismatch (heavyweight pass per the
+        ///                  two-tier design).
+        ///   applyDelta   : applies adds (in authoritative \ local) and
+        ///                  deletes (in local \ authoritative). Must be
+        ///                  idempotent w.r.t. concurrent HeadSync entries
+        ///                  (entryUUID / OpId guards in sibling cases hold).
+        ///
+        /// Dormant when env-off: no callback is invoked; counters are not
+        /// bumped. Caller must treat the result as authoritative.
+        template <typename LocalScanFn, typename OwnerDigestFn,
+                  typename OwnerScanFn, typename ApplyDeltaFn>
+        HeadDriftAuditResult AuditAndReconcileHeadDrift(
+            LocalScanFn localScan,
+            OwnerDigestFn ownerDigest,
+            OwnerScanFn ownerScan,
+            ApplyDeltaFn applyDelta)
+        {
+            if (!HeadDriftArmed()) {
+                return HeadDriftAuditResult::Dormant;
+            }
+
+            std::vector<SizeType> local = localScan();
+            std::uint64_t localDigest = HeadSetDigest(local);
+
+            std::uint64_t remoteDigest = 0;
+            if (!ownerDigest(remoteDigest)) {
+                return HeadDriftAuditResult::Failed;
+            }
+            if (localDigest == remoteDigest) {
+                return HeadDriftAuditResult::InSync;
+            }
+
+            m_headDriftDetected.fetch_add(1);
+
+            std::vector<SizeType> remote;
+            if (!ownerScan(remote)) {
+                // Detected but unable to repair this pass; counter still
+                // bumped so the caller / harness sees the divergence.
+                return HeadDriftAuditResult::Drift;
+            }
+
+            std::sort(local.begin(), local.end());
+            local.erase(std::unique(local.begin(), local.end()), local.end());
+            std::sort(remote.begin(), remote.end());
+            remote.erase(std::unique(remote.begin(), remote.end()), remote.end());
+
+            std::vector<SizeType> adds;     // remote \ local
+            std::vector<SizeType> deletes;  // local \ remote
+            std::set_difference(remote.begin(), remote.end(),
+                                local.begin(),  local.end(),
+                                std::back_inserter(adds));
+            std::set_difference(local.begin(),  local.end(),
+                                remote.begin(), remote.end(),
+                                std::back_inserter(deletes));
+            std::uint64_t delta = static_cast<std::uint64_t>(adds.size() + deletes.size());
+
+            applyDelta(adds, deletes);
+            m_headReconciled.fetch_add(1);
+            m_headDriftEntryDelta.fetch_add(delta);
+
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                "RemotePostingOps: head-drift reconcile +%zu / -%zu (delta=%llu)\n",
+                adds.size(), deletes.size(), (unsigned long long)delta);
+
+            return HeadDriftAuditResult::Repaired;
+        }
+
     private:
         // ---- Response matching helpers ----
 
@@ -764,6 +914,11 @@ namespace SPTAG::SPANN {
             ret.Header().WriteBuffer(ret.HeaderBuffer());
             m_net->GetServer()->SendPacket(srcPacket.Header().m_connectionID, std::move(ret), nullptr);
         }
+
+        // ---- Head-replica-drift counters (FT case: head-replica-drift) ----
+        std::atomic<std::uint64_t> m_headDriftDetected{0};
+        std::atomic<std::uint64_t> m_headReconciled{0};
+        std::atomic<std::uint64_t> m_headDriftEntryDelta{0};
     };
 
 } // namespace SPTAG::SPANN
