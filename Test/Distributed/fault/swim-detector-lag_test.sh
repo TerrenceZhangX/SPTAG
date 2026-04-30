@@ -17,7 +17,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export FAULT_SLUG="swim-detector-lag"
 
 BUILD_DIR="${BUILD_DIR:-$HOME/workspace/sptag-ft/build/${FAULT_SLUG}}"
-TEST_BIN="${BUILD_DIR}/Release/SPTAGTest"
+WT_DIR="${WT_DIR:-$HOME/workspace/sptag-ft/wt/swim-detector-lag}"
+TEST_BIN="${WT_DIR}/Release/SPTAGTest"
+[[ -x "$TEST_BIN" ]] || TEST_BIN="${BUILD_DIR}/Release/SPTAGTest"
 [[ -x "$TEST_BIN" ]] || TEST_BIN="${BUILD_DIR}/SPTAGTest"
 [[ -x "$TEST_BIN" ]] || { echo "SPTAGTest not found under $BUILD_DIR"; exit 2; }
 
