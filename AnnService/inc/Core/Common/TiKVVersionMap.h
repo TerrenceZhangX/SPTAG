@@ -173,6 +173,40 @@ namespace SPTAG
                 m_db->Put(CountKey(), val, MaxTimeout, nullptr);
             }
 
+            // ==== Fault: version-cache-evict-then-cas (env-gated, counters) ====
+            // Detects "cache evicted between Get and CAS" by probing the LRU
+            // chunk cache at CAS-time. The CAS path itself always uses the
+            // authoritative TiKV ReadChunk (not the cached path) so the
+            // production hot path is byte-identical when env is unset; the
+            // counters only exist to surface the invariant for tests.
+            mutable std::atomic<std::uint64_t> m_versionCacheEvictReread{0};
+            mutable std::atomic<std::uint64_t> m_versionCacheAuthoritativePath{0};
+
+            static bool IsEvictThenCasArmed_()
+            {
+                static const bool armed = []{
+                    const char* v = std::getenv("SPTAG_FAULT_VERSION_CACHE_EVICT_THEN_CAS");
+                    return v && *v && std::string(v) != "0";
+                }();
+                return armed;
+            }
+
+            // Probe whether `chunkId` is currently held in the LRU. Read-only.
+            bool CacheHas_(SizeType chunkId) const
+            {
+                std::shared_lock<std::shared_mutex> lock(m_cacheMutex);
+                return m_cacheMap.find(chunkId) != m_cacheMap.end();
+            }
+
+        public:
+            static bool EvictThenCasArmed() { return IsEvictThenCasArmed_(); }
+            std::uint64_t GetVersionCacheEvictRereadCount() const { return m_versionCacheEvictReread.load(); }
+            std::uint64_t GetVersionCacheAuthoritativePathCount() const { return m_versionCacheAuthoritativePath.load(); }
+            void ResetEvictThenCasCounters() {
+                m_versionCacheEvictReread.store(0);
+                m_versionCacheAuthoritativePath.store(0);
+            }
+
         public:
             TiKVVersionMap() : m_layer(0), m_chunkSize(4096) {}
 
@@ -340,6 +374,16 @@ namespace SPTAG
                     SizeType cid = ChunkId(key);
                     int offset = ChunkOffset(key);
                     std::lock_guard<std::mutex> lock(ChunkMutex(cid));
+                    // Fault-gated: detect cache-miss-under-CAS (LRU evicted the
+                    // hot chunk between an upstream Get and this CAS). The read
+                    // below is always authoritative TiKV; we only count the
+                    // surface for invariant tests. Dormant when env unset.
+                    if (IsEvictThenCasArmed_()) {
+                        if (!CacheHas_(cid)) {
+                            m_versionCacheEvictReread.fetch_add(1, std::memory_order_relaxed);
+                        }
+                        m_versionCacheAuthoritativePath.fetch_add(1, std::memory_order_relaxed);
+                    }
                     std::string chunk = ReadChunk(cid);
                     if (chunk.empty()) return false;
 
