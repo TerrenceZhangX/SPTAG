@@ -4,6 +4,7 @@
 #pragma once
 
 #include "inc/Core/Common.h"
+#include "inc/Core/SPANN/Distributed/RingEpoch.h"
 #include <cstdint>
 #include <map>
 #include <set>
@@ -17,6 +18,12 @@ namespace SPTAG::SPANN {
     public:
         explicit ConsistentHashRing(int vnodeCount = 150)
             : m_vnodeCount(vnodeCount) {}
+
+        /// Tag this snapshot with the (epoch, ringRev) it represents.
+        /// Set once after construction; treat as immutable thereafter.
+        void SetEpoch(RingEpoch e) { m_epoch = e; }
+        RingEpoch GetEpoch() const { return m_epoch; }
+        bool IsEpochInitialised() const { return m_epoch.IsInitialised(); }
 
         /// Add a physical node to the ring with its virtual nodes.
         void AddNode(int nodeIndex) {
@@ -79,6 +86,7 @@ namespace SPTAG::SPANN {
         int m_vnodeCount;
         std::map<uint32_t, int> m_ring;  // hash position → nodeIndex
         std::set<int> m_nodes;           // active physical node indices
+        RingEpoch m_epoch;               // (0,0) = uninitialised sentinel
     };
 
 } // namespace SPTAG::SPANN
