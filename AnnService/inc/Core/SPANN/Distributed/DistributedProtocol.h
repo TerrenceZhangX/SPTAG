@@ -4,7 +4,9 @@
 #pragma once
 
 #include "inc/Core/Common.h"
+#include "inc/Core/SPANN/Distributed/OpId.h"
 #include "inc/Socket/SimpleSerialization.h"
+#include "inc/Core/SPANN/Distributed/RingEpoch.h"
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -13,22 +15,29 @@
 namespace SPTAG::SPANN {
 
     /// Serializable request for remote Append operations sent between compute nodes.
+    /// MajorVersion 2 added the embedded OpId for receiver-side idempotency dedup.
     struct RemoteAppendRequest {
-        static constexpr std::uint16_t MajorVersion() { return 1; }
-        static constexpr std::uint16_t MirrorVersion() { return 0; }
+        // MajorVersion 2: embedded OpId for receiver-side dedup.
+        // MirrorVersion 1: appended sender RingEpoch (epoch, ringRev).
+        static constexpr std::uint16_t MajorVersion() { return 2; }
+        static constexpr std::uint16_t MirrorVersion() { return 1; }
 
+        Distributed::OpId m_opId{};   // identifies this logical op for retries
         SizeType m_headID = 0;
         std::string m_headVec;        // raw head vector bytes
         std::int32_t m_appendNum = 0;
         std::string m_appendPosting;  // serialized posting data
+        RingEpoch m_senderEpoch;      // sender ring view at send time
 
         std::size_t EstimateBufferSize() const {
             std::size_t size = 0;
             size += sizeof(std::uint16_t) * 2;  // version fields
+            size += Distributed::OpId::WireSize();
             size += sizeof(SizeType);            // headID
             size += sizeof(std::uint32_t) + m_headVec.size();       // headVec (len-prefixed)
             size += sizeof(std::int32_t);        // appendNum
             size += sizeof(std::uint32_t) + m_appendPosting.size(); // appendPosting (len-prefixed)
+            size += RingEpoch::WireSize();       // senderEpoch (mirror>=1)
             return size;
         }
 
@@ -36,10 +45,12 @@ namespace SPTAG::SPANN {
             using namespace Socket::SimpleSerialization;
             p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
             p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = m_opId.Write(p_buffer);
             p_buffer = SimpleWriteBuffer(m_headID, p_buffer);
             p_buffer = SimpleWriteBuffer(m_headVec, p_buffer);
             p_buffer = SimpleWriteBuffer(m_appendNum, p_buffer);
             p_buffer = SimpleWriteBuffer(m_appendPosting, p_buffer);
+            p_buffer = m_senderEpoch.Write(p_buffer);
             return p_buffer;
         }
 
@@ -49,10 +60,16 @@ namespace SPTAG::SPANN {
             p_buffer = SimpleReadBuffer(p_buffer, majorVer);
             p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
             if (majorVer != MajorVersion()) return nullptr;
+            p_buffer = m_opId.Read(p_buffer);
             p_buffer = SimpleReadBuffer(p_buffer, m_headID);
             p_buffer = SimpleReadBuffer(p_buffer, m_headVec);
             p_buffer = SimpleReadBuffer(p_buffer, m_appendNum);
             p_buffer = SimpleReadBuffer(p_buffer, m_appendPosting);
+            if (mirrorVer >= 1) {
+                p_buffer = m_senderEpoch.Read(p_buffer);
+            } else {
+                m_senderEpoch = RingEpoch{};
+            }
             return p_buffer;
         }
     };
@@ -60,13 +77,20 @@ namespace SPTAG::SPANN {
     /// Response for remote Append operations.
     struct RemoteAppendResponse {
         static constexpr std::uint16_t MajorVersion() { return 1; }
-        static constexpr std::uint16_t MirrorVersion() { return 0; }
+        // MirrorVersion 1: appended receiver-authoritative RingEpoch.
+        static constexpr std::uint16_t MirrorVersion() { return 1; }
 
-        enum class Status : std::uint8_t { Success = 0, Failed = 1 };
+        enum class Status : std::uint8_t {
+            Success = 0,
+            Failed = 1,
+            StaleRingEpoch = 2,   // sender epoch behind receiver
+        };
         Status m_status = Status::Success;
+        RingEpoch m_authoritativeEpoch;   // receiver view (mirror>=1)
 
         std::size_t EstimateBufferSize() const {
-            return sizeof(std::uint16_t) * 2 + sizeof(std::uint8_t);
+            return sizeof(std::uint16_t) * 2 + sizeof(std::uint8_t)
+                 + RingEpoch::WireSize();
         }
 
         std::uint8_t* Write(std::uint8_t* p_buffer) const {
@@ -74,6 +98,7 @@ namespace SPTAG::SPANN {
             p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
             p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
             p_buffer = SimpleWriteBuffer(m_status, p_buffer);
+            p_buffer = m_authoritativeEpoch.Write(p_buffer);
             return p_buffer;
         }
 
@@ -84,6 +109,11 @@ namespace SPTAG::SPANN {
             p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
             if (majorVer != MajorVersion()) return nullptr;
             p_buffer = SimpleReadBuffer(p_buffer, m_status);
+            if (mirrorVer >= 1) {
+                p_buffer = m_authoritativeEpoch.Read(p_buffer);
+            } else {
+                m_authoritativeEpoch = RingEpoch{};
+            }
             return p_buffer;
         }
     };
@@ -97,13 +127,18 @@ namespace SPTAG::SPANN {
     /// Batch of remote append requests sent to a single node in one round-trip.
     struct BatchRemoteAppendRequest {
         static constexpr std::uint16_t MajorVersion() { return 1; }
-        static constexpr std::uint16_t MirrorVersion() { return 0; }
+        // MirrorVersion 1: appended sender RingEpoch at the batch envelope.
+        // The batch-level epoch is the canonical one used for fencing —
+        // every item in a batch is sent under one ring snapshot.
+        static constexpr std::uint16_t MirrorVersion() { return 1; }
 
         std::uint32_t m_count = 0;
         std::vector<RemoteAppendRequest> m_items;
+        RingEpoch m_senderEpoch;
 
         std::size_t EstimateBufferSize() const {
             std::size_t size = sizeof(std::uint16_t) * 2;  // version
+            size += RingEpoch::WireSize();  // senderEpoch
             size += sizeof(std::uint32_t);  // count
             for (auto& item : m_items) size += item.EstimateBufferSize();
             return size;
@@ -113,6 +148,7 @@ namespace SPTAG::SPANN {
             using namespace Socket::SimpleSerialization;
             p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
             p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = m_senderEpoch.Write(p_buffer);
             p_buffer = SimpleWriteBuffer(m_count, p_buffer);
             for (auto& item : m_items) p_buffer = item.Write(p_buffer);
             return p_buffer;
@@ -125,6 +161,11 @@ namespace SPTAG::SPANN {
             p_buffer = SimpleReadBuffer(p_buffer, majorVer);
             p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
             if (majorVer != MajorVersion()) return nullptr;
+            if (mirrorVer >= 1) {
+                p_buffer = m_senderEpoch.Read(p_buffer);
+            } else {
+                m_senderEpoch = RingEpoch{};
+            }
             p_buffer = SimpleReadBuffer(p_buffer, m_count);
             // Reject obviously corrupt counts before allocating
             if (bodyLength > 0 && m_count > bodyLength / 8) {
@@ -144,13 +185,23 @@ namespace SPTAG::SPANN {
     /// Response for batch remote append.
     struct BatchRemoteAppendResponse {
         static constexpr std::uint16_t MajorVersion() { return 1; }
-        static constexpr std::uint16_t MirrorVersion() { return 0; }
+        // MirrorVersion 1: appended fenceStatus byte + authoritativeEpoch.
+        static constexpr std::uint16_t MirrorVersion() { return 1; }
+
+        // Mirrors RemoteAppendResponse::Status semantics.
+        enum class FenceStatus : std::uint8_t {
+            Ok = 0,
+            StaleRingEpoch = 2,
+        };
 
         std::uint32_t m_successCount = 0;
         std::uint32_t m_failCount = 0;
+        FenceStatus m_fenceStatus = FenceStatus::Ok;
+        RingEpoch m_authoritativeEpoch;
 
         std::size_t EstimateBufferSize() const {
-            return sizeof(std::uint16_t) * 2 + sizeof(std::uint32_t) * 2;
+            return sizeof(std::uint16_t) * 2 + sizeof(std::uint32_t) * 2
+                 + sizeof(std::uint8_t) + RingEpoch::WireSize();
         }
 
         std::uint8_t* Write(std::uint8_t* p_buffer) const {
@@ -159,6 +210,8 @@ namespace SPTAG::SPANN {
             p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
             p_buffer = SimpleWriteBuffer(m_successCount, p_buffer);
             p_buffer = SimpleWriteBuffer(m_failCount, p_buffer);
+            p_buffer = SimpleWriteBuffer(static_cast<std::uint8_t>(m_fenceStatus), p_buffer);
+            p_buffer = m_authoritativeEpoch.Write(p_buffer);
             return p_buffer;
         }
 
@@ -170,6 +223,15 @@ namespace SPTAG::SPANN {
             if (majorVer != MajorVersion()) return nullptr;
             p_buffer = SimpleReadBuffer(p_buffer, m_successCount);
             p_buffer = SimpleReadBuffer(p_buffer, m_failCount);
+            if (mirrorVer >= 1) {
+                std::uint8_t rawFs = 0;
+                p_buffer = SimpleReadBuffer(p_buffer, rawFs);
+                m_fenceStatus = static_cast<FenceStatus>(rawFs);
+                p_buffer = m_authoritativeEpoch.Read(p_buffer);
+            } else {
+                m_fenceStatus = FenceStatus::Ok;
+                m_authoritativeEpoch = RingEpoch{};
+            }
             return p_buffer;
         }
     };
@@ -423,18 +485,25 @@ namespace SPTAG::SPANN {
     };
 
     /// Dispatcher → worker ring update (full node list, versioned).
+    /// m_ringVersion plays the role of "epoch" — it bumps on every membership
+    /// change. m_ringRev (mirror>=1) is a within-epoch monotonic for
+    /// non-membership rebalances; current dispatcher always sends 0.
     struct RingUpdateMsg {
         static constexpr std::uint16_t MajorVersion() { return 1; }
-        static constexpr std::uint16_t MirrorVersion() { return 0; }
+        static constexpr std::uint16_t MirrorVersion() { return 1; }
 
-        std::uint32_t m_ringVersion = 0;
+        std::uint32_t m_ringVersion = 0;     // = RingEpoch::epoch
+        std::uint32_t m_ringRev = 0;         // = RingEpoch::ringRev (mirror>=1)
         std::int32_t m_vnodeCount = 150;
         std::vector<std::int32_t> m_nodeIndices;
+
+        RingEpoch AsEpoch() const { return RingEpoch{m_ringVersion, m_ringRev}; }
 
         std::size_t EstimateBufferSize() const {
             std::size_t size = 0;
             size += sizeof(std::uint16_t) * 2;
             size += sizeof(std::uint32_t);      // ringVersion
+            size += sizeof(std::uint32_t);      // ringRev (mirror>=1)
             size += sizeof(std::int32_t);       // vnodeCount
             size += sizeof(std::uint32_t);      // numNodes
             size += sizeof(std::int32_t) * m_nodeIndices.size();
@@ -446,6 +515,7 @@ namespace SPTAG::SPANN {
             p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
             p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
             p_buffer = SimpleWriteBuffer(m_ringVersion, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_ringRev, p_buffer);
             p_buffer = SimpleWriteBuffer(m_vnodeCount, p_buffer);
             std::uint32_t count = static_cast<std::uint32_t>(m_nodeIndices.size());
             p_buffer = SimpleWriteBuffer(count, p_buffer);
@@ -462,6 +532,11 @@ namespace SPTAG::SPANN {
             p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
             if (majorVer != MajorVersion()) return nullptr;
             p_buffer = SimpleReadBuffer(p_buffer, m_ringVersion);
+            if (mirrorVer >= 1) {
+                p_buffer = SimpleReadBuffer(p_buffer, m_ringRev);
+            } else {
+                m_ringRev = 0;
+            }
             p_buffer = SimpleReadBuffer(p_buffer, m_vnodeCount);
             std::uint32_t count = 0;
             p_buffer = SimpleReadBuffer(p_buffer, count);

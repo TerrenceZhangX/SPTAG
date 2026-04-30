@@ -4,6 +4,9 @@
 #pragma once
 
 #include "inc/Core/SPANN/Distributed/DistributedProtocol.h"
+#include "inc/Core/SPANN/Distributed/OpId.h"
+#include "inc/Core/SPANN/Distributed/OpIdCache.h"
+#include <chrono>
 #include "inc/Socket/Client.h"
 #include "inc/Socket/Server.h"
 #include "inc/Socket/Packet.h"
@@ -49,6 +52,12 @@ namespace SPTAG::SPANN {
             virtual int GetNumNodes() const = 0;
             virtual Socket::Client* GetClient() = 0;
             virtual Socket::Server* GetServer() = 0;
+
+            /// Current local ring epoch. {0,0} means "not yet initialised".
+            /// Default is {0,0} so legacy implementers (test doubles) keep
+            /// compiling — they will simply trip the sender-startup gate
+            /// on any routed send, which is the safe default.
+            virtual RingEpoch GetCurrentRingEpoch() const { return RingEpoch{}; }
         };
 
         RemotePostingOps() = default;
@@ -58,6 +67,24 @@ namespace SPTAG::SPANN {
         void SetAppendCallback(AppendCallback cb) { m_appendCallback = std::move(cb); }
         void SetHeadSyncCallback(HeadSyncCallback cb) { m_headSyncCallback = std::move(cb); }
         void SetRemoteLockCallback(RemoteLockCallback cb) { m_remoteLockCallback = std::move(cb); }
+
+        // Configure idempotency for outbound (sender) and inbound (receiver)
+        // Append paths. Must be called before any traffic.
+        void ConfigureIdempotency(std::int32_t senderId,
+                                  std::uint32_t restartEpoch,
+                                  std::size_t cacheCapacity = 4096,
+                                  std::chrono::seconds cacheTtl = std::chrono::seconds(60)) {
+            m_opIdAllocator.Reset(senderId, restartEpoch);
+            m_appendDedupCache = std::make_unique<
+                Distributed::OpIdCache<Distributed::AppendDedupResult>>(
+                    cacheCapacity ? cacheCapacity : 4096, cacheTtl);
+        }
+
+        // Test hooks.
+        Distributed::OpIdCache<Distributed::AppendDedupResult>* AppendDedupCacheForTest() {
+            return m_appendDedupCache.get();
+        }
+        Distributed::OpIdAllocator& OpIdAllocatorForTest() { return m_opIdAllocator; }
 
         // ==================================================================
         //  Append — single item, synchronous (waits for response)
@@ -70,6 +97,18 @@ namespace SPTAG::SPANN {
             int appendNum,
             std::string& appendPosting)
         {
+            // Sender-startup gate: refuse routed RPCs until our ring view is
+            // initialised. Eliminates the GetOwner→{isLocal=true,nodeIndex=-1}
+            // hazard at the RPC layer (fault-case: routing-table-drift).
+            RingEpoch senderEpoch = m_net->GetCurrentRingEpoch();
+            if (!senderEpoch.IsInitialised()) {
+                m_ringNotReadyRejects.fetch_add(1);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "RemotePostingOps: refusing append to node %d, ring not initialised (sender-startup gate)\n",
+                    targetNodeIndex);
+                return ErrorCode::RingNotReady;
+            }
+
             Socket::ConnectionID connID = m_net->GetPeerConnection(targetNodeIndex);
             if (connID == Socket::c_invalidConnectionID) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
@@ -83,6 +122,10 @@ namespace SPTAG::SPANN {
             req.m_headVec = *headVec;
             req.m_appendNum = appendNum;
             req.m_appendPosting = appendPosting;
+            if (m_opIdAllocator.SenderId() >= 0) {
+                req.m_opId = m_opIdAllocator.Next();
+            }
+            req.m_senderEpoch = senderEpoch;
 
             Socket::ResourceID resID = m_nextResourceId.fetch_add(1);
             auto [future, _] = CreatePendingResponse(resID);
@@ -124,6 +167,16 @@ namespace SPTAG::SPANN {
         {
             if (items.empty()) return ErrorCode::Success;
 
+            // Sender-startup gate (see SendRemoteAppend).
+            RingEpoch senderEpoch = m_net->GetCurrentRingEpoch();
+            if (!senderEpoch.IsInitialised()) {
+                m_ringNotReadyRejects.fetch_add(1);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "RemotePostingOps: refusing batch append (%d items) to node %d, ring not initialised\n",
+                    (int)items.size(), targetNodeIndex);
+                return ErrorCode::RingNotReady;
+            }
+
             for (int attempt = 0; attempt < 2; attempt++) {
                 Socket::ConnectionID connID = m_net->GetPeerConnection(targetNodeIndex);
                 if (connID == Socket::c_invalidConnectionID) {
@@ -137,6 +190,8 @@ namespace SPTAG::SPANN {
                 BatchRemoteAppendRequest batchReq;
                 batchReq.m_count = static_cast<std::uint32_t>(items.size());
                 batchReq.m_items = std::move(items);
+                batchReq.m_senderEpoch = senderEpoch;
+                for (auto& it : batchReq.m_items) it.m_senderEpoch = senderEpoch;
 
                 Socket::ResourceID resID = m_nextResourceId.fetch_add(1);
                 auto [future, _] = CreatePendingResponse(resID);
@@ -295,8 +350,56 @@ namespace SPTAG::SPANN {
             if (req.Read(packet.Body()) == nullptr) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
                     "RemotePostingOps: AppendRequest version mismatch\n");
-                SendAppendResponse(packet, RemoteAppendResponse::Status::Failed);
+                SendAppendResponse(packet, RemoteAppendResponse::Status::Failed,
+                                   m_net ? m_net->GetCurrentRingEpoch() : RingEpoch{});
                 return;
+            }
+
+            // Receiver-side ring-epoch fence — runs first so a stale sender
+            // is rejected before we touch the dedup cache (split-brain guard).
+            RingEpoch local = m_net ? m_net->GetCurrentRingEpoch() : RingEpoch{};
+            auto cmp = CompareRingEpoch(req.m_senderEpoch, local);
+            if (cmp == RingEpochCompare::SenderStale ||
+                cmp == RingEpochCompare::SenderUninitialised) {
+                m_staleSenderRejects.fetch_add(1);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "RemotePostingOps: rejecting AppendRequest, stale sender (sender=%u/%u local=%u/%u)\n",
+                    req.m_senderEpoch.epoch, req.m_senderEpoch.ringRev,
+                    local.epoch, local.ringRev);
+                SendAppendResponse(packet, RemoteAppendResponse::Status::StaleRingEpoch, local);
+                return;
+            }
+            if (cmp == RingEpochCompare::ReceiverStale) {
+                // Receiver is behind. Continue (fail-open at receiver side):
+                // the dispatcher will catch up via RingUpdate retries; bumping
+                // the counter lets a refresh hook observe the lag.
+                m_receiverStaleObservations.fetch_add(1);
+            }
+
+            // Receiver-side idempotency dedup. Replay cached status on hit;
+            // bump epoch tracking on a fresh restartEpoch from this sender.
+            const Distributed::OpId& incomingOpId = req.m_opId;
+            RemoteAppendResponse::Status status = RemoteAppendResponse::Status::Failed;
+
+            if (m_appendDedupCache && incomingOpId.IsValid()) {
+                {
+                    std::lock_guard<std::mutex> g(m_epochMutex);
+                    auto& seen = m_lastSeenEpoch[incomingOpId.senderId];
+                    if (incomingOpId.restartEpoch > seen) {
+                        m_appendDedupCache->InvalidateOlderEpochs(
+                            incomingOpId.senderId, incomingOpId.restartEpoch);
+                        seen = incomingOpId.restartEpoch;
+                    }
+                }
+
+                auto [hit, cached] = m_appendDedupCache->Lookup(incomingOpId);
+                if (hit) {
+                    m_dedupReplays.fetch_add(1);
+                    SendAppendResponse(packet,
+                        static_cast<RemoteAppendResponse::Status>(cached.status),
+                        local);
+                    return;
+                }
             }
 
             ErrorCode result = ErrorCode::Fail;
@@ -306,10 +409,16 @@ namespace SPTAG::SPANN {
                     req.m_headID, headVec, req.m_appendNum, req.m_appendPosting);
             }
 
-            auto status = (result == ErrorCode::Success)
+            status = (result == ErrorCode::Success)
                 ? RemoteAppendResponse::Status::Success
                 : RemoteAppendResponse::Status::Failed;
-            SendAppendResponse(packet, status);
+
+            if (m_appendDedupCache && incomingOpId.IsValid()) {
+                Distributed::AppendDedupResult cached;
+                cached.status = static_cast<std::uint8_t>(status);
+                m_appendDedupCache->Insert(incomingOpId, cached);
+            }
+            SendAppendResponse(packet, status, local);
         }
 
         void HandleAppendResponse(Socket::ConnectionID connID, Socket::Packet packet) {
@@ -328,6 +437,11 @@ namespace SPTAG::SPANN {
                 return;
             }
 
+            if (resp.m_status == RemoteAppendResponse::Status::StaleRingEpoch) {
+                m_staleSenderRoundtrips.fetch_add(1);
+                promise->set_value(ErrorCode::StaleRingEpoch);
+                return;
+            }
             promise->set_value(
                 resp.m_status == RemoteAppendResponse::Status::Success
                     ? ErrorCode::Success : ErrorCode::Fail);
@@ -347,8 +461,30 @@ namespace SPTAG::SPANN {
             if (batchReq.Read(packet.Body(), packet.Header().m_bodyLength) == nullptr) {
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
                     "RemotePostingOps: BatchAppendRequest parse failed\n");
-                SendBatchAppendResponse(packet, 0, 1);
+                SendBatchAppendResponse(packet, 0, 1,
+                                        BatchRemoteAppendResponse::FenceStatus::Ok,
+                                        m_net ? m_net->GetCurrentRingEpoch() : RingEpoch{});
                 return;
+            }
+
+            // Receiver-side ring-epoch fence (batch envelope).
+            RingEpoch local = m_net ? m_net->GetCurrentRingEpoch() : RingEpoch{};
+            auto cmp = CompareRingEpoch(batchReq.m_senderEpoch, local);
+            if (cmp == RingEpochCompare::SenderStale ||
+                cmp == RingEpochCompare::SenderUninitialised) {
+                m_staleSenderRejects.fetch_add(1);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "RemotePostingOps: rejecting BatchAppendRequest (%u items), stale sender (sender=%u/%u local=%u/%u)\n",
+                    batchReq.m_count,
+                    batchReq.m_senderEpoch.epoch, batchReq.m_senderEpoch.ringRev,
+                    local.epoch, local.ringRev);
+                SendBatchAppendResponse(packet, 0, batchReq.m_count,
+                                        BatchRemoteAppendResponse::FenceStatus::StaleRingEpoch,
+                                        local);
+                return;
+            }
+            if (cmp == RingEpochCompare::ReceiverStale) {
+                m_receiverStaleObservations.fetch_add(1);
             }
 
             SPTAGLIB_LOG(Helper::LogLevel::LL_Debug,
@@ -378,7 +514,9 @@ namespace SPTAG::SPANN {
             }
             for (auto& t : workers) t.join();
 
-            SendBatchAppendResponse(packet, successCount, failCount);
+            SendBatchAppendResponse(packet, successCount, failCount,
+                                    BatchRemoteAppendResponse::FenceStatus::Ok,
+                                    local);
         }
 
         void HandleBatchAppendResponse(Socket::ConnectionID connID, Socket::Packet packet) {
@@ -397,6 +535,11 @@ namespace SPTAG::SPANN {
                 return;
             }
 
+            if (resp.m_fenceStatus == BatchRemoteAppendResponse::FenceStatus::StaleRingEpoch) {
+                m_staleSenderRoundtrips.fetch_add(1);
+                promise->set_value(ErrorCode::StaleRingEpoch);
+                return;
+            }
             promise->set_value(resp.m_failCount == 0 ? ErrorCode::Success : ErrorCode::Fail);
         }
 
@@ -528,9 +671,12 @@ namespace SPTAG::SPANN {
             };
         }
 
-        void SendAppendResponse(Socket::Packet& srcPacket, RemoteAppendResponse::Status status) {
+        void SendAppendResponse(Socket::Packet& srcPacket,
+                                RemoteAppendResponse::Status status,
+                                RingEpoch authoritative = RingEpoch{}) {
             RemoteAppendResponse resp;
             resp.m_status = status;
+            resp.m_authoritativeEpoch = authoritative;
 
             Socket::Packet ret;
             ret.Header().m_packetType = Socket::PacketType::AppendResponse;
@@ -548,10 +694,14 @@ namespace SPTAG::SPANN {
         }
 
         void SendBatchAppendResponse(Socket::Packet& srcPacket,
-            std::uint32_t successCount, std::uint32_t failCount) {
+            std::uint32_t successCount, std::uint32_t failCount,
+            BatchRemoteAppendResponse::FenceStatus fenceStatus = BatchRemoteAppendResponse::FenceStatus::Ok,
+            RingEpoch authoritative = RingEpoch{}) {
             BatchRemoteAppendResponse resp;
             resp.m_successCount = successCount;
             resp.m_failCount = failCount;
+            resp.m_fenceStatus = fenceStatus;
+            resp.m_authoritativeEpoch = authoritative;
 
             Socket::Packet ret;
             ret.Header().m_packetType = Socket::PacketType::BatchAppendResponse;
@@ -578,6 +728,58 @@ namespace SPTAG::SPANN {
         std::atomic<Socket::ResourceID> m_nextResourceId{1};
         std::mutex m_pendingMutex;
         std::unordered_map<Socket::ResourceID, std::promise<ErrorCode>> m_pendingResponses;
+
+        // Idempotency state.
+        Distributed::OpIdAllocator m_opIdAllocator;
+        std::unique_ptr<Distributed::OpIdCache<Distributed::AppendDedupResult>>
+            m_appendDedupCache;
+        std::mutex m_epochMutex;
+        std::unordered_map<std::int32_t, std::uint32_t> m_lastSeenEpoch;
+        std::atomic<std::uint64_t> m_dedupReplays{0};
+
+        // ---- Ring-epoch fence counters (test + ops observability) ----
+        std::atomic<std::uint64_t> m_staleSenderRejects{0};
+        std::atomic<std::uint64_t> m_staleSenderRoundtrips{0};
+        std::atomic<std::uint64_t> m_receiverStaleObservations{0};
+        std::atomic<std::uint64_t> m_ringNotReadyRejects{0};
+
+        // ---- Owner-failover counters (posting-router-owner-failover fault) ----
+        std::atomic<std::uint64_t> m_ownerFailoverRetries{0};
+        std::atomic<std::uint64_t> m_ownerFailoverStaleEpochFenced{0};
+        std::atomic<std::uint64_t> m_ownerFailoverDedupCollapsed{0};
+
+    public:
+        struct FenceCounters {
+            std::uint64_t staleSenderRejects;        // receiver rejected an inbound stale RPC
+            std::uint64_t staleSenderRoundtrips;     // sender saw a StaleRingEpoch reply
+            std::uint64_t receiverStaleObservations; // receiver noticed it was behind
+            std::uint64_t ringNotReadyRejects;       // sender-startup gate fired
+            std::uint64_t dedupReplays;              // receiver replayed cached result for a dup OpId
+        };
+
+        FenceCounters GetFenceCounters() const {
+            return FenceCounters{
+                m_staleSenderRejects.load(),
+                m_staleSenderRoundtrips.load(),
+                m_receiverStaleObservations.load(),
+                m_ringNotReadyRejects.load(),
+                m_dedupReplays.load(),
+            };
+        }
+
+        struct OwnerFailoverCounters {
+            std::uint64_t retries;
+            std::uint64_t staleEpochFenced;
+            std::uint64_t dedupCollapsed;
+        };
+
+        OwnerFailoverCounters GetOwnerFailoverCounters() const {
+            return OwnerFailoverCounters{
+                m_ownerFailoverRetries.load(),
+                m_ownerFailoverStaleEpochFenced.load(),
+                m_ownerFailoverDedupCollapsed.load(),
+            };
+        }
     };
 
 } // namespace SPTAG::SPANN
