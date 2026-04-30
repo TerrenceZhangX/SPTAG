@@ -78,6 +78,28 @@ namespace SPTAG::SPANN {
         Distributed::OpIdCache<Distributed::AppendDedupResult>* AppendDedupCacheForTest() {
             return m_appendDedupCache.get();
         }
+        std::uint64_t BatchDedupHitsForTest() const {
+            return m_batchDedupHits.load(std::memory_order_relaxed);
+        }
+        std::uint64_t SingleDedupHitsForTest() const {
+            return m_singleDedupHits.load(std::memory_order_relaxed);
+        }
+        // Drives the per-item dedup decision used by the batch receiver,
+        // *without* needing a real Socket::Packet / network. Returns the
+        // status that the batch handler would emit for this item: a cached
+        // status on dedup hit, otherwise the result of running the configured
+        // append callback. Mirrors HandleBatchAppendRequest's per-item logic
+        // exactly so tests exercise the production path.
+        RemoteAppendResponse::Status ProcessBatchItemForTest(RemoteAppendRequest& item) {
+            return ProcessOneAppendItem(item, /*isBatch=*/true);
+        }
+        // Stamp OpIds on a vector of items the same way SendBatchRemoteAppend
+        // does, but without sending. Used by tests to observe the contract:
+        // every previously-invalid item gets a fresh, valid, monotonic OpId;
+        // pre-stamped items are left intact so retries reuse the same id.
+        void StampBatchOpIdsForTest(std::vector<RemoteAppendRequest>& items) {
+            StampBatchOpIdsLocked(items);
+        }
         Distributed::OpIdAllocator& OpIdAllocatorForTest() { return m_opIdAllocator; }
 
         // ==================================================================
@@ -147,6 +169,17 @@ namespace SPTAG::SPANN {
             std::vector<RemoteAppendRequest>& items)
         {
             if (items.empty()) return ErrorCode::Success;
+
+            // Idempotency: stamp every item with a fresh OpId on first entry.
+            // Items pre-stamped by an upstream caller (e.g. an earlier failed
+            // SendBatchRemoteAppend that bubbled the items back up through
+            // FlushRemoteAppends) keep their existing id, so the receiver's
+            // dedup cache can recognise this as a retry. Items queued via
+            // QueueRemoteAppend arrive with an invalid OpId and get one here.
+            // The 2-attempt retry loop below preserves m_items across attempts
+            // (move-then-restore on success of the Write step), so a retry to
+            // the same owner uses the same OpIds.
+            StampBatchOpIdsLocked(items);
 
             for (int attempt = 0; attempt < 2; attempt++) {
                 Socket::ConnectionID connID = m_net->GetPeerConnection(targetNodeIndex);
@@ -325,44 +358,11 @@ namespace SPTAG::SPANN {
 
             // Receiver-side idempotency dedup. Replay cached status on hit;
             // bump epoch tracking on a fresh restartEpoch from this sender.
-            const Distributed::OpId& incomingOpId = req.m_opId;
-            RemoteAppendResponse::Status status = RemoteAppendResponse::Status::Failed;
-
-            if (m_appendDedupCache && incomingOpId.IsValid()) {
-                {
-                    std::lock_guard<std::mutex> g(m_epochMutex);
-                    auto& seen = m_lastSeenEpoch[incomingOpId.senderId];
-                    if (incomingOpId.restartEpoch > seen) {
-                        m_appendDedupCache->InvalidateOlderEpochs(
-                            incomingOpId.senderId, incomingOpId.restartEpoch);
-                        seen = incomingOpId.restartEpoch;
-                    }
-                }
-
-                auto [hit, cached] = m_appendDedupCache->Lookup(incomingOpId);
-                if (hit) {
-                    SendAppendResponse(packet,
-                        static_cast<RemoteAppendResponse::Status>(cached.status));
-                    return;
-                }
-            }
-
-            ErrorCode result = ErrorCode::Fail;
-            if (m_appendCallback) {
-                auto headVec = std::make_shared<std::string>(std::move(req.m_headVec));
-                result = m_appendCallback(
-                    req.m_headID, headVec, req.m_appendNum, req.m_appendPosting);
-            }
-
-            status = (result == ErrorCode::Success)
-                ? RemoteAppendResponse::Status::Success
-                : RemoteAppendResponse::Status::Failed;
-
-            if (m_appendDedupCache && incomingOpId.IsValid()) {
-                Distributed::AppendDedupResult cached;
-                cached.status = static_cast<std::uint8_t>(status);
-                m_appendDedupCache->Insert(incomingOpId, cached);
-            }
+            // online-insert-idempotency-on-retry: shared with the batch path
+            // via ProcessOneAppendItem so single + batch follow identical
+            // contract semantics.
+            RemoteAppendResponse::Status status =
+                ProcessOneAppendItem(req, /*isBatch=*/false);
             SendAppendResponse(packet, status);
         }
 
@@ -419,14 +419,18 @@ namespace SPTAG::SPANN {
                         size_t idx = nextItem.fetch_add(1);
                         if (idx >= batchReq.m_items.size()) break;
                         auto& req = batchReq.m_items[idx];
-                        ErrorCode result = ErrorCode::Fail;
-                        if (m_appendCallback) {
-                            auto headVec = std::make_shared<std::string>(std::move(req.m_headVec));
-                            result = m_appendCallback(
-                                req.m_headID, headVec, req.m_appendNum, req.m_appendPosting);
-                        }
-                        if (result == ErrorCode::Success) successCount.fetch_add(1);
-                        else failCount.fetch_add(1);
+                        // Per-item idempotency: dedup hit replays the cached
+                        // status without re-invoking the callback; miss
+                        // executes the callback and records the result.
+                        // online-insert-idempotency-on-retry: this closes the
+                        // gap left by the prim/op-id-idempotency primitive,
+                        // which only handled the single-item path.
+                        RemoteAppendResponse::Status itemStatus =
+                            ProcessOneAppendItem(req, /*isBatch=*/true);
+                        if (itemStatus == RemoteAppendResponse::Status::Success)
+                            successCount.fetch_add(1);
+                        else
+                            failCount.fetch_add(1);
                     }
                 });
             }
@@ -639,6 +643,73 @@ namespace SPTAG::SPANN {
             m_appendDedupCache;
         std::mutex m_epochMutex;
         std::unordered_map<std::int32_t, std::uint32_t> m_lastSeenEpoch;
+        // Dedup hit counters split by path so tests can assert which
+        // path (single vs batch) actually deduplicated. Bumped from
+        // ProcessOneAppendItem.
+        std::atomic<std::uint64_t> m_singleDedupHits{0};
+        std::atomic<std::uint64_t> m_batchDedupHits{0};
+
+        // Per-item dedup decision used by both HandleAppendRequest and
+        // HandleBatchAppendRequest. Returns the status to emit for the
+        // item: cached status on dedup hit, otherwise the status produced
+        // by running m_appendCallback. On a fresh execution the result is
+        // recorded into m_appendDedupCache so a subsequent retry with the
+        // same OpId replays it.
+        RemoteAppendResponse::Status ProcessOneAppendItem(
+            RemoteAppendRequest& req, bool isBatch)
+        {
+            const Distributed::OpId& incomingOpId = req.m_opId;
+
+            if (m_appendDedupCache && incomingOpId.IsValid()) {
+                {
+                    std::lock_guard<std::mutex> g(m_epochMutex);
+                    auto& seen = m_lastSeenEpoch[incomingOpId.senderId];
+                    if (incomingOpId.restartEpoch > seen) {
+                        m_appendDedupCache->InvalidateOlderEpochs(
+                            incomingOpId.senderId, incomingOpId.restartEpoch);
+                        seen = incomingOpId.restartEpoch;
+                    }
+                }
+                auto [hit, cached] = m_appendDedupCache->Lookup(incomingOpId);
+                if (hit) {
+                    if (isBatch) m_batchDedupHits.fetch_add(1, std::memory_order_relaxed);
+                    else         m_singleDedupHits.fetch_add(1, std::memory_order_relaxed);
+                    return static_cast<RemoteAppendResponse::Status>(cached.status);
+                }
+            }
+
+            ErrorCode result = ErrorCode::Fail;
+            if (m_appendCallback) {
+                auto headVec = std::make_shared<std::string>(std::move(req.m_headVec));
+                result = m_appendCallback(
+                    req.m_headID, headVec, req.m_appendNum, req.m_appendPosting);
+            }
+            RemoteAppendResponse::Status status =
+                (result == ErrorCode::Success)
+                    ? RemoteAppendResponse::Status::Success
+                    : RemoteAppendResponse::Status::Failed;
+
+            if (m_appendDedupCache && incomingOpId.IsValid()) {
+                Distributed::AppendDedupResult cachedResult;
+                cachedResult.status = static_cast<std::uint8_t>(status);
+                m_appendDedupCache->Insert(incomingOpId, cachedResult);
+            }
+            return status;
+        }
+
+        // Stamp every item that arrived with an invalid OpId. Items whose
+        // OpId is already valid are left as-is so that retries (the second
+        // attempt of SendBatchRemoteAppend, or items recycled from a higher
+        // level after a failed flush) keep the *same* id, which is the only
+        // way the receiver's dedup cache can recognise them as duplicates.
+        // No-op if idempotency was never configured (m_opIdAllocator's
+        // senderId stays -1; allocator returns invalid ids).
+        void StampBatchOpIdsLocked(std::vector<RemoteAppendRequest>& items) {
+            if (m_opIdAllocator.SenderId() < 0) return;
+            for (auto& it : items) {
+                if (!it.m_opId.IsValid()) it.m_opId = m_opIdAllocator.Next();
+            }
+        }
     };
 
 } // namespace SPTAG::SPANN
