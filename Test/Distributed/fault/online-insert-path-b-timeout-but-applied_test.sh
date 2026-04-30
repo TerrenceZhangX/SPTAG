@@ -1,56 +1,55 @@
 #!/usr/bin/env bash
-# Per-case test harness scaffold: online-insert-path-b-timeout-but-applied
+# Per-case test harness: online-insert-path-b-timeout-but-applied (Tier 1)
 #
-# Brings up PD + TiKV, runs the SPTAGTest cases for this fault slug,
-# tears down. Multi-store / chaos sub-cases gated by --with-* flags.
+# Tier-1 unit repro is a pure Boost.Test in-process drive of the
+# receiver-side OpId dedup contract — no PD/TiKV bring-up required.
+# The shell harness exists so the case fits the protocol shape; it
+# runs the SPTAGTest binary twice (env-off + env-armed) and captures
+# both logs into results/<slug>/tier1/.
 #
 # Usage:
-#   ./online-insert-path-b-timeout-but-applied_test.sh [--with-<subcase>] [...]
+#   ./online-insert-path-b-timeout-but-applied_test.sh
 #
-# Env overrides (see lib/docker_pd_tikv.sh for full list):
-#   BUILD_DIR         path to cmake build dir holding Release/SPTAGTest
-#                     default: $HOME/workspace/sptag-ft/build/online-insert-path-b-timeout-but-applied
-#   PD_PORT           default 12379
-#   TIKV_PORT         default 20160
+# Env overrides:
+#   BUILD_DIR  cmake build dir holding Release/SPTAGTest
+#              default: $HOME/workspace/sptag-ft/build/online-insert-path-b-timeout-but-applied
 #
-# Per-case hooks: edit the EXTRA_ENV section below to add env vars the
-# SPTAGTest case reads (e.g. SPTAG_TIKV_STORE_ADDR_TTL_SEC=2).
+# Exit 0 = both env-off and env-armed runs PASSED.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+SLUG="online-insert-path-b-timeout-but-applied"
 
-export FAULT_SLUG="online-insert-path-b-timeout-but-applied"
-# shellcheck disable=SC1090
-source "${SCRIPT_DIR}/lib/docker_pd_tikv.sh"
+BUILD_DIR="${BUILD_DIR:-$HOME/workspace/sptag-ft/build/${SLUG}}"
+TEST_BIN="${WT_DIR}/Release/SPTAGTest"
+[[ -x "$TEST_BIN" ]] || { echo "[harness] SPTAGTest not found at $TEST_BIN"; exit 2; }
 
-WITH_FLAGS=()
-for a in "$@"; do
-    case "$a" in --with-*) WITH_FLAGS+=("$a") ;; esac
-done
+OUT_DIR="${WT_DIR}/results/${SLUG}/tier1"
+mkdir -p "$OUT_DIR"
 
-BUILD_DIR="${BUILD_DIR:-$HOME/workspace/sptag-ft/build/${FAULT_SLUG}}"
-TEST_BIN="${BUILD_DIR}/../../wt/${FAULT_SLUG}/Release/SPTAGTest"
-[[ -x "$TEST_BIN" ]] || { echo "SPTAGTest not found at $TEST_BIN"; exit 2; }
+run_tier() {
+    local label="$1"
+    local logfile="${OUT_DIR}/${label}.log"
+    echo "[harness] tier1/${label}"
+    "$TEST_BIN" --run_test=OnlineInsertPathBTimeoutButAppliedTest \
+                --log_level=test_suite --report_level=short \
+                > "$logfile" 2>&1
+    if grep -qE "has passed with" "$logfile"; then
+        echo "[harness] tier1/${label} GREEN"
+        tail -4 "$logfile"
+    else
+        echo "[harness] tier1/${label} FAILED — see $logfile"
+        tail -40 "$logfile"
+        return 1
+    fi
+}
 
-trap pd_tikv_teardown EXIT
-pd_tikv_bringup
+unset SPTAG_FAULT_ONLINE_INSERT_PATH_B_TIMEOUT_BUT_APPLIED
+run_tier env-off
 
-# ── EXTRA_ENV (case-specific) ──
-# Tighten timing knobs so the unit cases finish inside the spec budget.
-# Customise per case; remove if irrelevant.
-export SPTAG_TIKV_STORE_ADDR_TTL_SEC="${SPTAG_TIKV_STORE_ADDR_TTL_SEC:-2}"
-export SPTAG_TIKV_PD_REFRESH_SEC="${SPTAG_TIKV_PD_REFRESH_SEC:-5}"
+export SPTAG_FAULT_ONLINE_INSERT_PATH_B_TIMEOUT_BUT_APPLIED=1
+run_tier env-armed
 
-# ── Sub-case hooks: each --with-* flag should set up the env the test
-#    reads, then the test will exercise the sub-case. Examples:
-#
-# for f in "${WITH_FLAGS[@]}"; do
-#   case "$f" in
-#     --with-move) export TIKV_STORE_RESTART_CMD=/tmp/${FAULT_SLUG}_move.sh ;;
-#   esac
-# done
-
-echo "[harness] running SPTAGTest --run_test=OnlineInsertPathBTimeoutButAppliedTest"
-"$TEST_BIN" --run_test=OnlineInsertPathBTimeoutButAppliedTest --log_level=test_suite --report_level=short
-echo "[harness] test exit=$?"
+echo "[harness] Tier-1 PASS for ${SLUG}"

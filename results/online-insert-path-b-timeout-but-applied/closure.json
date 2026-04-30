@@ -1,0 +1,38 @@
+{
+  "case": "online-insert-path-b-timeout-but-applied",
+  "branch": "fault/online-insert-path-b-timeout-but-applied",
+  "defers_to_primitive": "op-id-idempotency",
+  "tier1": {
+    "status": "PASS",
+    "env_off": {
+      "log": "tier1/env-off.log",
+      "test_cases_passed": 4,
+      "assertions_passed": 18,
+      "verdict": "GREEN"
+    },
+    "env_armed": {
+      "log": "tier1/env-armed.log",
+      "test_cases_passed": 4,
+      "assertions_passed": 18,
+      "verdict": "GREEN"
+    },
+    "invariants": {
+      "no_posting_lost": "OK (env-armed: applyCount==1 on first attempt; first apply observed)",
+      "no_duplicate_exposed_to_query": "OK (env-armed: applyCount stays at 1 across 3 retries with same OpId)",
+      "client_semantics_clear": "OK (all retry attempts return Status::Success deterministically)",
+      "restart_epoch_safe": "OK (post-restart OpId with same counter is NOT falsely deduped; applies fresh)"
+    }
+  },
+  "tier2": {
+    "status": "DEFERRED",
+    "verdict": "INFO",
+    "reason": "Non hot-path case per spec; protocol Tier 2 is SOFT (REVIEW-FLAG/INFO does not block close). 1M perf-validation methodology has open escalation since 2026-04-29 14:45 UTC (host-noise dominated; awaiting human decision on refresh-ref / N / thresholds). Closure does not depend on Tier 2."
+  },
+  "refs": {
+    "spec": "tasks/distributed-index-scale-2k/design-docs/ft-fault-cases/online-insert-path-b-timeout-but-applied.md",
+    "protocol": "tasks/distributed-index-scale-2k/notes/perf-validation-protocol.md",
+    "primitive_branch": "prim/op-id-idempotency",
+    "test_source": "Test/Distributed/fault/online-insert-path-b-timeout-but-applied_test.cpp",
+    "test_harness": "Test/Distributed/fault/online-insert-path-b-timeout-but-applied_test.sh"
+  }
+}
