@@ -43,6 +43,8 @@ enum class PacketType : std::uint8_t
 
     RingUpdateACK = 0x0C,
 
+    HeadSyncPullRequest = 0x0D,
+
     ResponseMask = 0x80,
 
     NodeRegisterResponse = ResponseMask | NodeRegisterRequest,
@@ -60,6 +62,8 @@ enum class PacketType : std::uint8_t
     RemoteLockResponse = ResponseMask | RemoteLockRequest,
 
     DispatchResult = ResponseMask | DispatchCommand,
+
+    HeadSyncPullResponse = ResponseMask | HeadSyncPullRequest,
 };
 
 
