@@ -90,6 +90,10 @@ DefineErrorCode(Posting_SizeError, 0x5003)
 DefineErrorCode(Block_IDError, 0x5004)
 DefineErrorCode(Posting_ChecksumError, 0x5005)
 
+// 0x6000 ~ 0x6FFF Distributed / Membership Status
+DefineErrorCode(StaleRingEpoch, 0x6000)
+DefineErrorCode(RingNotReady, 0x6001)
+
 #endif // DefineErrorCode
 
 
