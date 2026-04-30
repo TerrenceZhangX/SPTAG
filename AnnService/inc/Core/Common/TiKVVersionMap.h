@@ -14,6 +14,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <cstring>
+#include <cstdlib>
 #include <chrono>
 #include <algorithm>
 #include <list>
@@ -32,6 +33,42 @@ namespace SPTAG
         /// chunk_id = VID / chunkSize, offset = VID % chunkSize.
         class TiKVVersionMap : public IVersionMap
         {
+        public:
+            // FT case: version-cache-stale
+            // Static counter accessors exposed for the fault-stats interface used
+            // by the version-cache fault tests. env-off keeps both counters at 0.
+            static std::atomic<std::uint64_t>& FaultVersionCacheCasMismatchesRef()
+            {
+                static std::atomic<std::uint64_t> v{0};
+                return v;
+            }
+            static std::atomic<std::uint64_t>& FaultVersionCacheCasRetriesRef()
+            {
+                static std::atomic<std::uint64_t> v{0};
+                return v;
+            }
+            static std::uint64_t FaultVersionCacheCasMismatches()
+            {
+                return FaultVersionCacheCasMismatchesRef().load();
+            }
+            static std::uint64_t FaultVersionCacheCasRetries()
+            {
+                return FaultVersionCacheCasRetriesRef().load();
+            }
+            static void ResetFaultVersionCacheCounters()
+            {
+                FaultVersionCacheCasMismatchesRef().store(0);
+                FaultVersionCacheCasRetriesRef().store(0);
+            }
+            // Env-gate read every call (cheap getenv) so tests can flip the gate
+            // mid-process. Production callers set SPTAG_FAULT_VERSION_CACHE_STALE
+            // once at startup and pay the same getenv cost as sibling fault cases.
+            static bool IsFaultVersionCacheStaleEnabled()
+            {
+                const char* e = std::getenv("SPTAG_FAULT_VERSION_CACHE_STALE");
+                return e != nullptr && e[0] != '\0' && std::string(e) != "0";
+            }
+
         private:
             std::shared_ptr<Helper::KeyValueIO> m_db;
             int m_layer;
@@ -177,6 +214,28 @@ namespace SPTAG
             TiKVVersionMap() : m_layer(0), m_chunkSize(4096) {}
 
             void SetDB(std::shared_ptr<Helper::KeyValueIO> db) { m_db = db; }
+
+            // Test-only: forcibly seed an entry into the LRU chunk cache so that
+            // subsequent ReadChunkCached() returns the planted (stale) bytes
+            // until eviction or a successful WriteChunk refreshes it. Used by
+            // FT case version-cache-stale to construct deterministic
+            // cache-vs-authoritative skew.
+            void TEST_ONLY_PrimeStaleCache(SizeType chunkId, const std::string& data) const
+            {
+                std::unique_lock<std::shared_mutex> lock(m_cacheMutex);
+                CachePut(chunkId, data, std::chrono::steady_clock::now());
+            }
+
+            // Test-only: drop a single chunk from the LRU cache.
+            void TEST_ONLY_InvalidateCachedChunk(SizeType chunkId) const
+            {
+                std::unique_lock<std::shared_mutex> lock(m_cacheMutex);
+                auto it = m_cacheMap.find(chunkId);
+                if (it != m_cacheMap.end()) {
+                    m_lruList.erase(it->second);
+                    m_cacheMap.erase(it);
+                }
+            }
             void SetLayer(int layer) { m_layer = layer; }
             void SetChunkSize(int chunkSize) { m_chunkSize = chunkSize; }
             void SetCacheTTL(int ttlMs) { m_cacheTTLMs = ttlMs; }
@@ -335,6 +394,12 @@ namespace SPTAG
                     return false;
                 }
 
+                if (IsFaultVersionCacheStaleEnabled()) {
+                    return IncVersionFaultPath(key, newVersion, expectedOld);
+                }
+
+                // env-off: original code path verbatim — zero counter increments,
+                // zero entries into the FT retry loop.
                 const int MAX_RETRIES = 3;
                 for (int retry = 0; retry < MAX_RETRIES; retry++) {
                     SizeType cid = ChunkId(key);
@@ -375,6 +440,135 @@ namespace SPTAG
                 }
                 return false;
             }
+
+        private:
+            // FT case: version-cache-stale
+            //
+            // Env-on CAS path. Models "LRU cache returns stale version under
+            // concurrent CAS" by reading the version chunk through the
+            // (stale-prone) LRU cache first. On a CAS mismatch the loop
+            // re-reads the authoritative chunk from TiKV (bypassing cache),
+            // bumps the mismatch counter, retries CAS up to a fault-cap, and
+            // falls back to the authoritative ReadChunk path on cap exceed.
+            //
+            // Invariants exercised by Test/Distributed/fault/version_cache_stale_test.cpp:
+            //   * env-off path is dormant (counters stay at 0)
+            //   * no lost update: a CAS-loser converges or returns false
+            //   * no double-increment: target is always (expectedOld+1) & 0x7f,
+            //     never (cachedStale+1) when authoritative differs.
+            bool IncVersionFaultPath(const SizeType& key, uint8_t* newVersion, uint8_t expectedOld)
+            {
+                const int MAX_RETRIES = 3;
+                const int FAULT_CAS_RETRY_CAP = 8; // CAS-loser retry cap before authoritative fallback
+
+                for (int retry = 0; retry < MAX_RETRIES; retry++) {
+                    SizeType cid = ChunkId(key);
+                    int offset = ChunkOffset(key);
+                    std::lock_guard<std::mutex> lock(ChunkMutex(cid));
+
+                    // First read goes through the (stale-prone) LRU cache —
+                    // this is the path that exposes the staleness window the
+                    // FT case was filed against.
+                    std::string chunk = ReadChunkCached(cid);
+                    if (chunk.empty()) return false;
+
+                    uint8_t current = static_cast<uint8_t>(chunk[offset]);
+                    if (current == 0xfe) return false; // deleted
+
+                    uint8_t target;
+                    if (expectedOld != 0xff) {
+                        target = (expectedOld + 1) & 0x7f;
+                        if (current == target) {
+                            *newVersion = target;
+                            return true;
+                        }
+                        if (current != expectedOld) {
+                            // CAS mismatch via the (possibly stale) cached read —
+                            // re-read authoritative TiKV value before deciding.
+                            FaultVersionCacheCasMismatchesRef().fetch_add(1);
+                            int casRetry = 0;
+                            for (; casRetry < FAULT_CAS_RETRY_CAP; ++casRetry) {
+                                // Drop the stale cache entry so the authoritative
+                                // re-read does not resurrect it.
+                                {
+                                    std::unique_lock<std::shared_mutex> clk(m_cacheMutex);
+                                    auto it = m_cacheMap.find(cid);
+                                    if (it != m_cacheMap.end()) {
+                                        m_lruList.erase(it->second);
+                                        m_cacheMap.erase(it);
+                                    }
+                                }
+                                std::string authoritative = ReadChunk(cid);
+                                if (authoritative.empty()) return false;
+                                uint8_t authCurrent = static_cast<uint8_t>(authoritative[offset]);
+                                if (authCurrent == 0xfe) return false;
+                                if (authCurrent == target) {
+                                    // Another node already advanced to target — idempotent success.
+                                    *newVersion = target;
+                                    return true;
+                                }
+                                if (authCurrent != expectedOld) {
+                                    // Authoritative also disagrees with caller's expectedOld:
+                                    // genuine CAS conflict, not a cache-staleness artefact.
+                                    return false;
+                                }
+                                // Cache was stale; authoritative agrees with caller.
+                                // Retry CAS with the fresh chunk.
+                                FaultVersionCacheCasRetriesRef().fetch_add(1);
+                                authoritative[offset] = static_cast<char>(target);
+                                ErrorCode r = WriteChunk(cid, authoritative);
+                                if (r == ErrorCode::Success) {
+                                    *newVersion = target;
+                                    return true;
+                                }
+                                // Write failed under chunk lock — fall through and retry the
+                                // authoritative re-read until the cap.
+                            }
+                            // CAS retry cap exceeded → degrade to the authoritative
+                            // (non-cached) path exactly as env-off would behave.
+                            return IncVersionAuthoritative(key, newVersion, expectedOld);
+                        }
+                    } else {
+                        target = (current + 1) & 0x7f;
+                    }
+
+                    chunk[offset] = static_cast<char>(target);
+                    ErrorCode ret = WriteChunk(cid, chunk);
+                    if (ret == ErrorCode::Success) {
+                        *newVersion = target;
+                        return true;
+                    }
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVVersionMap::IncVersionFaultPath: write failed for key %d, retry %d\n", key, retry);
+                }
+                return false;
+            }
+
+            // Authoritative-only fallback (mirrors env-off semantics, no cache).
+            bool IncVersionAuthoritative(const SizeType& key, uint8_t* newVersion, uint8_t expectedOld)
+            {
+                SizeType cid = ChunkId(key);
+                int offset = ChunkOffset(key);
+                std::lock_guard<std::mutex> lock(ChunkMutex(cid));
+                std::string chunk = ReadChunk(cid);
+                if (chunk.empty()) return false;
+                uint8_t current = static_cast<uint8_t>(chunk[offset]);
+                if (current == 0xfe) return false;
+                uint8_t target;
+                if (expectedOld != 0xff) {
+                    target = (expectedOld + 1) & 0x7f;
+                    if (current == target) { *newVersion = target; return true; }
+                    if (current != expectedOld) return false;
+                } else {
+                    target = (current + 1) & 0x7f;
+                }
+                chunk[offset] = static_cast<char>(target);
+                ErrorCode ret = WriteChunk(cid, chunk);
+                if (ret != ErrorCode::Success) return false;
+                *newVersion = target;
+                return true;
+            }
+
+        public:
 
             ErrorCode AddBatch(SizeType num) override
             {
