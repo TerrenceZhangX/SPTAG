@@ -1,0 +1,63 @@
+[pd_tikv:posting-router-owner-failover] starting PD on 10.161.160.64:12379
+[pd_tikv:posting-router-owner-failover] starting TiKV on 10.161.160.64:20160
+[pd_tikv:posting-router-owner-failover] waiting for TiKV store registration (Up)...
+[pd_tikv:posting-router-owner-failover] cluster ready
+[harness] running SPTAGTest --run_test=PostingRouterOwnerFailoverTest
+[1] Using AVX512 InstructionSet!
+Running 5 test cases...
+[1;34;49mEntering test module "Main"
+[0;39;49m	Suite: Main
+	Suite: PostingRouterOwnerFailoverTest
+		Case: OwnerFailoverArmedRetriesAndFences
+		Case: OwnerFailoverEnvOffIsDormant
+		Case: OpIdIsStableAcrossOwnerFailoverRetries
+		Case: ReceiverDedupCollapsesDuplicateOpId
+		Case: TiKVHarnessSmokeWriteRead
+[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/AlgoTest.cpp(247): Test suite "AlgoTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/Base64HelperTest.cpp(9): Test suite "Base64Test" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/CommonHelperTest.cpp(9): Test suite "CommonHelperTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/ConcurrentTest.cpp(136): Test suite "ConcurrentTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/DistanceTest.cpp(112): Test suite "DistanceTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/FilterTest.cpp(107): Test suite "FilterTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/IniReaderTest.cpp(9): Test suite "IniReaderTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/IterativeScanTest.cpp(185): Test suite "IterativeScanTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/KVTest.cpp(134): Test suite "KVTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/MultiIndexExperiment.cpp(236): Test suite "MultiIndexExperiment" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/MultiIndexScanTest.cpp(128): Test suite "MultiIndexScanTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/PerfTest.cpp(276): Test suite "PerfTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/ReconstructIndexSimilarityTest.cpp(448): Test suite "ReconstructIndexSimilarityTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/SIMDTest.cpp(50): Test suite "SIMDTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/SPFreshTest.cpp(1492): Test suite "SPFreshTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/SSDServingTest.cpp(398): Test suite "SSDServingTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/StringConvertTest.cpp(30): Test suite "StringConvertTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/src/VersionMapTest.cpp(62): Test suite "VersionMapTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/Distributed/prim/op_id_test.cpp(34): Test suite "OpIdIdempotencyTest" is skipped because disabled
+[0;39;49m[1;33;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/Distributed/prim/ring_epoch_fence_test.cpp(34): Test suite "RingEpochFenceTest" is skipped because disabled
+[0;39;49m[1;34;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/Distributed/fault/posting-router-owner-failover_test.cpp(139): Entering test suite "PostingRouterOwnerFailoverTest"
+[0;39;49m[1;34;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/Distributed/fault/posting-router-owner-failover_test.cpp(146): Entering test case "OwnerFailoverArmedRetriesAndFences"
+[0;39;49m[3] RemotePostingOps: owner-failover retry 1 for headID 42: target 100 -> 200 (last=24576)
+[1;34;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/Distributed/fault/posting-router-owner-failover_test.cpp(146): Leaving test case "OwnerFailoverArmedRetriesAndFences"; testing time: 75us
+[0;39;49m[1;34;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/Distributed/fault/posting-router-owner-failover_test.cpp(193): Entering test case "OwnerFailoverEnvOffIsDormant"
+[0;39;49m[1;34;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/Distributed/fault/posting-router-owner-failover_test.cpp(193): Leaving test case "OwnerFailoverEnvOffIsDormant"; testing time: 38us
+[0;39;49m[1;34;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/Distributed/fault/posting-router-owner-failover_test.cpp(219): Entering test case "OpIdIsStableAcrossOwnerFailoverRetries"
+[0;39;49m[3] RemotePostingOps: owner-failover retry 1 for headID 123: target 1 -> 1 (last=24576)
+[3] RemotePostingOps: owner-failover retry 2 for headID 123: target 1 -> 2 (last=24576)
+[1;34;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/Distributed/fault/posting-router-owner-failover_test.cpp(219): Leaving test case "OpIdIsStableAcrossOwnerFailoverRetries"; testing time: 39us
+[0;39;49m[1;34;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/Distributed/fault/posting-router-owner-failover_test.cpp(247): Entering test case "ReceiverDedupCollapsesDuplicateOpId"
+[0;39;49m[1;34;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/Distributed/fault/posting-router-owner-failover_test.cpp(247): Leaving test case "ReceiverDedupCollapsesDuplicateOpId"; testing time: 35us
+[0;39;49m[1;34;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/Distributed/fault/posting-router-owner-failover_test.cpp(274): Entering test case "TiKVHarnessSmokeWriteRead"
+[0;39;49m[1] TiKVIO: Cluster ID: 7634445743848206301
+[1] TiKVIO: PD leader is at 10.161.160.64:12379
+[1] TiKVIO: Connected to PD leader at 10.161.160.64:12379
+[1] TiKVIO: Initialized with key prefix 'fault_posting_router_owner_failover_smoke_8675826525876110_'
+[1] TiKVIO: Created 48 stubs for TiKV store at 10.161.160.64:20160
+[1;34;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/Distributed/fault/posting-router-owner-failover_test.cpp(274): Leaving test case "TiKVHarnessSmokeWriteRead"; testing time: 23787us
+[0;39;49m[1;34;49m/home/zhangt/workspace/sptag-ft/wt/posting-router-owner-failover/Test/Distributed/fault/posting-router-owner-failover_test.cpp(139): Leaving test suite "PostingRouterOwnerFailoverTest"; testing time: 24014us
+[0;39;49m[1;34;49mLeaving test module "Main"; testing time: 24078us
+[0;39;49m
+Test module "Main" has passed with:
+  5 test cases out of 211 passed
+  206 test cases out of 211 skipped
+  35 assertions out of 35 passed
+
+[harness] test exit=0

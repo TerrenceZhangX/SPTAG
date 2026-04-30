@@ -87,6 +87,77 @@ namespace SPTAG::SPANN {
         Distributed::OpIdAllocator& OpIdAllocatorForTest() { return m_opIdAllocator; }
 
         // ==================================================================
+        //  Owner-failover routing wrapper (FT case: posting-router-owner-failover)
+        // ==================================================================
+        //
+        // Behaviour: when env SPTAG_FAULT_POSTING_ROUTER_OWNER_FAILOVER is set,
+        // an in-flight RemoteAppend that fails with StaleRingEpoch / Fail /
+        // RingNotReady is retried after re-resolving the owner via the
+        // caller-supplied ring lookup. The SAME OpId is carried across
+        // attempts so receiver-side dedup collapses duplicates.
+        //
+        // The wrapper is a no-op when the env is unset (caller short-circuits
+        // to the original SendRemoteAppend path). The hot path is therefore
+        // unaffected by this code on baseline runs.
+        //
+        // Counters: m_ownerFailoverRetries / ..StaleEpochFenced.
+        // Receiver dedup collapse is observed via m_dedupReplays (existing).
+        static bool OwnerFailoverArmed() {
+            return std::getenv("SPTAG_FAULT_POSTING_ROUTER_OWNER_FAILOVER") != nullptr;
+        }
+
+        // Generic owner-failover loop. Caller provides resolveOwner (called per
+        // attempt to pick a target node from the current ring) and sendFn
+        // (executes the per-attempt RPC with the supplied OpId). Returns the
+        // final ErrorCode of the last attempt.
+        //
+        // sendFn signature: ErrorCode(int target, const Distributed::OpId& opId)
+        // resolveOwner signature: int(SizeType headID)
+        template <typename ResolveOwnerFn, typename SendFn>
+        ErrorCode SendRemoteAppendWithFailover(
+            SizeType headID,
+            ResolveOwnerFn resolveOwner,
+            SendFn sendFn,
+            int maxRetries = 3)
+        {
+            Distributed::OpId opId{};
+            if (m_opIdAllocator.SenderId() >= 0) {
+                opId = m_opIdAllocator.Next();
+            }
+
+            int target = resolveOwner(headID);
+            ErrorCode last = ErrorCode::Fail;
+            for (int attempt = 0; attempt <= maxRetries; ++attempt) {
+                last = sendFn(target, opId);
+                if (last == ErrorCode::Success) return ErrorCode::Success;
+
+                bool fenceable =
+                    (last == ErrorCode::StaleRingEpoch) ||
+                    (last == ErrorCode::RingNotReady)   ||
+                    (last == ErrorCode::Fail);
+                if (!fenceable) return last;
+
+                if (last == ErrorCode::StaleRingEpoch) {
+                    m_ownerFailoverStaleEpochFenced.fetch_add(1);
+                }
+                if (attempt == maxRetries) break;
+
+                m_ownerFailoverRetries.fetch_add(1);
+                int newTarget = resolveOwner(headID);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "RemotePostingOps: owner-failover retry %d for headID %lld: target %d -> %d (last=%d)\n",
+                    attempt + 1, (std::int64_t)headID, target, newTarget, (int)last);
+                target = newTarget;
+            }
+            return last;
+        }
+
+        // Test hook: bump dedup-collapsed counter on receiver side. Mirrors
+        // existing m_dedupReplays bump path; exposed so cross-instance tests
+        // can verify collapse semantics without driving full HandleAppendRequest.
+        std::uint64_t DedupReplaysForTest() const { return m_dedupReplays.load(); }
+
+        // ==================================================================
         //  Append — single item, synchronous (waits for response)
         // ==================================================================
 
