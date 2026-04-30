@@ -4,6 +4,9 @@
 #pragma once
 
 #include "inc/Core/SPANN/Distributed/DistributedProtocol.h"
+#include "inc/Core/SPANN/Distributed/OpId.h"
+#include "inc/Core/SPANN/Distributed/OpIdCache.h"
+#include <chrono>
 #include "inc/Socket/Client.h"
 #include "inc/Socket/Server.h"
 #include "inc/Socket/Packet.h"
@@ -65,6 +68,24 @@ namespace SPTAG::SPANN {
         void SetHeadSyncCallback(HeadSyncCallback cb) { m_headSyncCallback = std::move(cb); }
         void SetRemoteLockCallback(RemoteLockCallback cb) { m_remoteLockCallback = std::move(cb); }
 
+        // Configure idempotency for outbound (sender) and inbound (receiver)
+        // Append paths. Must be called before any traffic.
+        void ConfigureIdempotency(std::int32_t senderId,
+                                  std::uint32_t restartEpoch,
+                                  std::size_t cacheCapacity = 4096,
+                                  std::chrono::seconds cacheTtl = std::chrono::seconds(60)) {
+            m_opIdAllocator.Reset(senderId, restartEpoch);
+            m_appendDedupCache = std::make_unique<
+                Distributed::OpIdCache<Distributed::AppendDedupResult>>(
+                    cacheCapacity ? cacheCapacity : 4096, cacheTtl);
+        }
+
+        // Test hooks.
+        Distributed::OpIdCache<Distributed::AppendDedupResult>* AppendDedupCacheForTest() {
+            return m_appendDedupCache.get();
+        }
+        Distributed::OpIdAllocator& OpIdAllocatorForTest() { return m_opIdAllocator; }
+
         // ==================================================================
         //  Append — single item, synchronous (waits for response)
         // ==================================================================
@@ -101,6 +122,9 @@ namespace SPTAG::SPANN {
             req.m_headVec = *headVec;
             req.m_appendNum = appendNum;
             req.m_appendPosting = appendPosting;
+            if (m_opIdAllocator.SenderId() >= 0) {
+                req.m_opId = m_opIdAllocator.Next();
+            }
             req.m_senderEpoch = senderEpoch;
 
             Socket::ResourceID resID = m_nextResourceId.fetch_add(1);
@@ -331,7 +355,8 @@ namespace SPTAG::SPANN {
                 return;
             }
 
-            // Receiver-side ring-epoch fence.
+            // Receiver-side ring-epoch fence — runs first so a stale sender
+            // is rejected before we touch the dedup cache (split-brain guard).
             RingEpoch local = m_net ? m_net->GetCurrentRingEpoch() : RingEpoch{};
             auto cmp = CompareRingEpoch(req.m_senderEpoch, local);
             if (cmp == RingEpochCompare::SenderStale ||
@@ -351,6 +376,32 @@ namespace SPTAG::SPANN {
                 m_receiverStaleObservations.fetch_add(1);
             }
 
+            // Receiver-side idempotency dedup. Replay cached status on hit;
+            // bump epoch tracking on a fresh restartEpoch from this sender.
+            const Distributed::OpId& incomingOpId = req.m_opId;
+            RemoteAppendResponse::Status status = RemoteAppendResponse::Status::Failed;
+
+            if (m_appendDedupCache && incomingOpId.IsValid()) {
+                {
+                    std::lock_guard<std::mutex> g(m_epochMutex);
+                    auto& seen = m_lastSeenEpoch[incomingOpId.senderId];
+                    if (incomingOpId.restartEpoch > seen) {
+                        m_appendDedupCache->InvalidateOlderEpochs(
+                            incomingOpId.senderId, incomingOpId.restartEpoch);
+                        seen = incomingOpId.restartEpoch;
+                    }
+                }
+
+                auto [hit, cached] = m_appendDedupCache->Lookup(incomingOpId);
+                if (hit) {
+                    m_dedupReplays.fetch_add(1);
+                    SendAppendResponse(packet,
+                        static_cast<RemoteAppendResponse::Status>(cached.status),
+                        local);
+                    return;
+                }
+            }
+
             ErrorCode result = ErrorCode::Fail;
             if (m_appendCallback) {
                 auto headVec = std::make_shared<std::string>(std::move(req.m_headVec));
@@ -358,9 +409,15 @@ namespace SPTAG::SPANN {
                     req.m_headID, headVec, req.m_appendNum, req.m_appendPosting);
             }
 
-            auto status = (result == ErrorCode::Success)
+            status = (result == ErrorCode::Success)
                 ? RemoteAppendResponse::Status::Success
                 : RemoteAppendResponse::Status::Failed;
+
+            if (m_appendDedupCache && incomingOpId.IsValid()) {
+                Distributed::AppendDedupResult cached;
+                cached.status = static_cast<std::uint8_t>(status);
+                m_appendDedupCache->Insert(incomingOpId, cached);
+            }
             SendAppendResponse(packet, status, local);
         }
 
@@ -672,11 +729,24 @@ namespace SPTAG::SPANN {
         std::mutex m_pendingMutex;
         std::unordered_map<Socket::ResourceID, std::promise<ErrorCode>> m_pendingResponses;
 
+        // Idempotency state.
+        Distributed::OpIdAllocator m_opIdAllocator;
+        std::unique_ptr<Distributed::OpIdCache<Distributed::AppendDedupResult>>
+            m_appendDedupCache;
+        std::mutex m_epochMutex;
+        std::unordered_map<std::int32_t, std::uint32_t> m_lastSeenEpoch;
+        std::atomic<std::uint64_t> m_dedupReplays{0};
+
         // ---- Ring-epoch fence counters (test + ops observability) ----
         std::atomic<std::uint64_t> m_staleSenderRejects{0};
         std::atomic<std::uint64_t> m_staleSenderRoundtrips{0};
         std::atomic<std::uint64_t> m_receiverStaleObservations{0};
         std::atomic<std::uint64_t> m_ringNotReadyRejects{0};
+
+        // ---- Owner-failover counters (posting-router-owner-failover fault) ----
+        std::atomic<std::uint64_t> m_ownerFailoverRetries{0};
+        std::atomic<std::uint64_t> m_ownerFailoverStaleEpochFenced{0};
+        std::atomic<std::uint64_t> m_ownerFailoverDedupCollapsed{0};
 
     public:
         struct FenceCounters {
@@ -684,6 +754,7 @@ namespace SPTAG::SPANN {
             std::uint64_t staleSenderRoundtrips;     // sender saw a StaleRingEpoch reply
             std::uint64_t receiverStaleObservations; // receiver noticed it was behind
             std::uint64_t ringNotReadyRejects;       // sender-startup gate fired
+            std::uint64_t dedupReplays;              // receiver replayed cached result for a dup OpId
         };
 
         FenceCounters GetFenceCounters() const {
@@ -692,6 +763,21 @@ namespace SPTAG::SPANN {
                 m_staleSenderRoundtrips.load(),
                 m_receiverStaleObservations.load(),
                 m_ringNotReadyRejects.load(),
+                m_dedupReplays.load(),
+            };
+        }
+
+        struct OwnerFailoverCounters {
+            std::uint64_t retries;
+            std::uint64_t staleEpochFenced;
+            std::uint64_t dedupCollapsed;
+        };
+
+        OwnerFailoverCounters GetOwnerFailoverCounters() const {
+            return OwnerFailoverCounters{
+                m_ownerFailoverRetries.load(),
+                m_ownerFailoverStaleEpochFenced.load(),
+                m_ownerFailoverDedupCollapsed.load(),
             };
         }
     };
