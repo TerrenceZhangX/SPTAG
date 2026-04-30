@@ -172,6 +172,14 @@ namespace SPTAG::SPANN {
             std::atomic_store(&m_hashRing, std::move(ring));
         }
 
+        /// Current ring epoch. {0,0} means "ring not yet initialised";
+        /// callers (sender-startup gate) MUST refuse routed RPCs in that case.
+        RingEpoch GetCurrentRingEpoch() const override {
+            auto ring = std::atomic_load(&m_hashRing);
+            if (!ring) return RingEpoch{};
+            return ring->GetEpoch();
+        }
+
         bool WaitForAllPeersConnected(int timeoutSec = 120) {
             if (!m_enabled) return true;
             int numNodes = static_cast<int>(m_nodeAddrs.size());

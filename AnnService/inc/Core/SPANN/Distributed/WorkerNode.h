@@ -315,6 +315,9 @@ namespace SPTAG::SPANN {
             for (auto idx : msg.m_nodeIndices) {
                 newRing->AddNode(idx);
             }
+            // Tag with the dispatcher-authoritative epoch (epoch = ringVersion,
+            // ringRev = optional in-epoch monotonic, 0 today).
+            newRing->SetEpoch(msg.AsEpoch());
             {
                 std::lock_guard<std::mutex> guard(m_ringWriteMutex);
                 std::atomic_store(&m_hashRing,
