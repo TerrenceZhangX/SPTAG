@@ -39,6 +39,17 @@ namespace SPTAG::SPANN {
         using HeadSyncCallback = std::function<void(const HeadSyncEntry& entry)>;
         using RemoteLockCallback = std::function<bool(SizeType headID, bool lock)>;
 
+        /// Provider callback for serving HeadSyncPullRequest. The owner side
+        /// installs this; given (originOwner, epochFloor, sequenceFloor,
+        /// maxEntries) it must populate `out` with the entries it still has on
+        /// hand and set status accordingly. Default (unset) ⇒ NotAvailable.
+        using HeadSyncPullProvider = std::function<void(
+            std::int32_t originOwner,
+            std::uint64_t epochFloor,
+            std::uint64_t sequenceFloor,
+            std::uint32_t maxEntries,
+            HeadSyncPullResponse& out)>;
+
         /// Abstract interface for network access (implemented by NetworkNode).
         class NetworkAccess {
         public:
@@ -58,6 +69,7 @@ namespace SPTAG::SPANN {
         void SetAppendCallback(AppendCallback cb) { m_appendCallback = std::move(cb); }
         void SetHeadSyncCallback(HeadSyncCallback cb) { m_headSyncCallback = std::move(cb); }
         void SetRemoteLockCallback(RemoteLockCallback cb) { m_remoteLockCallback = std::move(cb); }
+        void SetHeadSyncPullProvider(HeadSyncPullProvider cb) { m_headSyncPullProvider = std::move(cb); }
 
         // ==================================================================
         //  Append — single item, synchronous (waits for response)
@@ -230,6 +242,69 @@ namespace SPTAG::SPANN {
                         }
                     });
             }
+        }
+
+        // ==================================================================
+        //  HeadSync Pull — synchronous request/response (gap-fill)
+        // ==================================================================
+
+        /// Issue a pull RPC to the owner of `originOwner`-flavored HeadSync
+        /// entries. The peer that catches this entry stream will live at
+        /// `targetNodeIndex`; in the simplest case targetNodeIndex==originOwner,
+        /// but for the head-replica-drift case any peer that owns a Merkle
+        /// shard for that origin can serve. Returns ErrorCode::Success iff a
+        /// well-formed response (Ok or NotAvailable) was received.
+        ErrorCode SendHeadSyncPull(
+            int targetNodeIndex,
+            std::int32_t originOwner,
+            std::uint64_t epochFloor,
+            std::uint64_t sequenceFloor,
+            std::uint32_t maxEntries,
+            HeadSyncPullResponse& outResp,
+            std::chrono::milliseconds timeout = std::chrono::milliseconds(5000))
+        {
+            Socket::ConnectionID connID = m_net->GetPeerConnection(targetNodeIndex);
+            if (connID == Socket::c_invalidConnectionID) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "RemotePostingOps: Cannot pull HeadSync from node %d\n", targetNodeIndex);
+                return ErrorCode::Fail;
+            }
+
+            HeadSyncPullRequest req;
+            req.m_originOwner   = originOwner;
+            req.m_epochFloor    = epochFloor;
+            req.m_sequenceFloor = sequenceFloor;
+            req.m_maxEntries    = maxEntries;
+
+            Socket::ResourceID rid = m_nextResourceId.fetch_add(1);
+            auto [future, _] = CreatePullPendingResponse(rid);
+            (void)_;
+
+            Socket::Packet pkt;
+            auto bodySize = static_cast<std::uint32_t>(req.EstimateBufferSize());
+            pkt.Header().m_packetType   = Socket::PacketType::HeadSyncPullRequest;
+            pkt.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+            pkt.Header().m_connectionID  = Socket::c_invalidConnectionID;
+            pkt.Header().m_resourceID    = rid;
+            pkt.Header().m_bodyLength    = bodySize;
+            pkt.AllocateBuffer(bodySize);
+            req.Write(pkt.Body());
+            pkt.Header().WriteBuffer(pkt.HeaderBuffer());
+
+            m_net->GetClient()->SendPacket(connID, std::move(pkt),
+                MakePullSendFailHandler(rid));
+
+            auto status = future.wait_for(timeout);
+            if (status != std::future_status::ready) {
+                ErasePullPending(rid);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "RemotePostingOps: HeadSync pull timeout from node %d (origin=%d, e=%llu, s=%llu)\n",
+                    targetNodeIndex, (int)originOwner,
+                    (unsigned long long)epochFloor, (unsigned long long)sequenceFloor);
+                return ErrorCode::Fail;
+            }
+            outResp = future.get();
+            return ErrorCode::Success;
         }
 
         // ==================================================================
@@ -438,6 +513,55 @@ namespace SPTAG::SPANN {
             }
         }
 
+        // ----- HeadSync pull (request → response) -----
+
+        void HandleHeadSyncPullRequest(Socket::ConnectionID connID, Socket::Packet packet) {
+            if (Socket::c_invalidConnectionID == packet.Header().m_connectionID)
+                packet.Header().m_connectionID = connID;
+
+            HeadSyncPullRequest req;
+            if (req.Read(packet.Body()) == nullptr) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                    "RemotePostingOps: HeadSyncPullRequest parse error\n");
+                HeadSyncPullResponse resp;
+                resp.m_status = HeadSyncPullResponse::Status::Failed;
+                SendHeadSyncPullResponse(packet, resp);
+                return;
+            }
+
+            HeadSyncPullResponse resp;
+            resp.m_originOwner = req.m_originOwner;
+            if (m_headSyncPullProvider) {
+                m_headSyncPullProvider(req.m_originOwner,
+                                       req.m_epochFloor,
+                                       req.m_sequenceFloor,
+                                       req.m_maxEntries,
+                                       resp);
+            } else {
+                // Owner has nothing on hand → NotAvailable. Caller
+                // can fall back to a full scan_range / Merkle audit.
+                resp.m_status = HeadSyncPullResponse::Status::NotAvailable;
+            }
+
+            SendHeadSyncPullResponse(packet, resp);
+        }
+
+        void HandleHeadSyncPullResponse(Socket::ConnectionID /*connID*/, Socket::Packet packet) {
+            Socket::ResourceID rid = packet.Header().m_resourceID;
+            auto promise = TakePullPendingResponse(rid);
+            if (!promise) return;
+
+            HeadSyncPullResponse resp;
+            if (packet.Header().m_processStatus != Socket::PacketProcessStatus::Ok
+                || resp.Read(packet.Body()) == nullptr) {
+                resp.m_status = HeadSyncPullResponse::Status::Failed;
+                resp.m_entries.clear();
+                promise->set_value(std::move(resp));
+                return;
+            }
+            promise->set_value(std::move(resp));
+        }
+
         void HandleRemoteLockRequest(Socket::ConnectionID connID, Socket::Packet packet) {
             RemoteLockRequest req;
             if (req.Read(packet.Body()) == nullptr) {
@@ -574,10 +698,72 @@ namespace SPTAG::SPANN {
         AppendCallback m_appendCallback;
         HeadSyncCallback m_headSyncCallback;
         RemoteLockCallback m_remoteLockCallback;
+        HeadSyncPullProvider m_headSyncPullProvider;
 
         std::atomic<Socket::ResourceID> m_nextResourceId{1};
         std::mutex m_pendingMutex;
         std::unordered_map<Socket::ResourceID, std::promise<ErrorCode>> m_pendingResponses;
+
+        // Pull RPC pending map (separate type — promises carry the response).
+        std::mutex m_pullPendingMutex;
+        std::unordered_map<Socket::ResourceID, std::promise<HeadSyncPullResponse>> m_pullPending;
+
+        std::pair<std::future<HeadSyncPullResponse>, bool>
+        CreatePullPendingResponse(Socket::ResourceID rid) {
+            std::promise<HeadSyncPullResponse> promise;
+            auto future = promise.get_future();
+            std::lock_guard<std::mutex> lock(m_pullPendingMutex);
+            m_pullPending.emplace(rid, std::move(promise));
+            return {std::move(future), true};
+        }
+
+        void ErasePullPending(Socket::ResourceID rid) {
+            std::lock_guard<std::mutex> lock(m_pullPendingMutex);
+            m_pullPending.erase(rid);
+        }
+
+        std::unique_ptr<std::promise<HeadSyncPullResponse>>
+        TakePullPendingResponse(Socket::ResourceID rid) {
+            std::lock_guard<std::mutex> lock(m_pullPendingMutex);
+            auto it = m_pullPending.find(rid);
+            if (it == m_pullPending.end()) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "RemotePostingOps: Pull response for unknown resourceID %u\n", rid);
+                return nullptr;
+            }
+            auto p = std::make_unique<std::promise<HeadSyncPullResponse>>(std::move(it->second));
+            m_pullPending.erase(it);
+            return p;
+        }
+
+        std::function<void(bool)> MakePullSendFailHandler(Socket::ResourceID rid) {
+            return [rid, this](bool success) {
+                if (!success) {
+                    std::lock_guard<std::mutex> lock(m_pullPendingMutex);
+                    auto it = m_pullPending.find(rid);
+                    if (it != m_pullPending.end()) {
+                        HeadSyncPullResponse failed;
+                        failed.m_status = HeadSyncPullResponse::Status::Failed;
+                        it->second.set_value(std::move(failed));
+                        m_pullPending.erase(it);
+                    }
+                }
+            };
+        }
+
+        void SendHeadSyncPullResponse(Socket::Packet& srcPacket, const HeadSyncPullResponse& resp) {
+            Socket::Packet ret;
+            auto bodySize = static_cast<std::uint32_t>(resp.EstimateBufferSize());
+            ret.Header().m_packetType    = Socket::PacketType::HeadSyncPullResponse;
+            ret.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+            ret.Header().m_connectionID  = srcPacket.Header().m_connectionID;
+            ret.Header().m_resourceID    = srcPacket.Header().m_resourceID;
+            ret.Header().m_bodyLength    = bodySize;
+            ret.AllocateBuffer(bodySize);
+            resp.Write(ret.Body());
+            ret.Header().WriteBuffer(ret.HeaderBuffer());
+            m_net->GetServer()->SendPacket(srcPacket.Header().m_connectionID, std::move(ret), nullptr);
+        }
     };
 
 } // namespace SPTAG::SPANN
