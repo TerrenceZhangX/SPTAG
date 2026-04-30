@@ -4,6 +4,7 @@
 #pragma once
 
 #include "inc/Core/SPANN/Distributed/NetworkNode.h"
+#include "inc/Core/SPANN/Distributed/RingAckRetry.h"
 
 namespace SPTAG::SPANN {
 
@@ -46,6 +47,12 @@ namespace SPTAG::SPANN {
             std::atomic_store(&m_hashRing,
                 std::shared_ptr<const ConsistentHashRing>(std::move(ring)));
             m_currentRingVersion.store(1);
+            // ring-update-ack-loss: seed bounded-ACK state machine when armed.
+            if (RingUpdateAckLossArmedDynamic()) {
+                std::vector<int> workerIds;
+                for (int i = 1; i <= numWorkers; ++i) workerIds.push_back(i);
+                m_ackRetry.OnNewVersion(1, workerIds, std::chrono::steady_clock::now());
+            }
 
             m_dispatch.SetNetwork(this);
 
@@ -84,8 +91,10 @@ namespace SPTAG::SPANN {
             if (currentVer == 0) return false;
             std::lock_guard<std::mutex> lock(m_ackMutex);
             int numNodes = static_cast<int>(m_nodeAddrs.size());
+            const bool armed = RingUpdateAckLossArmedDynamic();
             for (int i = 0; i < numNodes; i++) {
                 if (i == m_localNodeIndex) continue;
+                if (armed && m_ackRetry.IsEvicted(i)) continue;
                 auto it = m_workerAckedVersion.find(i);
                 if (it == m_workerAckedVersion.end() || it->second < currentVer) return false;
             }
@@ -110,7 +119,10 @@ namespace SPTAG::SPANN {
         }
 
         void BgProtocolStep() override {
-            if (m_currentRingVersion.load() > 0) {
+            if (m_currentRingVersion.load() == 0) return;
+            if (RingUpdateAckLossArmedDynamic()) {
+                BoundedAckRetransmitStep();
+            } else {
                 RetryUnackedRingUpdates();
             }
         }
@@ -147,6 +159,9 @@ namespace SPTAG::SPANN {
                 std::lock_guard<std::mutex> lock(m_ackMutex);
                 auto& ver = m_workerAckedVersion[msg.m_nodeIndex];
                 if (msg.m_ringVersion > ver) ver = msg.m_ringVersion;
+            }
+            if (RingUpdateAckLossArmedDynamic()) {
+                m_ackRetry.OnAck(msg.m_nodeIndex, msg.m_ringVersion);
             }
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
                 "DispatcherNode: RingUpdateACK from node %d (v%u)\n",
@@ -189,6 +204,48 @@ namespace SPTAG::SPANN {
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
                 "DispatcherNode: Broadcast RingUpdate v%u (%d nodes)\n",
                 version, (int)msg.m_nodeIndices.size());
+        }
+
+        void BoundedAckRetransmitStep() {
+            auto ring = std::atomic_load(&m_hashRing);
+            if (!ring) return;
+            std::uint32_t currentVer = m_currentRingVersion.load();
+            if (currentVer == 0) return;
+
+            // Build payload once; reused across retransmits.
+            RingUpdateMsg msg;
+            msg.m_ringVersion = currentVer;
+            msg.m_vnodeCount = ring->GetVNodeCount();
+            for (int idx : ring->GetNodes()) msg.m_nodeIndices.push_back(idx);
+            std::size_t bodySize = msg.EstimateBufferSize();
+
+            int numNodes = static_cast<int>(m_nodeAddrs.size());
+            auto now = std::chrono::steady_clock::now();
+            for (int i = 0; i < numNodes; ++i) {
+                if (i == m_localNodeIndex) continue;
+                auto act = m_ackRetry.Tick(i, now);
+                if (act == RingAckAction::Idle) continue;
+                if (act == RingAckAction::Evict) {
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                        "DispatcherNode: ring-update-ack-loss: worker %d evicted "
+                        "after %u failed retransmits (ring v%u)\n",
+                        i, m_ackRetry.GetConfig().maxAttempts, currentVer);
+                    continue;
+                }
+                // Retransmit
+                auto peerConn = GetPeerConnection(i);
+                if (peerConn == Socket::c_invalidConnectionID) continue;
+                Socket::Packet pkt;
+                pkt.Header().m_packetType = Socket::PacketType::RingUpdate;
+                pkt.Header().m_processStatus = Socket::PacketProcessStatus::Ok;
+                pkt.Header().m_connectionID = Socket::c_invalidConnectionID;
+                pkt.Header().m_resourceID = 0;
+                pkt.Header().m_bodyLength = static_cast<std::uint32_t>(bodySize);
+                pkt.AllocateBuffer(static_cast<std::uint32_t>(bodySize));
+                msg.Write(pkt.Body());
+                pkt.Header().WriteBuffer(pkt.HeaderBuffer());
+                m_client->SendPacket(peerConn, std::move(pkt), nullptr);
+            }
         }
 
         void RetryUnackedRingUpdates() {
@@ -238,6 +295,17 @@ namespace SPTAG::SPANN {
         std::atomic<std::uint32_t> m_currentRingVersion{0};
         mutable std::mutex m_ackMutex;
         std::unordered_map<int, std::uint32_t> m_workerAckedVersion;
+        RingAckRetry m_ackRetry;
+
+    public:
+        // ring-update-ack-loss surfaces (zero unless env-armed).
+        RingAckRetry::Counters GetRingAckCounters() const {
+            return m_ackRetry.GetCounters();
+        }
+        bool IsRingWorkerEvicted(int nodeIdx) const {
+            return m_ackRetry.IsEvicted(nodeIdx);
+        }
+        RingAckRetry& MutableRingAckRetry() { return m_ackRetry; }
     };
 
 } // namespace SPTAG::SPANN
