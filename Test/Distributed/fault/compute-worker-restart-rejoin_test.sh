@@ -1,56 +1,62 @@
 #!/usr/bin/env bash
-# Per-case test harness scaffold: compute-worker-restart-rejoin
+# Per-case test harness: compute-worker-restart-rejoin
 #
-# Brings up PD + TiKV, runs the SPTAGTest cases for this fault slug,
-# tears down. Multi-store / chaos sub-cases gated by --with-* flags.
+# Tier-1 invariants for this case live entirely in
+# Test/Distributed/fault/compute-worker-restart-rejoin_test.cpp and exercise
+# the prim/swim-membership + prim/ring-epoch-fence headers in-process.
+# No PD/TiKV/docker bring-up is required (this is not a TiKV-IO case).
+#
+# Per the perf-validation protocol (locked 2026-04-30 06:02 UTC):
+#   * Tier 1 hard gate: this script must exit 0 with both
+#     SPTAG_FAULT_COMPUTE_WORKER_RESTART_REJOIN unset (env-off) and =1
+#     (env-armed). Both are run by default; the env var is observability
+#     only — the rejoin invariants are unconditional, not gated.
+#   * Tier 2 (1M perf triple): NOT on the hot-path strict list →
+#     deferred per protocol; rationale recorded in
+#     results/compute-worker-restart-rejoin/1M/STATUS.md.
 #
 # Usage:
-#   ./compute-worker-restart-rejoin_test.sh [--with-<subcase>] [...]
+#   ./compute-worker-restart-rejoin_test.sh
 #
-# Env overrides (see lib/docker_pd_tikv.sh for full list):
-#   BUILD_DIR         path to cmake build dir holding Release/SPTAGTest
-#                     default: $HOME/workspace/sptag-ft/build/compute-worker-restart-rejoin
-#   PD_PORT           default 12379
-#   TIKV_PORT         default 20160
-#
-# Per-case hooks: edit the EXTRA_ENV section below to add env vars the
-# SPTAGTest case reads (e.g. SPTAG_TIKV_STORE_ADDR_TTL_SEC=2).
+# Env overrides:
+#   BUILD_DIR  path to cmake build dir holding Release/SPTAGTest
+#              default: $HOME/workspace/sptag-ft/build/compute-worker-restart-rejoin
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-export FAULT_SLUG="compute-worker-restart-rejoin"
-# shellcheck disable=SC1090
-source "${SCRIPT_DIR}/lib/docker_pd_tikv.sh"
-
-WITH_FLAGS=()
-for a in "$@"; do
-    case "$a" in --with-*) WITH_FLAGS+=("$a") ;; esac
-done
+FAULT_SLUG="compute-worker-restart-rejoin"
+SUITE="ComputeWorkerRestartRejoinTest"
 
 BUILD_DIR="${BUILD_DIR:-$HOME/workspace/sptag-ft/build/${FAULT_SLUG}}"
-TEST_BIN="${BUILD_DIR}/../../wt/${FAULT_SLUG}/Release/SPTAGTest"
-[[ -x "$TEST_BIN" ]] || { echo "SPTAGTest not found at $TEST_BIN"; exit 2; }
+SRC_DIR="${SRC_DIR:-$HOME/workspace/sptag-ft/wt/${FAULT_SLUG}}"
+# CMake places the linked binary under <src>/Release/SPTAGTest; fall back to
+# <build>/Release/SPTAGTest and <build>/SPTAGTest for portability.
+if [[ -n "${TEST_BIN:-}" && -x "${TEST_BIN}" ]]; then
+    :
+elif [[ -x "${SRC_DIR}/Release/SPTAGTest" ]]; then
+    TEST_BIN="${SRC_DIR}/Release/SPTAGTest"
+elif [[ -x "${BUILD_DIR}/Release/SPTAGTest" ]]; then
+    TEST_BIN="${BUILD_DIR}/Release/SPTAGTest"
+elif [[ -x "${BUILD_DIR}/SPTAGTest" ]]; then
+    TEST_BIN="${BUILD_DIR}/SPTAGTest"
+else
+    echo "[harness] SPTAGTest not found (searched ${SRC_DIR}/Release, ${BUILD_DIR}/Release, ${BUILD_DIR})"
+    exit 2
+fi
 
-trap pd_tikv_teardown EXIT
-pd_tikv_bringup
+run_tier1() {
+    local mode="$1"
+    echo "[harness] Tier-1 ${mode}: SPTAGTest --run_test=${SUITE}"
+    "$TEST_BIN" --run_test="${SUITE}" --log_level=test_suite --report_level=short
+}
 
-# ── EXTRA_ENV (case-specific) ──
-# Tighten timing knobs so the unit cases finish inside the spec budget.
-# Customise per case; remove if irrelevant.
-export SPTAG_TIKV_STORE_ADDR_TTL_SEC="${SPTAG_TIKV_STORE_ADDR_TTL_SEC:-2}"
-export SPTAG_TIKV_PD_REFRESH_SEC="${SPTAG_TIKV_PD_REFRESH_SEC:-5}"
+# env-off
+unset SPTAG_FAULT_COMPUTE_WORKER_RESTART_REJOIN
+run_tier1 env-off
 
-# ── Sub-case hooks: each --with-* flag should set up the env the test
-#    reads, then the test will exercise the sub-case. Examples:
-#
-# for f in "${WITH_FLAGS[@]}"; do
-#   case "$f" in
-#     --with-move) export TIKV_STORE_RESTART_CMD=/tmp/${FAULT_SLUG}_move.sh ;;
-#   esac
-# done
+# env-armed
+export SPTAG_FAULT_COMPUTE_WORKER_RESTART_REJOIN=1
+run_tier1 env-armed
 
-echo "[harness] running SPTAGTest --run_test=ComputeWorkerRestartRejoinTest"
-"$TEST_BIN" --run_test=ComputeWorkerRestartRejoinTest --log_level=test_suite --report_level=short
-echo "[harness] test exit=$?"
+echo "[harness] Tier-1 PASS (env-off + env-armed) for ${FAULT_SLUG}"
