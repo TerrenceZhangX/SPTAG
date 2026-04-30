@@ -20,6 +20,7 @@
 #include "inc/Core/Common/TiKVVersionMap.h"
 #include "ExtraFileController.h"
 #include "Distributed/WorkerNode.h"
+#include "Distributed/CasLease.h"
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -284,6 +285,12 @@ namespace SPTAG::SPANN {
         // Avoids UB from cross-thread std::shared_timed_mutex unlock.
         static constexpr int kRemoteLockPoolSize = 32767;
         std::unique_ptr<std::atomic<bool>[]> m_remoteBucketLocked;
+
+        // Optional CAS lease for cross-node head locks (split-merge-cross-node-lock-loss).
+        // Currently nullptr by default; tests / harness can inject one. The wired
+        // call site treats a nullptr lease as "legacy path only".
+        std::shared_ptr<Distributed::CasLease> m_casLease;
+        std::string m_casLeaseOwner;
 
         IndexStats m_stat;
 
@@ -1173,7 +1180,13 @@ namespace SPTAG::SPANN {
                         int nodeIndex = -1;
                         SizeType headID = -1;
                         bool active = false;
-                        ~RemoteLockGuard() { if (active && router) router->SendRemoteLock(nodeIndex, headID, false); }
+                        // CAS-lease additive shadow of the legacy std::mutex remote lock.
+                        Distributed::CasLease* casLease = nullptr;
+                        Distributed::LeaseToken leaseToken{};
+                        ~RemoteLockGuard() {
+                            if (active && router) router->SendRemoteLock(nodeIndex, headID, false);
+                            if (casLease && leaseToken.valid()) casLease->Release(leaseToken);
+                        }
                         void release() { active = false; }
                     } remoteLockGuard;
 
@@ -1186,6 +1199,23 @@ namespace SPTAG::SPANN {
                                     auto* curJob = new MergeAsyncJob(this, headID, nullptr);
                                     m_splitThreadPool->add(curJob);
                                     return ErrorCode::Success;
+                                }
+                                // CAS lease (additive — protects against the cross-node lock-loss
+                                // failure mode in split-merge-cross-node-lock-loss.md). Failure to
+                                // acquire here is non-fatal: the legacy SendRemoteLock above is the
+                                // authoritative path until the TiKV-backed KvBackend is wired in.
+                                if (m_casLease) {
+                                    char keybuf[40];
+                                    std::snprintf(keybuf, sizeof(keybuf),
+                                                  "head/%d", queryResult->VID);
+                                    auto leaseRes = m_casLease->Acquire(
+                                        keybuf, m_casLeaseOwner,
+                                        std::chrono::milliseconds(5000));
+                                    if (leaseRes.status ==
+                                        Distributed::AcquireStatus::Granted) {
+                                        remoteLockGuard.leaseToken = leaseRes.token;
+                                        remoteLockGuard.casLease   = m_casLease.get();
+                                    }
                                 }
                                 remoteLockGuard.router = m_worker;
                                 remoteLockGuard.nodeIndex = target.nodeIndex;
