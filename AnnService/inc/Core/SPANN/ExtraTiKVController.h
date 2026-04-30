@@ -7,6 +7,7 @@
 #include "inc/Helper/KeyValueIO.h"
 #include "inc/Helper/StringConvert.h"
 #include "inc/Core/SPANN/Options.h"
+#include "inc/Helper/RetryBudget.h"
 
 #include <grpcpp/grpcpp.h>
 #include "kvproto/tikvpb.grpc.pb.h"
@@ -153,7 +154,15 @@ namespace SPTAG::SPANN
         {
             std::string prefixedKey = MakePrefixedKey(key);
 
-            for (int attempt = 0; attempt < 10; attempt++) {
+            // RetryBudget: per-call wall+attempts cap with exp+jitter backoff.
+            // See tikv-region-error-retry-cap.md. Budget is local because the
+            // public KeyValueIO API has no slot for it; for callers that need
+            // a shared budget across PD+TiKV+MultiGet-fallback (e.g. Split,
+            // pd-reconnect-during-retry), the TestHook will eventually pass
+            // it through. The hard `< 10` cap remains as a safety net.
+            Helper::RetryBudget budget;
+            int attempt = 0;
+            for (; attempt < 10 && budget.should_retry(); ++attempt) {
                 auto stub = GetStubForKey(prefixedKey);
                 if (!stub) return ErrorCode::Fail;
 
@@ -163,19 +172,24 @@ namespace SPTAG::SPANN
 
                 kvrpcpb::RawGetResponse response;
                 grpc::ClientContext ctx;
-                SetDeadline(ctx, timeout);
+                // Deadline is min(caller timeout, remaining budget).
+                auto remMs = budget.remaining();
+                auto effTimeout = std::min<std::chrono::microseconds>(
+                    timeout,
+                    std::chrono::duration_cast<std::chrono::microseconds>(remMs));
+                SetDeadline(ctx, effTimeout);
 
                 auto status = stub->RawGet(&ctx, request, &response);
                 if (!status.ok()) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::Get gRPC error (attempt %d): %s\n",
                                  attempt, status.error_message().c_str());
                     InvalidateRegionCache(prefixedKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (!budget.record_attempt()) break;
                     continue;
                 }
                 if (response.has_region_error()) {
                     InvalidateRegionCache(prefixedKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (!budget.record_attempt()) break;
                     continue;
                 }
                 if (!response.error().empty()) {
@@ -189,7 +203,11 @@ namespace SPTAG::SPANN
                 *value = response.value();
                 return ErrorCode::Success;
             }
-            return ErrorCode::Fail;
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                "TiKVIO::Get retry budget exceeded (attempts=%d, wall=%lldms)\n",
+                budget.attempts(),
+                (long long)budget.config().total_wall.count());
+            return ErrorCode::RetryBudgetExceeded;
         }
 
         ErrorCode Get(const SizeType key, std::string* value,
@@ -208,7 +226,9 @@ namespace SPTAG::SPANN
         {
             std::string prefixedKey = MakePrefixedKey(key);
 
-            for (int attempt = 0; attempt < 10; attempt++) {
+            Helper::RetryBudget budget;
+            int attempt = 0;
+            for (; attempt < 10 && budget.should_retry(); ++attempt) {
                 auto stub = GetStubForKey(prefixedKey);
                 if (!stub) return ErrorCode::Fail;
 
@@ -219,19 +239,23 @@ namespace SPTAG::SPANN
 
                 kvrpcpb::RawPutResponse response;
                 grpc::ClientContext ctx;
-                SetDeadline(ctx, timeout);
+                auto remMs = budget.remaining();
+                auto effTimeout = std::min<std::chrono::microseconds>(
+                    timeout,
+                    std::chrono::duration_cast<std::chrono::microseconds>(remMs));
+                SetDeadline(ctx, effTimeout);
 
                 auto status = stub->RawPut(&ctx, request, &response);
                 if (!status.ok()) {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Warning, "TiKVIO::Put gRPC error (attempt %d): %s\n",
                                  attempt, status.error_message().c_str());
                     InvalidateRegionCache(prefixedKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (!budget.record_attempt()) break;
                     continue;
                 }
                 if (response.has_region_error()) {
                     InvalidateRegionCache(prefixedKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (!budget.record_attempt()) break;
                     continue;
                 }
                 if (!response.error().empty()) {
@@ -240,7 +264,9 @@ namespace SPTAG::SPANN
                 }
                 return ErrorCode::Success;
             }
-            return ErrorCode::Fail;
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                "TiKVIO::Put retry budget exceeded (attempts=%d)\n", budget.attempts());
+            return ErrorCode::RetryBudgetExceeded;
         }
 
         ErrorCode Put(const SizeType key, const std::string& value,
@@ -713,7 +739,7 @@ namespace SPTAG::SPANN
             std::string suffix(reinterpret_cast<const char*>(&ts), sizeof(ts));
             std::string key = MakeChunkKey(headID, suffix);
 
-            for (int attempt = 0; attempt < 10; attempt++) {
+            Helper::RetryBudget budget; int attempt = 0; for (; attempt < 10 && budget.should_retry(); ++attempt) {
                 auto stub = GetStubForKey(key);
                 if (!stub) return ErrorCode::Fail;
 
@@ -729,12 +755,12 @@ namespace SPTAG::SPANN
                 auto status = stub->RawPut(&ctx, request, &response);
                 if (!status.ok()) {
                     InvalidateRegionCache(key);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (!budget.record_attempt()) break;
                     continue;
                 }
                 if (response.has_region_error()) {
                     InvalidateRegionCache(key);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (!budget.record_attempt()) break;
                     continue;
                 }
                 if (!response.error().empty()) {
@@ -753,7 +779,7 @@ namespace SPTAG::SPANN
                                std::vector<Helper::AsyncReadRequest>* reqs)
         {
             std::string key = MakeChunkKey(headID); // no suffix → base key
-            for (int attempt = 0; attempt < 10; attempt++) {
+            Helper::RetryBudget budget; int attempt = 0; for (; attempt < 10 && budget.should_retry(); ++attempt) {
                 auto stub = GetStubForKey(key);
                 if (!stub) return ErrorCode::Fail;
 
@@ -769,12 +795,12 @@ namespace SPTAG::SPANN
                 auto status = stub->RawPut(&ctx, request, &response);
                 if (!status.ok()) {
                     InvalidateRegionCache(key);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (!budget.record_attempt()) break;
                     continue;
                 }
                 if (response.has_region_error()) {
                     InvalidateRegionCache(key);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (!budget.record_attempt()) break;
                     continue;
                 }
                 if (!response.error().empty()) {
@@ -995,7 +1021,8 @@ namespace SPTAG::SPANN
             // If region error (e.g. after split, chunkKey and countKey may be
             // in different regions), fall back to individual Put calls which
             // each have their own region-aware retry logic.
-            for (int attempt = 0; attempt < 3; attempt++) {
+            Helper::RetryBudget budget;
+            for (int attempt = 0; attempt < 3 && budget.should_retry(); attempt++) {
                 auto stub = GetStubForKey(chunkKey);
                 if (!stub) break;
 
@@ -1017,13 +1044,13 @@ namespace SPTAG::SPANN
                 auto status = stub->RawBatchPut(&ctx, request, &response);
                 if (!status.ok()) {
                     InvalidateRegionCache(chunkKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (!budget.record_attempt()) break;
                     continue;
                 }
                 if (response.has_region_error()) {
                     InvalidateRegionCache(chunkKey);
                     InvalidateRegionCache(countKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (!budget.record_attempt()) break;
                     continue;
                 }
                 if (!response.error().empty()) {
@@ -1215,7 +1242,7 @@ namespace SPTAG::SPANN
         // ---- Helper: RawPut with retry for an already-prefixed key ----
         ErrorCode RawPutWithRetry(const std::string& prefixedKey, const std::string& value,
                                   const std::chrono::microseconds& timeout) {
-            for (int attempt = 0; attempt < 10; attempt++) {
+            Helper::RetryBudget budget; int attempt = 0; for (; attempt < 10 && budget.should_retry(); ++attempt) {
                 auto stub = GetStubForKey(prefixedKey);
                 if (!stub) return ErrorCode::Fail;
 
@@ -1231,12 +1258,12 @@ namespace SPTAG::SPANN
                 auto status = stub->RawPut(&ctx, request, &response);
                 if (!status.ok()) {
                     InvalidateRegionCache(prefixedKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (!budget.record_attempt()) break;
                     continue;
                 }
                 if (response.has_region_error()) {
                     InvalidateRegionCache(prefixedKey);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+                    if (!budget.record_attempt()) break;
                     continue;
                 }
                 if (!response.error().empty()) return ErrorCode::Fail;
