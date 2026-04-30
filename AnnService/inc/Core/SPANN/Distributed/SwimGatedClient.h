@@ -128,8 +128,21 @@ public:
         ErrorCode rc = m_rpc(peer, deadline);
         if (rc != ErrorCode::Success) {
             ++m_swimDetectorLagErrors;
-            if (budget.exhausted()
-                || !budget.should_retry()) {
+            // The caller drives record_attempt() between Call()s, so
+            // budget.attempts() reflects how many *prior* attempts have
+            // been recorded. We treat a failure as terminal (and bump
+            // the well-formed RetryBudgetExceeded counter) when the
+            // caller has no headroom left for another attempt under
+            // either the attempt cap or the wall deadline minus one
+            // more per_call_timeout window.
+            const int prior = budget.attempts();
+            const auto rem_after = budget.remaining();
+            const bool noAttemptsLeft =
+                (prior + 1) >= budget.config().max_attempts;
+            const bool noWallLeft =
+                rem_after <= m_cfg.per_call_timeout;
+            if (budget.exhausted() || !budget.should_retry()
+                || noAttemptsLeft || noWallLeft) {
                 ++m_swimDetectorLagBudgetExhausted;
                 o.code = ErrorCode::RetryBudgetExceeded;
             } else {

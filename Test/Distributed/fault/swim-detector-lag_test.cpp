@@ -70,12 +70,21 @@ void DriveToDead(SwimDetector& d, int peer, std::uint64_t suspectTicks,
     // Each Tick() with no inbound Ack from `peer` advances its
     // miss-count. The detector's state machine declares Suspect after
     // suspectTicks misses, then Dead after `deadTicks` more.
-    for (std::uint64_t i = 0; i < suspectTicks + deadTicks + 2; ++i) {
-        (void)d.Tick();
-    }
-    // After this, peer should be Dead in the detector's view.
+    // Pump enough ticks for: (1) peer to receive a direct ping (round-
+    // robin across all peers), (2) suspect_after_ticks to elapse, (3)
+    // dead_after_ticks to elapse from the suspect transition. We are
+    // generous (multiply by # peers + slack) because EmitDirectPings
+    // round-robins one peer per tick.
+    MemberState peek;
+    BOOST_REQUIRE(d.TryGetMember(peer, peek));
+    const std::uint64_t cap =
+        (suspectTicks + deadTicks + 2) * 8 + 32;
     MemberState st;
-    BOOST_REQUIRE(d.TryGetMember(peer, st));
+    for (std::uint64_t i = 0; i < cap; ++i) {
+        (void)d.Tick();
+        if (d.TryGetMember(peer, st)
+            && st.health == MemberHealth::Dead) break;
+    }
     BOOST_REQUIRE_EQUAL(static_cast<int>(st.health),
                         static_cast<int>(MemberHealth::Dead));
 }
@@ -191,17 +200,18 @@ BOOST_AUTO_TEST_CASE(GapPeriodClientGetsRetryBudgetExceeded)
 
     Helper::RetryBudget budget(cfg.budget);
     ErrorCode last = ErrorCode::Success;
+    int attemptsSeen = 0;
     auto t0 = std::chrono::steady_clock::now();
-    while (budget.should_retry()) {
+    while (budget.should_retry() && attemptsSeen < 16) {
         auto out = client.Call(/*peer=*/1, budget);
         last = out.code;
+        ++attemptsSeen;
         if (out.code == ErrorCode::RetryBudgetExceeded) break;
         if (!budget.record_attempt()) break;
     }
     auto wall = std::chrono::steady_clock::now() - t0;
 
-    BOOST_CHECK(last == ErrorCode::RetryBudgetExceeded
-                || budget.exhausted());
+    BOOST_CHECK(last == ErrorCode::RetryBudgetExceeded);
     // No infinite hang: total elapsed ≤ wall + a generous slop.
     BOOST_CHECK_LT(std::chrono::duration_cast<std::chrono::milliseconds>(
                        wall).count(),
@@ -255,25 +265,30 @@ BOOST_AUTO_TEST_CASE(ConcurrentCallersNoRetryPileUp)
     }
 
     int rejected = 0;
-    int admittedErr = 0;
+    int wellFormed = 0;
     for (auto& f : futs) {
         auto o = f.get();
         if (!o.admitted) ++rejected;
         if (o.code == ErrorCode::RetryBudgetExceeded
             || o.code == ErrorCode::Socket_FailedConnectToEndPoint) {
-            ++admittedErr;
+            ++wellFormed;
         }
         BOOST_CHECK(o.code != ErrorCode::Success);
     }
 
+    // Pile-up invariant: peer in-flight never exceeded queue cap.
     BOOST_CHECK_LE(peakConcurrent.load(),
                    static_cast<int>(cfg.peer_queue_max));
+    // Cap actually fired (with N >> peer_queue_max).
     BOOST_CHECK_GT(rejected, 0);
+    // Every caller is accounted for (either rejected or RPC-attempted).
     BOOST_CHECK_EQUAL(rejected + rpcCalls.load(), N);
+    // Every caller surfaced a typed error (no infinite hang / silent drop).
+    BOOST_CHECK_EQUAL(wellFormed, N);
     BOOST_CHECK_GE(client.SwimDetectorLagErrors(),
-                   static_cast<std::uint64_t>(rejected));
+                   static_cast<std::uint64_t>(N));
     BOOST_CHECK_GE(client.SwimDetectorLagBudgetExhausted(),
-                   static_cast<std::uint64_t>(rejected));
+                   static_cast<std::uint64_t>(N));
 }
 
 // ---------------------------------------------------------------------------
