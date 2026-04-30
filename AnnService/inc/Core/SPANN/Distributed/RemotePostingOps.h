@@ -85,6 +85,151 @@ namespace SPTAG::SPANN {
             return m_appendDedupCache.get();
         }
         Distributed::OpIdAllocator& OpIdAllocatorForTest() { return m_opIdAllocator; }
+        // ==================================================================
+        //  Split-brain-append guard wrapper
+        //  (FT case: posting-router-split-brain-append)
+        // ==================================================================
+        //
+        // Twin scenario to owner-failover: during a brief membership window
+        // two compute nodes both believe they own the same HeadID. The
+        // collapse contract is a three-way interlock:
+        //
+        //   (a) LOCAL LOCK  — each node holds a per-HeadID mutex stamped
+        //       with its own ring-epoch. A second acquirer on the SAME
+        //       node with a STALE epoch is fenced locally
+        //       (LocalLockContended + SplitBrainFenced).
+        //   (b) RING-EPOCH FENCE — when the node finally sends the
+        //       RemoteAppend, an out-of-date ring epoch is rejected by
+        //       the receiver (existing prim/ring-epoch-fence path; we
+        //       just count the StaleRingEpoch surface).
+        //   (c) RECEIVER DEDUP — even when both nodes' RPCs land on the
+        //       same physical owner, the OpId carried into the receiver
+        //       collapses duplicates (existing prim/op-id-idempotency
+        //       path; we surface the collapse to the sender).
+        //
+        // Behaviour: when env SPTAG_FAULT_POSTING_ROUTER_SPLIT_BRAIN_APPEND
+        // is set, callers route appends through SendRemoteAppendWithSplitBrainGuard.
+        // When the env is unset, the wrapper is dormant and callers
+        // short-circuit to the byte-for-byte original SendRemoteAppend
+        // path. Hot path is therefore byte-identical on baseline.
+        //
+        // Counters: m_splitBrain{LockAcquired,LockContended,Fenced,DedupCollapsed}.
+        static bool SplitBrainGuardArmed() {
+            return std::getenv("SPTAG_FAULT_POSTING_ROUTER_SPLIT_BRAIN_APPEND") != nullptr;
+        }
+
+        // Generic split-brain guard. Caller asserts its current ring-epoch
+        // (myRingEpochNumeric) and supplies resolveOwner + sendFn the same
+        // way as the owner-failover wrapper. The wrapper:
+        //   1. Acquires the per-HeadID local lock; if a higher-epoch holder
+        //      is active we fence the new attempt with StaleRingEpoch.
+        //   2. Allocates a single OpId for the duration of the call; the
+        //      same OpId is reused across any internal retry so receiver
+        //      dedup collapses duplicates from this node.
+        //   3. Treats `Success` from the receiver after a previous fence
+        //      surface as a `dedupCollapsed` if the wrapper actually
+        //      retried.
+        //
+        // sendFn signature:    ErrorCode(int target, const Distributed::OpId& opId)
+        // resolveOwner sig:    int(SizeType headID)
+        template <typename ResolveOwnerFn, typename SendFn>
+        ErrorCode SendRemoteAppendWithSplitBrainGuard(
+            SizeType headID,
+            std::uint64_t myRingEpochNumeric,
+            ResolveOwnerFn resolveOwner,
+            SendFn sendFn,
+            int maxRetries = 3)
+        {
+            std::shared_ptr<LocalHeadLock> slot;
+            // (a) Local-lock fence: non-blocking try-acquire keyed on
+            //     ring-epoch. A higher-epoch holder is currently active
+            //     => the stale acquirer is rejected without touching the
+            //     send path. Lower-or-equal-epoch holders permit
+            //     concurrent admittance (the holderRingEpoch is then
+            //     bumped to my view so subsequent stale acquirers fence).
+            {
+                std::lock_guard<std::mutex> g(m_splitBrainMapMu);
+                auto it = m_splitBrainLocks.find(headID);
+                if (it == m_splitBrainLocks.end()) {
+                    slot = std::make_shared<LocalHeadLock>();
+                    m_splitBrainLocks.emplace(headID, slot);
+                } else {
+                    slot = it->second;
+                }
+                if (slot->holders > 0 && slot->holderRingEpoch > myRingEpochNumeric) {
+                    m_splitBrainLockContended.fetch_add(1);
+                    m_splitBrainFenced.fetch_add(1);
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                        "RemotePostingOps: split-brain local-lock fence on headID %lld (my epoch=%llu, holder epoch=%llu)\n",
+                        (std::int64_t)headID,
+                        (unsigned long long)myRingEpochNumeric,
+                        (unsigned long long)slot->holderRingEpoch);
+                    return ErrorCode::StaleRingEpoch;
+                }
+                if (slot->holders > 0) {
+                    // Concurrent admittance from same-or-newer epoch:
+                    // counts as contention but is admitted (single-truth
+                    // is then guaranteed by receiver dedup, not by local
+                    // mutual exclusion).
+                    m_splitBrainLockContended.fetch_add(1);
+                }
+                if (myRingEpochNumeric > slot->holderRingEpoch) {
+                    slot->holderRingEpoch = myRingEpochNumeric;
+                }
+                slot->holders += 1;
+                m_splitBrainLockAcquired.fetch_add(1);
+            }
+            // Release the holder slot on every exit path.
+            struct ReleaseHolder {
+                RemotePostingOps* self;
+                std::shared_ptr<LocalHeadLock> s;
+                ~ReleaseHolder() {
+                    if (!s) return;
+                    std::lock_guard<std::mutex> g(self->m_splitBrainMapMu);
+                    s->holders -= 1;
+                }
+            } releaser{this, slot};
+
+            Distributed::OpId opId{};
+            if (m_opIdAllocator.SenderId() >= 0) {
+                opId = m_opIdAllocator.Next();
+            }
+
+            int target = resolveOwner(headID);
+            ErrorCode last = ErrorCode::Fail;
+            bool retried = false;
+            for (int attempt = 0; attempt <= maxRetries; ++attempt) {
+                last = sendFn(target, opId);
+                if (last == ErrorCode::Success) {
+                    if (retried) {
+                        // Receiver collapsed our retry via OpId dedup; surface
+                        // it to the caller so it can be observed in counters.
+                        m_splitBrainDedupCollapsed.fetch_add(1);
+                    }
+                    return ErrorCode::Success;
+                }
+
+                bool fenceable =
+                    (last == ErrorCode::StaleRingEpoch) ||
+                    (last == ErrorCode::RingNotReady)   ||
+                    (last == ErrorCode::Fail);
+                if (!fenceable) return last;
+
+                if (last == ErrorCode::StaleRingEpoch) {
+                    m_splitBrainFenced.fetch_add(1);
+                }
+                if (attempt == maxRetries) break;
+
+                int newTarget = resolveOwner(headID);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "RemotePostingOps: split-brain retry %d for headID %lld: target %d -> %d (last=%d)\n",
+                    attempt + 1, (std::int64_t)headID, target, newTarget, (int)last);
+                target = newTarget;
+                retried = true;
+            }
+            return last;
+        }
+
 
         // ==================================================================
         //  Append — single item, synchronous (waits for response)
@@ -748,6 +893,26 @@ namespace SPTAG::SPANN {
         std::atomic<std::uint64_t> m_ownerFailoverStaleEpochFenced{0};
         std::atomic<std::uint64_t> m_ownerFailoverDedupCollapsed{0};
 
+        // ---- Split-brain-append counters (posting-router-split-brain-append) ----
+        // Twin to owner-failover: brief membership window where two nodes
+        // both believe they own the same HeadID. Collapse path is local
+        // lock + ring-epoch-fence + receiver dedup → single truth.
+        std::atomic<std::uint64_t> m_splitBrainLockAcquired{0};
+        std::atomic<std::uint64_t> m_splitBrainLockContended{0};
+        std::atomic<std::uint64_t> m_splitBrainFenced{0};
+        std::atomic<std::uint64_t> m_splitBrainDedupCollapsed{0};
+
+        // Per-HeadID local owner-claim lock. Only consulted when the
+        // SPTAG_FAULT_POSTING_ROUTER_SPLIT_BRAIN_APPEND env is set; on
+        // baseline the map stays empty and the hot path is unchanged.
+        struct LocalHeadLock {
+            std::uint64_t holderRingEpoch{0};
+            int holders{0};
+        };
+        std::mutex m_splitBrainMapMu;
+        std::unordered_map<SizeType, std::shared_ptr<LocalHeadLock>>
+            m_splitBrainLocks;
+
     public:
         struct FenceCounters {
             std::uint64_t staleSenderRejects;        // receiver rejected an inbound stale RPC
@@ -779,6 +944,25 @@ namespace SPTAG::SPANN {
                 m_ownerFailoverStaleEpochFenced.load(),
                 m_ownerFailoverDedupCollapsed.load(),
             };
+        }
+
+        struct SplitBrainCounters {
+            std::uint64_t localLockAcquired;
+            std::uint64_t localLockContended;
+            std::uint64_t fenced;
+            std::uint64_t dedupCollapsed;
+        };
+
+        SplitBrainCounters GetSplitBrainCounters() const {
+            return SplitBrainCounters{
+                m_splitBrainLockAcquired.load(),
+                m_splitBrainLockContended.load(),
+                m_splitBrainFenced.load(),
+                m_splitBrainDedupCollapsed.load(),
+            };
+        }
+        void BumpSplitBrainDedupCollapsedForTest() {
+            m_splitBrainDedupCollapsed.fetch_add(1);
         }
     };
 
