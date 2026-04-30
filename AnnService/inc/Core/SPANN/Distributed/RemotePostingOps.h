@@ -748,6 +748,11 @@ namespace SPTAG::SPANN {
         std::atomic<std::uint64_t> m_ownerFailoverStaleEpochFenced{0};
         std::atomic<std::uint64_t> m_ownerFailoverDedupCollapsed{0};
 
+        // ---- Routing-table-drift counters (posting-router-routing-table-drift fault) ----
+        std::atomic<std::uint64_t> m_routingRefreshes{0};
+        std::atomic<std::uint64_t> m_routingStaleFenced{0};
+        std::atomic<std::uint64_t> m_routingDriftRetries{0};
+
     public:
         struct FenceCounters {
             std::uint64_t staleSenderRejects;        // receiver rejected an inbound stale RPC
@@ -779,6 +784,76 @@ namespace SPTAG::SPANN {
                 m_ownerFailoverStaleEpochFenced.load(),
                 m_ownerFailoverDedupCollapsed.load(),
             };
+        }
+
+        // ==================================================================
+        //  Routing-table-drift wrapper (FT case: posting-router-routing-table-drift)
+        // ==================================================================
+        //
+        // Receiver-side fence (HandleAppendRequest / HandleBatchAppendRequest)
+        // already converts a divergent (epoch, ringRev) into a structured
+        // StaleRingEpoch reply. Sender must (a) refresh its ring view, (b)
+        // re-resolve GetOwner, (c) retry with the SAME OpId so receiver-side
+        // dedup collapses any duplicate. This wrapper encapsulates that loop;
+        // dormant unless SPTAG_FAULT_POSTING_ROUTER_ROUTING_TABLE_DRIFT is
+        // set, so the production hot path is unaffected on baseline runs.
+        static bool RoutingDriftArmed() {
+            return std::getenv("SPTAG_FAULT_POSTING_ROUTER_ROUTING_TABLE_DRIFT") != nullptr;
+        }
+
+        struct RoutingCounters {
+            std::uint64_t refreshes;       // ring-refresh callbacks fired
+            std::uint64_t staleFenced;     // sender saw a StaleRingEpoch reply
+            std::uint64_t retries;         // attempts beyond the first
+        };
+
+        RoutingCounters GetRoutingCounters() const {
+            return RoutingCounters{
+                m_routingRefreshes.load(),
+                m_routingStaleFenced.load(),
+                m_routingDriftRetries.load(),
+            };
+        }
+
+        template <typename ResolveOwnerFn, typename RefreshRingFn, typename SendFn>
+        ErrorCode SendRemoteAppendWithRingRefresh(
+            SizeType headID,
+            ResolveOwnerFn resolveOwner,
+            RefreshRingFn refreshRing,
+            SendFn sendFn,
+            int maxRetries = 3)
+        {
+            Distributed::OpId opId{};
+            if (m_opIdAllocator.SenderId() >= 0) {
+                opId = m_opIdAllocator.Next();
+            }
+
+            int target = resolveOwner(headID);
+            ErrorCode last = ErrorCode::Fail;
+            for (int attempt = 0; attempt <= maxRetries; ++attempt) {
+                last = sendFn(target, opId);
+                if (last == ErrorCode::Success) return ErrorCode::Success;
+
+                bool fenceable =
+                    (last == ErrorCode::StaleRingEpoch) ||
+                    (last == ErrorCode::RingNotReady);
+                if (!fenceable) return last;
+
+                if (last == ErrorCode::StaleRingEpoch) {
+                    m_routingStaleFenced.fetch_add(1);
+                }
+                if (attempt == maxRetries) break;
+
+                refreshRing();
+                m_routingRefreshes.fetch_add(1);
+                m_routingDriftRetries.fetch_add(1);
+                int newTarget = resolveOwner(headID);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "RemotePostingOps: routing-drift refresh+retry %d for headID %lld: target %d -> %d (last=%d)\n",
+                    attempt + 1, (std::int64_t)headID, target, newTarget, (int)last);
+                target = newTarget;
+            }
+            return last;
         }
     };
 
