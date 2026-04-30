@@ -66,6 +66,135 @@ namespace SPTAG::SPANN {
         void SetRemoteLockCallback(RemoteLockCallback cb) { m_remoteLockCallback = std::move(cb); }
 
         // ==================================================================
+        //  Zombie-fence guard wrapper
+        //  (FT case: compute-worker-zombie-after-suspect)
+        // ==================================================================
+        //
+        // Sibling of compute-worker-restart-rejoin. The rejoin case covers
+        // a legitimate restart: a process truly died, came back with a
+        // strictly-higher SWIM incarnation, and the cluster reinstates it.
+        // This case covers the asymmetric variant: the dispatcher has
+        // already marked the worker Dead at incarnation D, but the worker
+        // is still alive and continues to issue routed writes carrying
+        // its OLD incarnation (≤ D). Without a write-side check, those
+        // late writes pollute the posting list owned by the new owner.
+        //
+        // Behaviour: when env SPTAG_FAULT_COMPUTE_WORKER_ZOMBIE_AFTER_SUSPECT
+        // is set, callers route writes through SendRemoteAppendWithZombieFence.
+        // When the env is unset, the wrapper is dormant — callers
+        // short-circuit to the byte-for-byte original SendRemoteAppend
+        // path. Production hot path is byte-identical on baseline.
+        //
+        // Composition with the merged primitives:
+        //   * prim/swim-membership owns the "deadIncarnation" observation
+        //     (the cluster's authoritative claim that node X is Dead at
+        //     incarnation D). The wrapper does NOT re-derive it; callers
+        //     feed observations in via ObserveSwimDeadIncarnation().
+        //   * prim/ring-epoch-fence already covers stale-ring writes at
+        //     a different layer; this wrapper is orthogonal — it fences
+        //     stale-incarnation writes regardless of ring-epoch validity.
+        //
+        // Counters (test + ops observability):
+        //   m_zombieFenceRejected     - sender's incarnation ≤ recorded
+        //                               deadIncarnation; write refused.
+        //   m_zombieIncarnationBumped - sender's incarnation > recorded
+        //                               deadIncarnation; this is the
+        //                               legitimate-rejoin path. We record
+        //                               the new incarnation so subsequent
+        //                               stragglers from the same nodeId
+        //                               are still fenced.
+        static bool ZombieFenceArmed() {
+            return std::getenv("SPTAG_FAULT_COMPUTE_WORKER_ZOMBIE_AFTER_SUSPECT")
+                   != nullptr;
+        }
+
+        // Observe a SWIM "Dead" transition for senderNodeId at incarnation
+        // deadInc. Called from the ring/membership observer wired up by
+        // the rejoin case. Monotonic — a smaller deadInc is ignored.
+        void ObserveSwimDeadIncarnation(int senderNodeId, std::uint64_t deadInc) {
+            std::lock_guard<std::mutex> g(m_zombieFenceMu);
+            auto& cur = m_zombieDeadIncarnations[senderNodeId];
+            if (deadInc > cur) cur = deadInc;
+        }
+
+        std::uint64_t GetObservedDeadIncarnationForTest(int senderNodeId) const {
+            std::lock_guard<std::mutex> g(m_zombieFenceMu);
+            auto it = m_zombieDeadIncarnations.find(senderNodeId);
+            return it == m_zombieDeadIncarnations.end() ? 0 : it->second;
+        }
+
+        // Generic zombie-fence guard. Caller asserts the sender's nodeId
+        // and current SWIM incarnation. The wrapper:
+        //   1. If the env-gate is unset, short-circuits straight to
+        //      sendFn with no counter touches (dormant on production hot
+        //      path).
+        //   2. Otherwise: if senderIncarnation ≤ observedDeadIncarnation
+        //      for senderNodeId, refuse with ErrorCode::Fenced and bump
+        //      m_zombieFenceRejected. (No corruption of receiver state.)
+        //   3. Otherwise: bump m_zombieIncarnationBumped, record the new
+        //      high-water on senderNodeId so future stragglers are fenced,
+        //      then forward to sendFn.
+        //
+        // sendFn signature: ErrorCode(int senderNodeId, std::uint64_t senderInc)
+        template <typename SendFn>
+        ErrorCode SendRemoteAppendWithZombieFence(
+            int senderNodeId,
+            std::uint64_t senderIncarnation,
+            SendFn sendFn)
+        {
+            if (!ZombieFenceArmed()) {
+                return sendFn(senderNodeId, senderIncarnation);
+            }
+            std::uint64_t observedDead = 0;
+            {
+                std::lock_guard<std::mutex> g(m_zombieFenceMu);
+                auto it = m_zombieDeadIncarnations.find(senderNodeId);
+                if (it != m_zombieDeadIncarnations.end()) observedDead = it->second;
+            }
+            if (observedDead != 0 && senderIncarnation <= observedDead) {
+                m_zombieFenceRejected.fetch_add(1);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "RemotePostingOps: zombie-fence rejected node %d "
+                    "(senderInc=%llu, observedDead=%llu)\n",
+                    senderNodeId,
+                    (unsigned long long)senderIncarnation,
+                    (unsigned long long)observedDead);
+                return ErrorCode::Fenced;
+            }
+            if (senderIncarnation > observedDead) {
+                m_zombieIncarnationBumped.fetch_add(1);
+                std::lock_guard<std::mutex> g(m_zombieFenceMu);
+                // Record the high-water — but DO NOT regress
+                // observedDead. A subsequent zombie carrying any value
+                // ≤ observedDead remains fenced. We stash the legitimate
+                // high-water in a sibling map so concurrent stragglers
+                // for the SAME incarnation as the rejoin are still
+                // refused (a zombie cannot impersonate the rejoin).
+                auto& obs = m_zombieAliveIncarnations[senderNodeId];
+                if (senderIncarnation > obs) obs = senderIncarnation;
+            }
+            return sendFn(senderNodeId, senderIncarnation);
+        }
+
+        struct ZombieFenceCounters {
+            std::uint64_t fenceRejected;       // m_zombieFenceRejected
+            std::uint64_t incarnationBumped;   // m_zombieIncarnationBumped
+        };
+        ZombieFenceCounters GetZombieFenceCounters() const {
+            return ZombieFenceCounters{
+                m_zombieFenceRejected.load(),
+                m_zombieIncarnationBumped.load(),
+            };
+        }
+        void ResetZombieFenceForTest() {
+            std::lock_guard<std::mutex> g(m_zombieFenceMu);
+            m_zombieDeadIncarnations.clear();
+            m_zombieAliveIncarnations.clear();
+            m_zombieFenceRejected.store(0);
+            m_zombieIncarnationBumped.store(0);
+        }
+
+        // ==================================================================
         //  Append — single item, synchronous (waits for response)
         // ==================================================================
 
@@ -677,6 +806,14 @@ namespace SPTAG::SPANN {
         std::atomic<std::uint64_t> m_staleSenderRoundtrips{0};
         std::atomic<std::uint64_t> m_receiverStaleObservations{0};
         std::atomic<std::uint64_t> m_ringNotReadyRejects{0};
+
+        // ---- Zombie-fence state (FT compute-worker-zombie-after-suspect) ----
+        // dormant when SPTAG_FAULT_COMPUTE_WORKER_ZOMBIE_AFTER_SUSPECT unset.
+        mutable std::mutex m_zombieFenceMu;
+        std::unordered_map<int, std::uint64_t> m_zombieDeadIncarnations;
+        std::unordered_map<int, std::uint64_t> m_zombieAliveIncarnations;
+        std::atomic<std::uint64_t> m_zombieFenceRejected{0};
+        std::atomic<std::uint64_t> m_zombieIncarnationBumped{0};
 
     public:
         struct FenceCounters {
