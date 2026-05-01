@@ -92,6 +92,7 @@ DefineErrorCode(Posting_ChecksumError, 0x5005)
 
 // 0x6000 ~ 0x6FFF Distributed (TiKV/PD) operational errors
 DefineErrorCode(RetryBudgetExceeded, 0x6000)
+DefineErrorCode(PdUnavailable, 0x6003)
 
 #endif // DefineErrorCode
 
