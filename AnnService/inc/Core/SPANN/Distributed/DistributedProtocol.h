@@ -219,6 +219,153 @@ namespace SPTAG::SPANN {
         }
     };
 
+    /// HeadSync entry decorated with origin metadata for ordering & pull replay.
+    /// `originOwner` is the node index that produced the entry (post-Split/Merge).
+    /// `(epoch, sequence)` is monotonically increasing on the originOwner: epoch
+    /// bumps across restarts / ring changes, sequence increments per entry within
+    /// an epoch. Receivers maintain a per-(originOwner) cursor and pull missing
+    /// ranges via `HeadSyncPullRequest`.
+    struct HeadSyncMetaEntry {
+        std::int32_t  originOwner = -1;
+        std::uint64_t epoch       = 0;
+        std::uint64_t sequence    = 0;
+        HeadSyncEntry entry;
+
+        std::size_t EstimateBufferSize() const {
+            return sizeof(std::int32_t)
+                 + sizeof(std::uint64_t) * 2
+                 + entry.EstimateBufferSize();
+        }
+
+        std::uint8_t* Write(std::uint8_t* p_buffer) const {
+            using namespace Socket::SimpleSerialization;
+            p_buffer = SimpleWriteBuffer(originOwner, p_buffer);
+            p_buffer = SimpleWriteBuffer(epoch, p_buffer);
+            p_buffer = SimpleWriteBuffer(sequence, p_buffer);
+            return entry.Write(p_buffer);
+        }
+
+        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
+            using namespace Socket::SimpleSerialization;
+            p_buffer = SimpleReadBuffer(p_buffer, originOwner);
+            p_buffer = SimpleReadBuffer(p_buffer, epoch);
+            p_buffer = SimpleReadBuffer(p_buffer, sequence);
+            return entry.Read(p_buffer);
+        }
+    };
+
+    /// Pull RPC: "give me HeadSync entries from `originOwner` with
+    /// (epoch, sequence) >= (epochFloor, sequenceFloor)". Sent by a peer that
+    /// detected a gap in its receive cursor (or by a re-joining peer).
+    struct HeadSyncPullRequest {
+        static constexpr std::uint16_t MajorVersion()  { return 1; }
+        static constexpr std::uint16_t MirrorVersion() { return 0; }
+
+        std::int32_t  m_originOwner    = -1;
+        std::uint64_t m_epochFloor     = 0;
+        std::uint64_t m_sequenceFloor  = 0;
+        std::uint32_t m_maxEntries     = 1024;  // bound the response size
+
+        std::size_t EstimateBufferSize() const {
+            return sizeof(std::uint16_t) * 2
+                 + sizeof(std::int32_t)
+                 + sizeof(std::uint64_t) * 2
+                 + sizeof(std::uint32_t);
+        }
+
+        std::uint8_t* Write(std::uint8_t* p_buffer) const {
+            using namespace Socket::SimpleSerialization;
+            p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(m_originOwner, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_epochFloor, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_sequenceFloor, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_maxEntries, p_buffer);
+            return p_buffer;
+        }
+
+        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
+            using namespace Socket::SimpleSerialization;
+            std::uint16_t majorVer = 0, mirrorVer = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, majorVer);
+            p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
+            if (majorVer != MajorVersion()) return nullptr;
+            p_buffer = SimpleReadBuffer(p_buffer, m_originOwner);
+            p_buffer = SimpleReadBuffer(p_buffer, m_epochFloor);
+            p_buffer = SimpleReadBuffer(p_buffer, m_sequenceFloor);
+            p_buffer = SimpleReadBuffer(p_buffer, m_maxEntries);
+            return p_buffer;
+        }
+    };
+
+    struct HeadSyncPullResponse {
+        static constexpr std::uint16_t MajorVersion()  { return 1; }
+        static constexpr std::uint16_t MirrorVersion() { return 0; }
+
+        enum class Status : std::uint8_t {
+            Ok           = 0,  // entries follow (possibly empty if peer is caught up)
+            NotAvailable = 1,  // owner GC'd entries below the requested floor
+            Failed       = 2,  // wrong owner, version mismatch, etc.
+        };
+
+        Status m_status = Status::Failed;
+        // Echoed for quick correlation:
+        std::int32_t  m_originOwner = -1;
+        // The owner's current high-water mark for `originOwner`. Receivers may
+        // advance their cursor straight to this if they get an empty Ok response
+        // (i.e. owner has nothing new since their floor).
+        std::uint64_t m_epochHi    = 0;
+        std::uint64_t m_sequenceHi = 0;
+        std::vector<HeadSyncMetaEntry> m_entries;
+
+        std::size_t EstimateBufferSize() const {
+            std::size_t total = sizeof(std::uint16_t) * 2
+                              + sizeof(std::uint8_t)
+                              + sizeof(std::int32_t)
+                              + sizeof(std::uint64_t) * 2
+                              + sizeof(std::uint32_t);  // entry count
+            for (const auto& e : m_entries) total += e.EstimateBufferSize();
+            return total;
+        }
+
+        std::uint8_t* Write(std::uint8_t* p_buffer) const {
+            using namespace Socket::SimpleSerialization;
+            p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = SimpleWriteBuffer(static_cast<std::uint8_t>(m_status), p_buffer);
+            p_buffer = SimpleWriteBuffer(m_originOwner, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_epochHi, p_buffer);
+            p_buffer = SimpleWriteBuffer(m_sequenceHi, p_buffer);
+            std::uint32_t n = static_cast<std::uint32_t>(m_entries.size());
+            p_buffer = SimpleWriteBuffer(n, p_buffer);
+            for (const auto& e : m_entries) p_buffer = e.Write(p_buffer);
+            return p_buffer;
+        }
+
+        const std::uint8_t* Read(const std::uint8_t* p_buffer) {
+            using namespace Socket::SimpleSerialization;
+            std::uint16_t majorVer = 0, mirrorVer = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, majorVer);
+            p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
+            if (majorVer != MajorVersion()) return nullptr;
+            std::uint8_t rawStatus = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, rawStatus);
+            m_status = static_cast<Status>(rawStatus);
+            p_buffer = SimpleReadBuffer(p_buffer, m_originOwner);
+            p_buffer = SimpleReadBuffer(p_buffer, m_epochHi);
+            p_buffer = SimpleReadBuffer(p_buffer, m_sequenceHi);
+            std::uint32_t n = 0;
+            p_buffer = SimpleReadBuffer(p_buffer, n);
+            m_entries.clear();
+            m_entries.resize(n);
+            for (std::uint32_t i = 0; i < n; i++) {
+                p_buffer = m_entries[i].Read(p_buffer);
+                if (!p_buffer) return nullptr;
+            }
+            return p_buffer;
+        }
+    };
+
     /// Dispatch command from driver to workers (replaces file-based barriers).
     struct DispatchCommand {
         static constexpr std::uint16_t MajorVersion() { return 1; }
