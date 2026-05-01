@@ -18,6 +18,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <map>
 #include <unordered_map>
 #include <vector>
 
@@ -67,6 +68,150 @@ namespace SPTAG::SPANN {
         void SetAppendCallback(AppendCallback cb) { m_appendCallback = std::move(cb); }
         void SetHeadSyncCallback(HeadSyncCallback cb) { m_headSyncCallback = std::move(cb); }
         void SetRemoteLockCallback(RemoteLockCallback cb) { m_remoteLockCallback = std::move(cb); }
+
+        // ==================================================================
+        //  Worker-died-mid-insert resume wrapper
+        //  (FT case: compute-worker-die-mid-insert)
+        // ==================================================================
+        //
+        // Sibling of compute-worker-restart-rejoin / compute-worker-zombie-
+        // after-suspect. This case targets the *insert hot path*: a worker
+        // is SIGKILLed mid-batch with in-flight Path-A local appends and
+        // Path-B remote-appends. After the dispatcher / SWIM detector
+        // refreshes membership and a new ring epoch is published, retried
+        // inserts must converge via three orthogonal mechanisms:
+        //
+        //   (a) op-id dedup -- prim/op-id-idempotency. Each Insert carries
+        //       an OpId; the new owner replays the cached result if the
+        //       same OpId already applied. Counter: m_resumedFromOpId.
+        //   (b) ring-epoch fence -- prim/ring-epoch-fence. RPCs from a
+        //       sender that has not yet refreshed past the kill-event
+        //       epoch are rejected SenderStale. Counter: m_ringFenceRejected.
+        //   (c) SWIM membership refresh -- prim/swim-membership. The
+        //       observer downgrades the dead worker, which advances the
+        //       ring epoch, which composes with (b). The wrapper records
+        //       the kill observation: m_workerDiedMidInsert.
+        //
+        // Behaviour: when env SPTAG_FAULT_COMPUTE_WORKER_DIE_MID_INSERT is
+        // set, the insert hot path routes through SendRemoteAppendWithKill
+        // ResumeFence. When unset, the wrapper is dormant -- callers
+        // short-circuit straight to sendFn (production hot path is byte-
+        // identical on baseline).
+        static bool KillResumeArmed() {
+            return std::getenv("SPTAG_FAULT_COMPUTE_WORKER_DIE_MID_INSERT")
+                   != nullptr;
+        }
+
+        struct KilledWorker {
+            std::uint64_t killIncarnation = 0;
+            RingEpoch     ringEpochAtKill;
+        };
+
+        // Observe a SWIM "Dead" transition for nodeIndex at incarnation
+        // killInc with ring epoch ringEpochAtKill (epoch fenced past the
+        // kill event). Called from the membership observer once the
+        // dispatcher has bumped the ring view. Monotonic in killInc.
+        void ObserveWorkerDied(int nodeIndex,
+                               std::uint64_t killInc,
+                               RingEpoch ringEpochAtKill)
+        {
+            std::lock_guard<std::mutex> g(m_killResumeMu);
+            auto [it, inserted] = m_killedWorkers.try_emplace(nodeIndex);
+            auto& cur = it->second;
+            // Bump counter on first observation of this node OR on a
+            // strictly higher killIncarnation; older observations are
+            // ignored (monotonic).
+            if (inserted || killInc > cur.killIncarnation) {
+                cur.killIncarnation = killInc;
+                cur.ringEpochAtKill = ringEpochAtKill;
+                m_workerDiedMidInsert.fetch_add(1);
+            }
+        }
+
+        KilledWorker GetKilledWorkerForTest(int nodeIndex) const {
+            std::lock_guard<std::mutex> g(m_killResumeMu);
+            auto it = m_killedWorkers.find(nodeIndex);
+            if (it == m_killedWorkers.end()) return KilledWorker{};
+            return it->second;
+        }
+
+        // Wrapper enforcing kill-then-resume semantics on a routed insert.
+        //   targetNodeIndex   -- ring owner of the posting being appended.
+        //   senderEpoch       -- sender's local ring view at send time.
+        //   opId              -- idempotency token; if a previous attempt
+        //                        for this opId completed Success, replay.
+        //   sendFn(opId)      -- legacy SendRemoteAppend body, takes the
+        //                        opId so resumed retries reuse it.
+        //
+        // Order:
+        //   1. env-off: short-circuit to sendFn(opId) (production parity).
+        //   2. op-id replay: lookup opId in the per-cluster resume cache.
+        //      Hit -> return cached ErrorCode + m_resumedFromOpId++; sendFn
+        //      not invoked. (Replay before the fence so a successful
+        //      pre-kill apply is observable through any ring view.)
+        //   3. ring-epoch fence on the kill event: if targetNodeIndex is
+        //      recorded killed AND senderEpoch < ringEpochAtKill, reject
+        //      ErrorCode::Fenced + m_ringFenceRejected.
+        //   4. otherwise call sendFn, cache Success results for resume.
+        template <typename SendFn>
+        ErrorCode SendRemoteAppendWithKillResumeFence(
+            int targetNodeIndex,
+            const RingEpoch& senderEpoch,
+            const Distributed::OpId& opId,
+            SendFn sendFn)
+        {
+            if (!KillResumeArmed()) {
+                return sendFn(opId);
+            }
+            // (a) Op-id replay cache.
+            if (opId.IsValid()) {
+                std::lock_guard<std::mutex> g(m_killResumeMu);
+                auto it = m_killResumeCache.find(opId);
+                if (it != m_killResumeCache.end()) {
+                    m_resumedFromOpId.fetch_add(1);
+                    return it->second;
+                }
+            }
+            // (b) Ring-epoch fence on the kill event.
+            {
+                std::lock_guard<std::mutex> g(m_killResumeMu);
+                auto it = m_killedWorkers.find(targetNodeIndex);
+                if (it != m_killedWorkers.end()
+                    && it->second.ringEpochAtKill.IsInitialised()
+                    && senderEpoch < it->second.ringEpochAtKill) {
+                    m_ringFenceRejected.fetch_add(1);
+                    return ErrorCode::Fenced;
+                }
+            }
+            ErrorCode rc = sendFn(opId);
+            if (opId.IsValid() && rc == ErrorCode::Success) {
+                std::lock_guard<std::mutex> g(m_killResumeMu);
+                m_killResumeCache[opId] = rc;
+            }
+            return rc;
+        }
+
+        struct KillResumeCounters {
+            std::uint64_t workerDiedMidInsert; // observed kill events
+            std::uint64_t resumedFromOpId;     // op-id dedup hits on resume
+            std::uint64_t ringFenceRejected;   // sender stale-ring rejects
+        };
+        KillResumeCounters GetKillResumeCounters() const {
+            return KillResumeCounters{
+                m_workerDiedMidInsert.load(),
+                m_resumedFromOpId.load(),
+                m_ringFenceRejected.load(),
+            };
+        }
+        void ResetKillResumeForTest() {
+            std::lock_guard<std::mutex> g(m_killResumeMu);
+            m_killedWorkers.clear();
+            m_killResumeCache.clear();
+            m_workerDiedMidInsert.store(0);
+            m_resumedFromOpId.store(0);
+            m_ringFenceRejected.store(0);
+        }
+
 
         // Configure idempotency for outbound (sender) and inbound (receiver)
         // Append paths. Must be called before any traffic.
@@ -755,6 +900,14 @@ namespace SPTAG::SPANN {
                 m_ringNotReadyRejects.load(),
             };
         }
+
+        // ---- Kill-resume state (compute-worker-die-mid-insert) ----
+        mutable std::mutex m_killResumeMu;
+        std::unordered_map<int, KilledWorker> m_killedWorkers;
+        std::map<Distributed::OpId, ErrorCode> m_killResumeCache;
+        std::atomic<std::uint64_t> m_workerDiedMidInsert{0};
+        std::atomic<std::uint64_t> m_resumedFromOpId{0};
+        std::atomic<std::uint64_t> m_ringFenceRejected{0};
     };
 
 } // namespace SPTAG::SPANN
