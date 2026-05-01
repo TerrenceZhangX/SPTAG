@@ -662,8 +662,6 @@ namespace SPTAG::SPANN {
                 std::unique_lock<std::shared_timed_mutex> lock(m_rwLocks[headID], std::defer_lock);
                 if (requirelock) lock.lock();
 
-                int retry = 0;
-             Retry:
                 if (!m_headIndex->ContainSample(headID, m_layer + 1)) return ErrorCode::Success;
 
                 std::string postingList;
@@ -700,17 +698,14 @@ namespace SPTAG::SPANN {
                     SizeType VID = *((SizeType*)(vectorId));
                     if (VID < 0 || VID >= m_versionMap->Count())
                     {
-                        if (retry < 3)
-                        {
-                            retry++;
-                            goto Retry;
-                        }
-                        else
-                        {
-                            SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                                         "Split fail: Get posting %lld fail after 3 times retries.\n", (std::int64_t)(headID));
-                            return ErrorCode::DiskIOFail;
-                        }
+                        // Per tikv-region-error-retry-cap.md: SPANN-side 3-retry
+                        // collapses into the inner TiKVIO RetryBudget. The data
+                        // mismatch here implies a stale read after a region/
+                        // version change; the inner layer has already exhausted
+                        // its retries via budget. Surface DiskIOFail directly.
+                        SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                                     "Split fail: Get posting %lld returned out-of-range VID; inner retry budget exhausted.\n", (std::int64_t)(headID));
+                        return ErrorCode::DiskIOFail;
                     }
                     
                     if (VID == headID) {
