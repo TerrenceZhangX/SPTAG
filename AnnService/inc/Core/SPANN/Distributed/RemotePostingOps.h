@@ -4,6 +4,9 @@
 #pragma once
 
 #include "inc/Core/SPANN/Distributed/DistributedProtocol.h"
+#include "inc/Core/SPANN/Distributed/OpId.h"
+#include "inc/Core/SPANN/Distributed/OpIdCache.h"
+#include <chrono>
 #include "inc/Socket/Client.h"
 #include "inc/Socket/Server.h"
 #include "inc/Socket/Packet.h"
@@ -59,6 +62,24 @@ namespace SPTAG::SPANN {
         void SetHeadSyncCallback(HeadSyncCallback cb) { m_headSyncCallback = std::move(cb); }
         void SetRemoteLockCallback(RemoteLockCallback cb) { m_remoteLockCallback = std::move(cb); }
 
+        // Configure idempotency for outbound (sender) and inbound (receiver)
+        // Append paths. Must be called before any traffic.
+        void ConfigureIdempotency(std::int32_t senderId,
+                                  std::uint32_t restartEpoch,
+                                  std::size_t cacheCapacity = 4096,
+                                  std::chrono::seconds cacheTtl = std::chrono::seconds(60)) {
+            m_opIdAllocator.Reset(senderId, restartEpoch);
+            m_appendDedupCache = std::make_unique<
+                Distributed::OpIdCache<Distributed::AppendDedupResult>>(
+                    cacheCapacity ? cacheCapacity : 4096, cacheTtl);
+        }
+
+        // Test hooks.
+        Distributed::OpIdCache<Distributed::AppendDedupResult>* AppendDedupCacheForTest() {
+            return m_appendDedupCache.get();
+        }
+        Distributed::OpIdAllocator& OpIdAllocatorForTest() { return m_opIdAllocator; }
+
         // ==================================================================
         //  Append — single item, synchronous (waits for response)
         // ==================================================================
@@ -83,6 +104,9 @@ namespace SPTAG::SPANN {
             req.m_headVec = *headVec;
             req.m_appendNum = appendNum;
             req.m_appendPosting = appendPosting;
+            if (m_opIdAllocator.SenderId() >= 0) {
+                req.m_opId = m_opIdAllocator.Next();
+            }
 
             Socket::ResourceID resID = m_nextResourceId.fetch_add(1);
             auto [future, _] = CreatePendingResponse(resID);
@@ -299,6 +323,30 @@ namespace SPTAG::SPANN {
                 return;
             }
 
+            // Receiver-side idempotency dedup. Replay cached status on hit;
+            // bump epoch tracking on a fresh restartEpoch from this sender.
+            const Distributed::OpId& incomingOpId = req.m_opId;
+            RemoteAppendResponse::Status status = RemoteAppendResponse::Status::Failed;
+
+            if (m_appendDedupCache && incomingOpId.IsValid()) {
+                {
+                    std::lock_guard<std::mutex> g(m_epochMutex);
+                    auto& seen = m_lastSeenEpoch[incomingOpId.senderId];
+                    if (incomingOpId.restartEpoch > seen) {
+                        m_appendDedupCache->InvalidateOlderEpochs(
+                            incomingOpId.senderId, incomingOpId.restartEpoch);
+                        seen = incomingOpId.restartEpoch;
+                    }
+                }
+
+                auto [hit, cached] = m_appendDedupCache->Lookup(incomingOpId);
+                if (hit) {
+                    SendAppendResponse(packet,
+                        static_cast<RemoteAppendResponse::Status>(cached.status));
+                    return;
+                }
+            }
+
             ErrorCode result = ErrorCode::Fail;
             if (m_appendCallback) {
                 auto headVec = std::make_shared<std::string>(std::move(req.m_headVec));
@@ -306,9 +354,15 @@ namespace SPTAG::SPANN {
                     req.m_headID, headVec, req.m_appendNum, req.m_appendPosting);
             }
 
-            auto status = (result == ErrorCode::Success)
+            status = (result == ErrorCode::Success)
                 ? RemoteAppendResponse::Status::Success
                 : RemoteAppendResponse::Status::Failed;
+
+            if (m_appendDedupCache && incomingOpId.IsValid()) {
+                Distributed::AppendDedupResult cached;
+                cached.status = static_cast<std::uint8_t>(status);
+                m_appendDedupCache->Insert(incomingOpId, cached);
+            }
             SendAppendResponse(packet, status);
         }
 
@@ -578,6 +632,13 @@ namespace SPTAG::SPANN {
         std::atomic<Socket::ResourceID> m_nextResourceId{1};
         std::mutex m_pendingMutex;
         std::unordered_map<Socket::ResourceID, std::promise<ErrorCode>> m_pendingResponses;
+
+        // Idempotency state.
+        Distributed::OpIdAllocator m_opIdAllocator;
+        std::unique_ptr<Distributed::OpIdCache<Distributed::AppendDedupResult>>
+            m_appendDedupCache;
+        std::mutex m_epochMutex;
+        std::unordered_map<std::int32_t, std::uint32_t> m_lastSeenEpoch;
     };
 
 } // namespace SPTAG::SPANN
