@@ -4,6 +4,7 @@
 #pragma once
 
 #include "inc/Core/Common.h"
+#include "inc/Core/SPANN/Distributed/OpId.h"
 #include "inc/Socket/SimpleSerialization.h"
 #include <cstdint>
 #include <cstring>
@@ -13,10 +14,12 @@
 namespace SPTAG::SPANN {
 
     /// Serializable request for remote Append operations sent between compute nodes.
+    /// MajorVersion 2 added the embedded OpId for receiver-side idempotency dedup.
     struct RemoteAppendRequest {
-        static constexpr std::uint16_t MajorVersion() { return 1; }
+        static constexpr std::uint16_t MajorVersion() { return 2; }
         static constexpr std::uint16_t MirrorVersion() { return 0; }
 
+        Distributed::OpId m_opId{};   // identifies this logical op for retries
         SizeType m_headID = 0;
         std::string m_headVec;        // raw head vector bytes
         std::int32_t m_appendNum = 0;
@@ -25,6 +28,7 @@ namespace SPTAG::SPANN {
         std::size_t EstimateBufferSize() const {
             std::size_t size = 0;
             size += sizeof(std::uint16_t) * 2;  // version fields
+            size += Distributed::OpId::WireSize();
             size += sizeof(SizeType);            // headID
             size += sizeof(std::uint32_t) + m_headVec.size();       // headVec (len-prefixed)
             size += sizeof(std::int32_t);        // appendNum
@@ -36,6 +40,7 @@ namespace SPTAG::SPANN {
             using namespace Socket::SimpleSerialization;
             p_buffer = SimpleWriteBuffer(MajorVersion(), p_buffer);
             p_buffer = SimpleWriteBuffer(MirrorVersion(), p_buffer);
+            p_buffer = m_opId.Write(p_buffer);
             p_buffer = SimpleWriteBuffer(m_headID, p_buffer);
             p_buffer = SimpleWriteBuffer(m_headVec, p_buffer);
             p_buffer = SimpleWriteBuffer(m_appendNum, p_buffer);
@@ -49,6 +54,7 @@ namespace SPTAG::SPANN {
             p_buffer = SimpleReadBuffer(p_buffer, majorVer);
             p_buffer = SimpleReadBuffer(p_buffer, mirrorVer);
             if (majorVer != MajorVersion()) return nullptr;
+            p_buffer = m_opId.Read(p_buffer);
             p_buffer = SimpleReadBuffer(p_buffer, m_headID);
             p_buffer = SimpleReadBuffer(p_buffer, m_headVec);
             p_buffer = SimpleReadBuffer(p_buffer, m_appendNum);
