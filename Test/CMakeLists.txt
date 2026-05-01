@@ -24,6 +24,7 @@ if (NOT LIBRARYONLY)
     file(GLOB TEST_HDR_FILES ${PROJECT_SOURCE_DIR}/Test/inc/Test.h)
     file(GLOB TEST_SRC_FILES ${PROJECT_SOURCE_DIR}/Test/src/*.cpp)
     file(GLOB TEST_DIST_PRIM_SRC_FILES ${PROJECT_SOURCE_DIR}/Test/Distributed/prim/*.cpp)
+    include_directories(${PROJECT_SOURCE_DIR}/Test/Distributed/prim)
     add_executable(SPTAGTest ${TEST_SRC_FILES} ${TEST_DIST_PRIM_SRC_FILES} ${TEST_HDR_FILES})
     target_link_libraries(SPTAGTest SPTAGLibStatic ssdservingLib ${Boost_LIBRARIES})
 
