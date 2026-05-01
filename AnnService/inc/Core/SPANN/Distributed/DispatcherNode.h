@@ -40,6 +40,9 @@ namespace SPTAG::SPANN {
             for (int i = 1; i <= numWorkers; i++) {
                 ring->AddNode(i);
             }
+            // Tag the ring with its (epoch, ringRev). epoch=1 = first
+            // membership snapshot; ringRev=0 = no in-epoch rebalance yet.
+            ring->SetEpoch(RingEpoch{1, 0});
             std::atomic_store(&m_hashRing,
                 std::shared_ptr<const ConsistentHashRing>(std::move(ring)));
             m_currentRingVersion.store(1);
