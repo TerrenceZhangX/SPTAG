@@ -92,6 +92,8 @@ DefineErrorCode(Posting_ChecksumError, 0x5005)
 
 // 0x6000 ~ 0x6FFF Distributed (TiKV/PD) operational errors
 DefineErrorCode(RetryBudgetExceeded, 0x6000)
+DefineErrorCode(OwnerSuspect, 0x6001)
+DefineErrorCode(OwnerDead, 0x6002)
 
 #endif // DefineErrorCode
 
