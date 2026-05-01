@@ -93,6 +93,7 @@ DefineErrorCode(Posting_ChecksumError, 0x5005)
 // 0x6000 ~ 0x6FFF Distributed / Membership Status
 DefineErrorCode(StaleRingEpoch, 0x6000)
 DefineErrorCode(RingNotReady, 0x6001)
+DefineErrorCode(DriverLost, 0x6002)
 
 #endif // DefineErrorCode
 
