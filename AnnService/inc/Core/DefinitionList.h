@@ -90,6 +90,9 @@ DefineErrorCode(Posting_SizeError, 0x5003)
 DefineErrorCode(Block_IDError, 0x5004)
 DefineErrorCode(Posting_ChecksumError, 0x5005)
 
+// 0x6000 ~ 0x6FFF Distributed (TiKV/PD) operational errors
+DefineErrorCode(RetryBudgetExceeded, 0x6000)
+
 #endif // DefineErrorCode
 
 
