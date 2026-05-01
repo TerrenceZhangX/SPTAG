@@ -68,6 +68,183 @@ namespace SPTAG::SPANN {
         void SetHeadSyncCallback(HeadSyncCallback cb) { m_headSyncCallback = std::move(cb); }
         void SetRemoteLockCallback(RemoteLockCallback cb) { m_remoteLockCallback = std::move(cb); }
 
+        // ==================================================================
+        //  Split-async zombie-resurrect generation fence
+        //  (FT case: split-async-zombie-resurrect)
+        // ==================================================================
+        //
+        // Failure mode anchored by this case: a compute node executing
+        // SplitAsync (the head-cluster posting split) crashes mid-flight;
+        // a peer detects the suspect/dead state and retries the split
+        // with a strictly-bumped split-generation; the original node then
+        // resurrects (network blip / GC stall recovery / process restart
+        // racing the SWIM Dead transition) and tries to commit its
+        // half-finished split work. Without a fence, both nodes race to
+        // publish a split for the same headID — split-brain at the
+        // posting layer.
+        //
+        // Defence: every SplitAsync op carries a (headID, splitGeneration)
+        // tuple; the wrapper rejects any sender whose generation is
+        // <= the highest generation we've already admitted for that
+        // headID. The peer-takeover path advances the generation; the
+        // original node's resurrected RPC is therefore stale and
+        // refused with ErrorCode::Fenced. This is the split-time
+        // analogue of compute-worker-zombie-after-suspect's
+        // SWIM-incarnation fence (re-using ErrorCode::Fenced) and
+        // composes orthogonally with prim/ring-epoch-fence (ringRev)
+        // and prim/op-id-idempotency (per-attempt OpIds keep retries
+        // dedup-clean even when the fence kicks in).
+        //
+        // Env-gated by SPTAG_FAULT_SPLIT_ASYNC_ZOMBIE_RESURRECT. When
+        // unset the wrapper short-circuits to splitFn — production hot
+        // path is byte-identical to merge-base.
+        //
+        // Counters (test + ops observability):
+        //   m_splitMidCrash          - splitter's process declared
+        //                              crashed mid-flight at gen=G
+        //                              (test/observer seam).
+        //   m_splitRetriedByPeer     - peer detected suspect splitter,
+        //                              took over with gen=G+1.
+        //   m_zombieFenceRejected    - resurrected splitter sent a
+        //                              SplitAsync at gen <= committed;
+        //                              wrapper refused with
+        //                              ErrorCode::Fenced.
+        //   m_singleSplitConverged   - split completed (either by
+        //                              original or peer); exactly one
+        //                              winner per (headID, lifetime).
+        static bool ZombieResurrectArmed() {
+            return std::getenv("SPTAG_FAULT_SPLIT_ASYNC_ZOMBIE_RESURRECT")
+                   != nullptr;
+        }
+
+        // Test/observer seam: the splitter's local watchdog (or the
+        // SWIM-membership observer hooked up by the rejoin case) reports
+        // that node N's SplitAsync at gen=G crashed mid-flight. Counter
+        // bump only — does not directly mutate fence state, since the
+        // peer-takeover path is what advances the generation.
+        void ObserveSplitAsyncMidCrash(SizeType /*headID*/,
+                                       std::uint64_t /*gen*/) {
+            m_splitMidCrash.fetch_add(1);
+        }
+
+        // Test/observer seam: a peer is taking over a suspect splitter's
+        // work for headID, advancing the split-generation high-water to
+        // newGen (must be strictly greater than any previously admitted
+        // generation for headID; monotonic — older newGen ignored).
+        void ObserveSplitRetriedByPeer(SizeType headID,
+                                       std::uint64_t /*oldGen*/,
+                                       std::uint64_t newGen) {
+            std::lock_guard<std::mutex> g(m_zombieResurrectMu);
+            auto& cur = m_splitGenerations[headID];
+            if (newGen > cur) {
+                cur = newGen;
+                m_splitRetriedByPeer.fetch_add(1);
+            }
+        }
+
+        // Test/observer seam: the cluster has converged on a single
+        // committed split for headID at gen.
+        void ObserveSplitConverged(SizeType /*headID*/,
+                                   std::uint64_t /*gen*/) {
+            m_singleSplitConverged.fetch_add(1);
+        }
+
+        std::uint64_t GetCommittedSplitGenerationForTest(SizeType headID) const {
+            std::lock_guard<std::mutex> g(m_zombieResurrectMu);
+            auto it = m_splitGenerations.find(headID);
+            return it == m_splitGenerations.end() ? 0 : it->second;
+        }
+
+        // Generation fence wrapper. Caller passes the (headID,
+        // splitterNodeId, splitGeneration) tuple plus the function that
+        // performs the actual SplitAsync work (RawPut to TiKV / index
+        // update / etc.). The wrapper:
+        //   1. env-off  → straight pass-through, no counter touches,
+        //                 no state mutated.
+        //   2. env-armed:
+        //      a. If splitGeneration <= recorded high-water for headID
+        //         → refuse with ErrorCode::Fenced and bump
+        //         m_zombieFenceRejected. splitFn is NOT called; no
+        //         posting state mutated.
+        //      b. Otherwise: record splitGeneration as the new
+        //         high-water (so any later straggler at <= G is
+        //         fenced) and forward to splitFn. On Success, bump
+        //         m_singleSplitConverged exactly once per (headID,
+        //         generation) tuple (deduped against repeat retries
+        //         from the same generation that compose with
+        //         prim/op-id-idempotency at a higher layer).
+        //
+        // splitFn signature: ErrorCode(SizeType headID, std::uint64_t gen)
+        template <typename SplitFn>
+        ErrorCode SendSplitAsyncWithGenFence(
+            SizeType headID,
+            int /*splitterNodeId*/,
+            std::uint64_t splitGeneration,
+            SplitFn splitFn)
+        {
+            if (!ZombieResurrectArmed()) {
+                return splitFn(headID, splitGeneration);
+            }
+            std::uint64_t observed = 0;
+            {
+                std::lock_guard<std::mutex> g(m_zombieResurrectMu);
+                auto it = m_splitGenerations.find(headID);
+                if (it != m_splitGenerations.end()) observed = it->second;
+            }
+            if (observed != 0 && splitGeneration <= observed) {
+                m_zombieFenceRejected.fetch_add(1);
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                    "RemotePostingOps: split-async zombie-fence rejected "
+                    "headID=%lld (splitGen=%llu, committedGen=%llu)\n",
+                    (long long)headID,
+                    (unsigned long long)splitGeneration,
+                    (unsigned long long)observed);
+                return ErrorCode::Fenced;
+            }
+            // Record the new high-water before calling splitFn so that a
+            // concurrent zombie that interleaves between the lock release
+            // here and splitFn entry is still fenced (its lookup will
+            // see the bumped value).
+            bool firstAdmissionForGen = false;
+            {
+                std::lock_guard<std::mutex> g(m_zombieResurrectMu);
+                auto& cur = m_splitGenerations[headID];
+                if (splitGeneration > cur) {
+                    cur = splitGeneration;
+                    firstAdmissionForGen = true;
+                }
+            }
+            ErrorCode rc = splitFn(headID, splitGeneration);
+            if (rc == ErrorCode::Success && firstAdmissionForGen) {
+                m_singleSplitConverged.fetch_add(1);
+            }
+            return rc;
+        }
+
+        struct SplitAsyncZombieResurrectCounters {
+            std::uint64_t splitMidCrash;
+            std::uint64_t splitRetriedByPeer;
+            std::uint64_t zombieFenceRejected;
+            std::uint64_t singleSplitConverged;
+        };
+        SplitAsyncZombieResurrectCounters GetSplitAsyncZombieResurrectCounters() const {
+            return SplitAsyncZombieResurrectCounters{
+                m_splitMidCrash.load(),
+                m_splitRetriedByPeer.load(),
+                m_zombieFenceRejected.load(),
+                m_singleSplitConverged.load(),
+            };
+        }
+        void ResetSplitAsyncZombieResurrectForTest() {
+            std::lock_guard<std::mutex> g(m_zombieResurrectMu);
+            m_splitGenerations.clear();
+            m_splitMidCrash.store(0);
+            m_splitRetriedByPeer.store(0);
+            m_zombieFenceRejected.store(0);
+            m_singleSplitConverged.store(0);
+        }
+
+
         // Configure idempotency for outbound (sender) and inbound (receiver)
         // Append paths. Must be called before any traffic.
         void ConfigureIdempotency(std::int32_t senderId,
@@ -742,6 +919,15 @@ namespace SPTAG::SPANN {
         std::atomic<std::uint64_t> m_staleSenderRoundtrips{0};
         std::atomic<std::uint64_t> m_receiverStaleObservations{0};
         std::atomic<std::uint64_t> m_ringNotReadyRejects{0};
+
+        // ---- Split-async zombie-resurrect state (FT split-async-zombie-resurrect) ----
+        // dormant when SPTAG_FAULT_SPLIT_ASYNC_ZOMBIE_RESURRECT unset.
+        mutable std::mutex m_zombieResurrectMu;
+        std::unordered_map<SizeType, std::uint64_t> m_splitGenerations;
+        std::atomic<std::uint64_t> m_splitMidCrash{0};
+        std::atomic<std::uint64_t> m_splitRetriedByPeer{0};
+        std::atomic<std::uint64_t> m_zombieFenceRejected{0};
+        std::atomic<std::uint64_t> m_singleSplitConverged{0};
 
         // ---- Owner-failover counters (posting-router-owner-failover fault) ----
         std::atomic<std::uint64_t> m_ownerFailoverRetries{0};
