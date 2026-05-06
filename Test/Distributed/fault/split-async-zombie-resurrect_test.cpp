@@ -352,18 +352,26 @@ BOOST_AUTO_TEST_CASE(OriginalResurrectsZombieFenced)
         return ErrorCode::Success;
     };
 
+    // Peer attempts must be serialized: the wrapper enforces
+    // strict-monotonic increase (splitGeneration <= committed => Fenced).
+    // If 32 peer threads with pre-allocated gens 3..3+kPairs-1 raced,
+    // a peer with gen=k could reach the fence-check after a higher-gen
+    // peer admitted (raising committed to k+m), and would then itself
+    // be fenced (counted as zombieFenceRejected) — a peer-vs-peer race,
+    // not the semantic this test stresses. We instead drive peer
+    // admissions sequentially in one dedicated thread, while running
+    // the kPairs zombies in parallel against it.
     std::vector<std::thread> threads;
-    for (int i = 0; i < kPairs; ++i) {
-        // Each peer attempt allocates a fresh, strictly-greater gen
-        // (3..3+kPairs-1). Once the wrapper admits gen=g it raises
-        // committed to g, so zombie at gen=1 stays fenced regardless.
-        std::uint64_t peerGen = (std::uint64_t)(3 + i);
-        threads.emplace_back([&, peerGen] {
+    threads.emplace_back([&] {
+        for (int i = 0; i < kPairs; ++i) {
+            std::uint64_t peerGen = (std::uint64_t)(3 + i);
             ErrorCode rc = ops.SendSplitAsyncWithGenFence(77, 2, peerGen,
                                                          stressSplitFn);
             (rc == ErrorCode::Success ? peerSuccess : peerFenced)
                 .fetch_add(1);
-        });
+        }
+    });
+    for (int i = 0; i < kPairs; ++i) {
         threads.emplace_back([&] {
             ErrorCode rc = ops.SendSplitAsyncWithGenFence(77, 1, 1,
                                                          stressSplitFn);
