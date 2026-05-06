@@ -93,6 +93,7 @@ DefineErrorCode(Posting_ChecksumError, 0x5005)
 // 0x6000 ~ 0x6FFF Distributed (TiKV/PD) operational errors
 DefineErrorCode(RetryBudgetExceeded, 0x6000)
 DefineErrorCode(StoreUnavailable, 0x6004)
+DefineErrorCode(MinReplicasViolated, 0x6005)
 
 #endif // DefineErrorCode
 
