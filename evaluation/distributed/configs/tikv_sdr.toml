@@ -1,0 +1,46 @@
+# TiKV configuration for SPTAG distributed benchmarks
+# From BENCHMARK_GUIDE_SCALE_COMPUTE.md Section 4.1
+
+memory-usage-limit = "80GB"
+
+[server]
+grpc-concurrency = 8
+grpc-memory-pool-quota = "4GB"
+
+[raftstore]
+region-max-size = "512MB"
+region-split-size = "384MB"
+region-max-keys = 5120000
+region-split-keys = 3840000
+
+[rocksdb]
+max-background-jobs = 8
+max-sub-compactions = 3
+rate-bytes-per-sec = "0"
+
+[rocksdb.defaultcf]
+write-buffer-size = "256MB"
+max-write-buffer-number = 5
+min-write-buffer-number-to-merge = 2
+level0-file-num-compaction-trigger = 8
+level0-slowdown-writes-trigger = 20
+level0-stop-writes-trigger = 36
+max-bytes-for-level-base = "1GB"
+compression-per-level = ["no", "no", "lz4", "lz4", "lz4", "zstd", "zstd"]
+target-file-size-base = "64MB"
+
+[rocksdb.writecf]
+write-buffer-size = "128MB"
+max-write-buffer-number = 5
+
+[storage]
+reserve-space = "1GB"
+
+[storage.block-cache]
+capacity = "40GB"
+
+[coprocessor]
+region-max-size = "512MB"
+region-split-size = "384MB"
+region-max-keys = 5120000
+region-split-keys = 3840000
