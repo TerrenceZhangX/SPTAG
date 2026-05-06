@@ -109,6 +109,29 @@ RouterNodeStores=127.0.0.1:20161,127.0.0.1:20162
 
 For running across multiple physical machines.
 
+### TiKV Topology Modes
+
+`run_distributed.sh` supports two PD/TiKV topologies, selected via the
+`TIKV_TOPOLOGY` environment variable:
+
+- **`unified`** (default): All PDs are launched with cross-referencing
+  `--initial-cluster=pd0=http://N0:2380,pd1=http://N1:2380,...` so they form a
+  single Raft cluster. PD config is set to `max-replicas=3` and every TiKV
+  joins via the full comma-separated PD endpoint list. This is the topology
+  required for distributed-index-scale tests where regions must be replicated
+  across stores. Run `./run_distributed.sh verify-topology cluster.conf` to
+  confirm `pd-ctl member` reports N members in one cluster and
+  `pd-ctl config show replication` reports `max-replicas=3`.
+- **`independent`**: Legacy mode where each host runs a standalone PD+TiKV with
+  `max-replicas=1`. Useful only for sharded/disjoint workloads where each TiKV
+  owns a non-overlapping key range and no cross-node replication is needed.
+
+A 2-node smoke harness for the unified topology lives at
+`evaluation/distributed/smoke_unified_pd_2node.sh`. It expects a
+`cluster.conf` (or `$NODES="host1,host2"`), starts the cluster, runs
+`verify-topology`, and cleans up. Author-only — do not run on production
+hardware.
+
 ### Step 1: Configure Cluster
 
 ```bash

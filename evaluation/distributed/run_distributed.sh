@@ -2,12 +2,24 @@
 # Multi-machine distributed benchmark orchestrator for SPTAG.
 #
 # Usage:
-#   ./run_distributed.sh deploy     <cluster.conf>                Deploy binary + data to all nodes
-#   ./run_distributed.sh start-tikv <cluster.conf> [node_count]   Start independent TiKV/PD instances
-#   ./run_distributed.sh stop-tikv  <cluster.conf> [node_count]   Stop TiKV/PD instances
-#   ./run_distributed.sh run        <cluster.conf> <scale> <node_count>  Run benchmark
-#   ./run_distributed.sh bench      <cluster.conf> <scale> [scale...]    Run 1-node + N-node for each scale
-#   ./run_distributed.sh cleanup    <cluster.conf>                Remove deployed files from remote nodes
+#   ./run_distributed.sh deploy          <cluster.conf>                Deploy binary + data to all nodes
+#   ./run_distributed.sh start-tikv      <cluster.conf> [node_count]   Start TiKV/PD instances
+#   ./run_distributed.sh stop-tikv       <cluster.conf> [node_count]   Stop TiKV/PD instances
+#   ./run_distributed.sh run             <cluster.conf> <scale> <node_count>  Run benchmark
+#   ./run_distributed.sh bench           <cluster.conf> <scale> [scale...]    Run 1-node + N-node for each scale
+#   ./run_distributed.sh verify-topology <cluster.conf> [node_count]   Verify PD cluster + replication
+#   ./run_distributed.sh cleanup         <cluster.conf>                Remove deployed files from remote nodes
+#
+# Topology modes (env var TIKV_TOPOLOGY):
+#   unified     (default) — All PDs form ONE Raft cluster via cross-referencing
+#                          --initial-cluster, max-replicas=3. All TiKVs join the
+#                          single cluster (--pd <comma-list of every PD>).
+#                          Region replicas are spread across stores; required for
+#                          large-scale (N>=3) tests where data must survive a
+#                          single-node failure.
+#   independent           — Legacy mode: each node runs a standalone PD+TiKV with
+#                          max-replicas=1 (no cross-node replication). Useful only
+#                          for sharded/disjoint workloads.
 #
 # Environment variables:
 #   NOCACHE=1          Disable all caches (TiKV block cache, OS page cache, VersionCache)
@@ -37,7 +49,6 @@
 #   - cluster.conf configured (see cluster.conf.example)
 #
 # The driver (first node in [nodes]) orchestrates everything.
-# Each machine runs its own independent PD + TiKV (NOT a shared Raft cluster).
 
 set -o pipefail
 
@@ -228,11 +239,162 @@ cmd_deploy() {
     echo "Deploy complete."
 }
 
-# ─── TiKV Management (Independent Mode) ───
+# ─── TiKV Management ───
+
+# Default topology: unified shared-PD cluster (all PDs cross-reference each other,
+# max-replicas=3). Override with TIKV_TOPOLOGY=independent for the legacy mode.
+TIKV_TOPOLOGY="${TIKV_TOPOLOGY:-unified}"
+TIKV_MAX_REPLICAS="${TIKV_MAX_REPLICAS:-3}"
 
 tikv_start() {
-    # Start the first <node_count> independent PD+TiKV pairs.
     local node_count="${1:-${#TIKV_HOSTS[@]}}"
+    case "$TIKV_TOPOLOGY" in
+        unified)     tikv_start_unified "$node_count" ;;
+        independent) tikv_start_independent "$node_count" ;;
+        *)
+            echo "ERROR: unknown TIKV_TOPOLOGY='$TIKV_TOPOLOGY' (expected 'unified' or 'independent')"
+            return 1
+            ;;
+    esac
+}
+
+# Build the comma-separated --initial-cluster argument from the first <n> TiKV hosts.
+_build_initial_cluster() {
+    local n="$1" out="" i
+    for (( i=0; i<n; i++ )); do
+        [ -n "$out" ] && out+=","
+        out+="pd${i}=http://${TIKV_HOSTS[$i]}:${TIKV_PD_PEER_PORTS[$i]}"
+    done
+    echo "$out"
+}
+
+# Build the comma-separated PD client endpoint list (for TiKV --pd-endpoints / pd-ctl).
+_build_pd_endpoints() {
+    local n="$1" out="" i
+    for (( i=0; i<n; i++ )); do
+        [ -n "$out" ] && out+=","
+        out+="${TIKV_HOSTS[$i]}:${TIKV_PD_CLIENT_PORTS[$i]}"
+    done
+    echo "$out"
+}
+
+tikv_start_unified() {
+    # Start <node_count> PDs as ONE Raft cluster + <node_count> TiKVs sharing it.
+    local node_count="$1"
+    echo ""
+    echo "=== Starting unified TiKV cluster: $node_count PDs + $node_count TiKVs ==="
+
+    local INITIAL_CLUSTER PD_ENDPOINTS
+    INITIAL_CLUSTER="$(_build_initial_cluster "$node_count")"
+    PD_ENDPOINTS="$(_build_pd_endpoints "$node_count")"
+    echo "  initial-cluster: $INITIAL_CLUSTER"
+    echo "  pd-endpoints:    $PD_ENDPOINTS"
+
+    # Start every PD pointing at the same initial-cluster spec.
+    echo "Starting PD members..."
+    for (( i=0; i<node_count; i++ )); do
+        local host="${TIKV_HOSTS[$i]}"
+        local client_port="${TIKV_PD_CLIENT_PORTS[$i]}"
+        local peer_port="${TIKV_PD_PEER_PORTS[$i]}"
+        local pd_name="pd${i}"
+        echo "  PD $i ($pd_name) on $host  client=$client_port peer=$peer_port"
+
+        remote_exec "$host" "docker rm -f sptag-pd-$i 2>/dev/null; \
+            docker run -d --name sptag-pd-$i --net host \
+            -v $DATA_DIR/tikv-data/pd-$i:/data \
+            pingcap/pd:${PD_VERSION} \
+            --name=${pd_name} \
+            --data-dir=/data \
+            --client-urls=http://0.0.0.0:${client_port} \
+            --advertise-client-urls=http://${host}:${client_port} \
+            --peer-urls=http://0.0.0.0:${peer_port} \
+            --advertise-peer-urls=http://${host}:${peer_port} \
+            --initial-cluster=${INITIAL_CLUSTER}"
+    done
+
+    # Wait for the unified PD cluster to elect a leader and report all members.
+    echo "Waiting for unified PD cluster (expect $node_count members)..."
+    local pd0_host="${TIKV_HOSTS[0]}"
+    local pd0_port="${TIKV_PD_CLIENT_PORTS[0]}"
+    for attempt in $(seq 1 60); do
+        local members
+        members=$(curl -sf "http://${pd0_host}:${pd0_port}/pd/api/v1/members" 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('members',[])))" 2>/dev/null \
+            || echo 0)
+        if [ "$members" -ge "$node_count" ]; then
+            echo "  PD cluster has $members/$node_count members (${attempt}s)"
+            break
+        fi
+        if [ "$attempt" -eq 60 ]; then
+            echo "  ERROR: PD cluster only has $members/$node_count members after 60s"
+            return 1
+        fi
+        sleep 1
+    done
+
+    # Set max-replicas cluster-wide (any PD endpoint accepts the write).
+    echo "Setting max-replicas=${TIKV_MAX_REPLICAS} on PD cluster..."
+    if curl -sf "http://${pd0_host}:${pd0_port}/pd/api/v1/config/replicate" \
+        -X POST -d "{\"max-replicas\": ${TIKV_MAX_REPLICAS}}" >/dev/null 2>&1; then
+        echo "  max-replicas=${TIKV_MAX_REPLICAS} set"
+    else
+        echo "  WARNING: failed to set max-replicas=${TIKV_MAX_REPLICAS} on PD cluster"
+    fi
+
+    # Start every TiKV against the full PD endpoint list.
+    echo "Starting TiKV stores (all → unified PD cluster)..."
+    for (( i=0; i<node_count; i++ )); do
+        local host="${TIKV_HOSTS[$i]}"
+        local tikv_port="${TIKV_PORTS[$i]}"
+        echo "  TiKV $i on $host:$tikv_port → PDs ${PD_ENDPOINTS}"
+
+        # Stage tikv.toml on remote host (same logic as legacy path).
+        local TIKV_TOML="$SCRIPT_DIR/configs/tikv.toml"
+        if [[ -f "$TIKV_TOML" ]]; then
+            remote_exec "$host" "docker run --rm -v $DATA_DIR/tikv-data:/data alpine mkdir -p /data/conf"
+            if [ "$host" = "${NODE_HOSTS[0]}" ] || [ "$host" = "localhost" ] || [ "$host" = "127.0.0.1" ]; then
+                sg docker -c "docker run --rm -v $DATA_DIR/tikv-data/conf:/conf -v $(realpath "$TIKV_TOML"):/src/tikv.toml:ro alpine cp /src/tikv.toml /conf/tikv.toml"
+            else
+                scp $(_ssh_opts) "$TIKV_TOML" "${SSH_USER}@${host}:${SPTAG_DIR}/tikv.toml"
+                remote_exec "$host" "docker run --rm -v $DATA_DIR/tikv-data/conf:/conf -v ${SPTAG_DIR}/tikv.toml:/src/tikv.toml:ro alpine cp /src/tikv.toml /conf/tikv.toml"
+            fi
+        fi
+
+        remote_exec "$host" "docker rm -f sptag-tikv-$i 2>/dev/null; \
+            docker run -d --name sptag-tikv-$i --net host \
+            --ulimit nofile=1048576:1048576 \
+            -v $DATA_DIR/tikv-data/tikv-$i:/data \
+            -v $DATA_DIR/tikv-data/conf:/conf \
+            pingcap/tikv:${TIKV_VERSION} \
+            --config=/conf/tikv.toml \
+            --addr=0.0.0.0:${tikv_port} \
+            --advertise-addr=${host}:${tikv_port} \
+            --data-dir=/data \
+            --pd-endpoints=${PD_ENDPOINTS}"
+    done
+
+    echo "Waiting for $node_count TiKV stores to register with the unified PD cluster..."
+    for attempt in $(seq 1 90); do
+        local store_count
+        store_count=$(curl -sf "http://${pd0_host}:${pd0_port}/pd/api/v1/stores" 2>/dev/null \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('count',0))" 2>/dev/null \
+            || echo 0)
+        if [ "$store_count" -ge "$node_count" ]; then
+            echo "  $store_count/$node_count stores registered (${attempt}s)"
+            break
+        fi
+        if [ "$attempt" -eq 90 ]; then
+            echo "  WARNING: only $store_count/$node_count stores registered after 90s"
+        fi
+        sleep 1
+    done
+
+    echo "Unified TiKV cluster started ($node_count PDs, $node_count TiKVs, max-replicas=${TIKV_MAX_REPLICAS})."
+}
+
+tikv_start_independent() {
+    # Legacy mode: <node_count> standalone PD+TiKV pairs (max-replicas=1, no cross-node replication).
+    local node_count="$1"
     echo ""
     echo "=== Starting $node_count independent TiKV instances ==="
 
@@ -357,6 +519,99 @@ tikv_start() {
     done
 
     echo "TiKV instances started ($node_count)."
+}
+
+# ─── Topology Verification ───
+
+cmd_verify_topology() {
+    # Verify the running PD cluster matches the desired topology.
+    local node_count="${1:-${#TIKV_HOSTS[@]}}"
+    local pd0_host="${TIKV_HOSTS[0]}"
+    local pd0_port="${TIKV_PD_CLIENT_PORTS[0]}"
+    local PD_ENDPOINTS
+    PD_ENDPOINTS="$(_build_pd_endpoints "$node_count")"
+
+    echo ""
+    echo "=== Verifying topology ($node_count expected PDs/TiKVs) ==="
+    echo "  Topology mode:  $TIKV_TOPOLOGY"
+    echo "  PD endpoints:   $PD_ENDPOINTS"
+    echo ""
+
+    local rc=0
+
+    # 1. pd-ctl member  →  every PD should report the same N members.
+    echo "-- pd-ctl member --"
+    local members_json
+    members_json=$(curl -sf "http://${pd0_host}:${pd0_port}/pd/api/v1/members" 2>/dev/null || echo "")
+    if [ -z "$members_json" ]; then
+        echo "  FAIL: cannot reach PD at ${pd0_host}:${pd0_port}"
+        rc=1
+    else
+        local member_count
+        member_count=$(echo "$members_json" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('members',[])))" 2>/dev/null || echo 0)
+        echo "  members: $member_count (expected $node_count)"
+        echo "$members_json" | python3 -c "import sys,json
+d=json.load(sys.stdin)
+for m in d.get('members',[]):
+    print('   -', m.get('name'), m.get('client_urls'))" 2>/dev/null || true
+        if [ "$TIKV_TOPOLOGY" = "unified" ] && [ "$member_count" -ne "$node_count" ]; then
+            echo "  FAIL: unified mode expects $node_count members in ONE cluster, got $member_count"
+            rc=1
+        fi
+    fi
+
+    # 2. pd-ctl config show replication  →  max-replicas must match expectation.
+    echo ""
+    echo "-- pd-ctl config show replication --"
+    local repl_json
+    repl_json=$(curl -sf "http://${pd0_host}:${pd0_port}/pd/api/v1/config/replicate" 2>/dev/null || echo "")
+    if [ -z "$repl_json" ]; then
+        echo "  FAIL: cannot fetch replication config"
+        rc=1
+    else
+        echo "$repl_json" | python3 -m json.tool 2>/dev/null || echo "$repl_json"
+        local got_replicas
+        got_replicas=$(echo "$repl_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('max-replicas',-1))" 2>/dev/null || echo -1)
+        local expected_replicas="$TIKV_MAX_REPLICAS"
+        [ "$TIKV_TOPOLOGY" = "independent" ] && expected_replicas=1
+        if [ "$got_replicas" != "$expected_replicas" ]; then
+            echo "  FAIL: max-replicas=$got_replicas, expected $expected_replicas"
+            rc=1
+        else
+            echo "  OK:   max-replicas=$got_replicas"
+        fi
+    fi
+
+    # 3. Stores: every TiKV should be in the cluster.
+    echo ""
+    echo "-- pd-ctl store --"
+    local stores_json
+    stores_json=$(curl -sf "http://${pd0_host}:${pd0_port}/pd/api/v1/stores" 2>/dev/null || echo "")
+    if [ -z "$stores_json" ]; then
+        echo "  FAIL: cannot fetch stores"
+        rc=1
+    else
+        local store_count
+        store_count=$(echo "$stores_json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('count',0))" 2>/dev/null || echo 0)
+        echo "  stores: $store_count (expected $node_count)"
+        echo "$stores_json" | python3 -c "import sys,json
+d=json.load(sys.stdin)
+for s in d.get('stores',[]):
+    st=s.get('store',{})
+    print('   -', st.get('id'), st.get('address'), st.get('state_name'))" 2>/dev/null || true
+        if [ "$store_count" -lt "$node_count" ]; then
+            echo "  FAIL: only $store_count/$node_count stores registered"
+            rc=1
+        fi
+    fi
+
+    echo ""
+    if [ $rc -eq 0 ]; then
+        echo "verify-topology: OK"
+    else
+        echo "verify-topology: FAILED"
+    fi
+    return $rc
 }
 
 tikv_stop() {
@@ -1014,12 +1269,13 @@ if [ -z "$CMD" ] || [ -z "$CONF" ]; then
     echo "Usage: $0 <command> <cluster.conf> [args...]"
     echo ""
     echo "Commands:"
-    echo "  deploy      Deploy binary and data to all nodes"
-    echo "  start-tikv  Start independent TiKV/PD instances"
-    echo "  stop-tikv   Stop TiKV/PD instances"
-    echo "  run         Run benchmark: $0 run cluster.conf <scale> <node_count>"
-    echo "  bench       Run full benchmark suite: $0 bench cluster.conf <scale> [scale...] | all"
-    echo "  cleanup     Remove deployed files from remote nodes"
+    echo "  deploy           Deploy binary and data to all nodes"
+    echo "  start-tikv       Start TiKV/PD instances (mode: \$TIKV_TOPOLOGY=unified|independent)"
+    echo "  stop-tikv        Stop TiKV/PD instances"
+    echo "  run              Run benchmark: $0 run cluster.conf <scale> <node_count>"
+    echo "  bench            Run full benchmark suite: $0 bench cluster.conf <scale> [scale...] | all"
+    echo "  verify-topology  Check PD members + max-replicas match the active TIKV_TOPOLOGY"
+    echo "  cleanup          Remove deployed files from remote nodes"
     exit 1
 fi
 
@@ -1045,12 +1301,15 @@ case "$CMD" in
         shift 2  # skip cmd and conf
         cmd_bench "$@"
         ;;
+    verify-topology)
+        cmd_verify_topology "${3:-${#TIKV_HOSTS[@]}}"
+        ;;
     cleanup)
         cmd_cleanup
         ;;
     *)
         echo "Unknown command: $CMD"
-        echo "Valid commands: deploy, start-tikv, stop-tikv, run, bench, cleanup"
+        echo "Valid commands: deploy, start-tikv, stop-tikv, run, bench, verify-topology, cleanup"
         exit 1
         ;;
 esac
