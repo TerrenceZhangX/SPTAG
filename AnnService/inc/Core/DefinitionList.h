@@ -95,6 +95,7 @@ DefineErrorCode(RetryBudgetExceeded, 0x6000)
 DefineErrorCode(StoreUnavailable, 0x6004)
 DefineErrorCode(MinReplicasViolated, 0x6005)
 DefineErrorCode(StaleStoreView, 0x6006)
+DefineErrorCode(DiskFull, 0x6007)
 
 #endif // DefineErrorCode
 
