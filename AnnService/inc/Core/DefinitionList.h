@@ -98,6 +98,7 @@ DefineErrorCode(StaleStoreView, 0x6006)
 DefineErrorCode(DiskFull, 0x6007)
 DefineErrorCode(SlowDiskBudgetExceeded, 0x6008)
 DefineErrorCode(WriteStall, 0x6009)
+DefineErrorCode(CompactionStallExceeded, 0x600A)
 
 #endif // DefineErrorCode
 
