@@ -100,6 +100,7 @@ DefineErrorCode(SlowDiskBudgetExceeded, 0x6008)
 DefineErrorCode(WriteStall, 0x6009)
 DefineErrorCode(CompactionStallExceeded, 0x600A)
 DefineErrorCode(SplitStormRetryCapExceeded, 0x600B)
+DefineErrorCode(MergeRetryCapExceeded, 0x600C)
 
 #endif // DefineErrorCode
 
