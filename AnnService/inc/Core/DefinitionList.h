@@ -99,6 +99,7 @@ DefineErrorCode(DiskFull, 0x6007)
 DefineErrorCode(SlowDiskBudgetExceeded, 0x6008)
 DefineErrorCode(WriteStall, 0x6009)
 DefineErrorCode(CompactionStallExceeded, 0x600A)
+DefineErrorCode(SplitStormRetryCapExceeded, 0x600B)
 
 #endif // DefineErrorCode
 
