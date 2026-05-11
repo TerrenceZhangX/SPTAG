@@ -97,6 +97,7 @@ DefineErrorCode(MinReplicasViolated, 0x6005)
 DefineErrorCode(StaleStoreView, 0x6006)
 DefineErrorCode(DiskFull, 0x6007)
 DefineErrorCode(SlowDiskBudgetExceeded, 0x6008)
+DefineErrorCode(WriteStall, 0x6009)
 
 #endif // DefineErrorCode
 
