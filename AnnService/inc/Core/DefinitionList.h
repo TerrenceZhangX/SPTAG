@@ -105,6 +105,7 @@ DefineErrorCode(LeaderTransferRetryCapExceeded, 0x600D)
 DefineErrorCode(RegionErrorRetryCapExceeded, 0x600E)
 DefineErrorCode(GrpcTimeoutStormRetryCapExceeded, 0x600F)
 DefineErrorCode(PdReconnectRetryCapExceeded, 0x6010)
+DefineErrorCode(StaleRegionCacheRetryCapExceeded, 0x6011)
 
 #endif // DefineErrorCode
 
