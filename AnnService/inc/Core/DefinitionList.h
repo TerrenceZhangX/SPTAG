@@ -103,6 +103,7 @@ DefineErrorCode(SplitStormRetryCapExceeded, 0x600B)
 DefineErrorCode(MergeRetryCapExceeded, 0x600C)
 DefineErrorCode(LeaderTransferRetryCapExceeded, 0x600D)
 DefineErrorCode(RegionErrorRetryCapExceeded, 0x600E)
+DefineErrorCode(GrpcTimeoutStormRetryCapExceeded, 0x600F)
 
 #endif // DefineErrorCode
 
